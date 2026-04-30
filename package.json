@@ -1,14 +1,13 @@
 {
-  "name": "claude-router",
-  "version": "0.1.0",
+  "name": "@sheruq/claude-router",
+  "version": "0.0.1",
   "description": "TypeScript-native Claude model router — auto-routes to Haiku/Sonnet/Opus by complexity, logs cost savings per call",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs",
-      "types": "./dist/index.d.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "scripts": {
@@ -42,6 +41,7 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ]
 }
