@@ -1,6 +1,6 @@
 {
   "name": "@sheruq/claude-router",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "TypeScript-native Claude model router — auto-routes to Haiku/Sonnet/Opus by complexity, logs cost savings per call",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -10,10 +10,14 @@
       "default": "./dist/index.js"
     }
   },
+  "bin": {
+    "claude-router": "./dist/proxy/cli.js"
+  },
   "scripts": {
     "build": "tsc",
     "test": "npm run build && node --test dist/__tests__/**/*.test.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "proxy": "node dist/proxy/cli.js"
   },
   "keywords": [
     "claude",
@@ -25,12 +29,15 @@
     "cost-optimization",
     "haiku",
     "sonnet",
-    "opus"
+    "opus",
+    "proxy"
   ],
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0"
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@hono/node-server": "^2.0.1",
+    "hono": "^4.12.16"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

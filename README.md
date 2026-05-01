@@ -6,7 +6,7 @@ TypeScript-native Claude model router. Auto-routes API calls to Haiku, Sonnet, o
 
 Sending "translate hello" to Opus costs 60x more than Haiku — for identical output. This library classifies prompt complexity and picks the cheapest model that can handle it.
 
-- **Zero infra** — no proxy, no database, no dashboard. `npm install` and go.
+- **Zero infra** — `npm install` and go. Optional proxy server for zero-code-change routing.
 - **Self-classifying** — Haiku decides whether to use Haiku (hybrid mode, ~$0.00004/call).
 - **Measurable** — every response includes exact cents saved vs your baseline model.
 - **Full streaming** — works with `.stream()`, meta available after completion.
@@ -107,6 +107,58 @@ const router = createRouter({
   // Log routing decisions to console (default: false)
   verbose: true,
 });
+```
+
+## Proxy Server
+
+Run as a drop-in proxy for `api.anthropic.com`. Any app that lets you set a custom base URL gets auto-routing with zero code changes.
+
+```bash
+# Start proxy
+npx @sheruq/claude-router --port 4000 --verbose
+
+# Or after install
+claude-router --port 4000 --verbose
+```
+
+Then point your app at it:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:4000
+```
+
+Works with **Cursor**, **Continue.dev**, **Cline**, **Claude CLI**, or any Anthropic SDK app:
+
+```typescript
+const client = new Anthropic({
+  baseURL: 'http://localhost:4000',
+});
+// All existing code works — requests auto-routed to optimal tier
+```
+
+### Proxy options
+
+```
+--port, -p <number>      Port (default: 4000)
+--verbose, -v             Log routing decisions
+--classifier <mode>       heuristic | ai | hybrid (default: hybrid)
+```
+
+### How it works
+
+- `model: "auto"` or model omitted → auto-route by complexity
+- Explicit model (e.g. `model: "claude-sonnet-4-6"`) → pass through unchanged
+- Response includes `x-router-*` headers with tier, cost, and savings info
+
+### Response headers
+
+```
+x-router-tier: haiku
+x-router-model: claude-haiku-4-5-20251001
+x-router-cost-cents: 0.045
+x-router-saved-cents: 1.200
+x-router-classifier: heuristic
+x-router-classifier-ms: 0.1
 ```
 
 ## How Classification Works
