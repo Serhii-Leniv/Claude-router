@@ -12,6 +12,7 @@ import {
   computeCostCents,
 } from './models.js';
 import { CostTracker } from './tracker.js';
+import { shouldRetry, nextTier } from './retry.js';
 import type {
   ClassifyInput,
   ClassifyResult,
@@ -114,6 +115,8 @@ export class ClaudeRouter {
     outputTokens: number,
     classifyResult: ClassifyResult,
     fallbackUsed: boolean,
+    retried: boolean = false,
+    retryReason: string | null = null,
   ): RouteMeta {
     const costCents = computeCostCents(
       model,
@@ -138,6 +141,9 @@ export class ClaudeRouter {
       classifierMethod: classifyResult.method,
       classifierMs: classifyResult.ms,
       fallbackUsed,
+      confidence: classifyResult.confidence,
+      retried,
+      retryReason,
     };
   }
 
@@ -162,7 +168,7 @@ export class ClaudeRouter {
     const input = buildClassifyInput(params);
 
     const classifyResult = forcedTier
-      ? { tier: forcedTier, score: -1, method: 'heuristic' as const, ms: 0 }
+      ? { tier: forcedTier, score: -1, method: 'heuristic' as const, ms: 0, confidence: 1.0 }
       : await this.classify(input);
 
     const startIndex = TIER_ORDER.indexOf(classifyResult.tier);
@@ -178,6 +184,37 @@ export class ClaudeRouter {
           ...apiParams,
           model,
         });
+
+        // Auto-retry on bad output (truncation/refusal)
+        const retryDecision = shouldRetry(response, tier);
+        if (retryDecision.retry && !fallbackUsed) {
+          const escalatedTier = nextTier(tier);
+          if (escalatedTier) {
+            const escalatedModel = this.config.tiers[escalatedTier];
+            const retryResponse = await this._client.messages.create({
+              ...apiParams,
+              model: escalatedModel,
+            });
+
+            const meta = this.buildMeta(
+              escalatedTier,
+              escalatedModel,
+              retryResponse.usage.input_tokens,
+              retryResponse.usage.output_tokens,
+              classifyResult,
+              true,
+              true,
+              retryDecision.reason,
+            );
+
+            this.tracker.record(meta);
+            this.log(meta, classifyResult);
+
+            const routed = retryResponse as RoutedMessage;
+            routed.meta = meta;
+            return routed;
+          }
+        }
 
         const meta = this.buildMeta(
           tier,
@@ -220,6 +257,7 @@ export class ClaudeRouter {
           score: -1,
           method: 'heuristic' as const,
           ms: 0,
+          confidence: 1.0,
         })
       : this.classify(input);
 
@@ -312,6 +350,7 @@ export type {
   ClassifyResult,
 } from './types.js';
 
-export { heuristicScore, scoreToTier, classifyHeuristic } from './classifier.js';
+export { heuristicScore, scoreToTier, scoreToConfidence, classifyHeuristic } from './classifier.js';
+export { shouldRetry, nextTier } from './retry.js';
 export { DEFAULT_MODELS, DEFAULT_PRICING, computeCostCents } from './models.js';
 export { CostTracker } from './tracker.js';

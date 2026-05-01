@@ -117,6 +117,12 @@ export function scoreToTier(score: number): Tier {
   return 'sonnet';
 }
 
+export function scoreToConfidence(score: number): number {
+  // Distance from ambiguous center (50). Farther = more confident.
+  // Score 0→1.0, 20→0.9, 40→0.7, 50→0.5, 60→0.7, 80→0.9, 100→1.0
+  return Math.min(1, Math.abs(score - 50) / 50 + 0.5);
+}
+
 export function classifyHeuristic(input: ClassifyInput): ClassifyResult {
   const start = performance.now();
   const score = heuristicScore(input);
@@ -126,6 +132,7 @@ export function classifyHeuristic(input: ClassifyInput): ClassifyResult {
     score,
     method: 'heuristic',
     ms: Math.round(ms * 100) / 100,
+    confidence: Math.round(scoreToConfidence(score) * 100) / 100,
   };
 }
 
@@ -151,10 +158,14 @@ export async function classifyAI(
   const ms = performance.now() - start;
 
   let level = 2; // default sonnet
+  let cleanParse = false;
   const responseText =
     response.content[0]?.type === 'text' ? response.content[0].text.trim() : '';
   const parsed = parseInt(responseText, 10);
-  if (parsed >= 1 && parsed <= 3) level = parsed;
+  if (parsed >= 1 && parsed <= 3) {
+    level = parsed;
+    cleanParse = true;
+  }
 
   const tierMap: Record<number, Tier> = { 1: 'haiku', 2: 'sonnet', 3: 'opus' };
   const score = level === 1 ? 15 : level === 2 ? 50 : 85;
@@ -164,6 +175,7 @@ export async function classifyAI(
     score,
     method: 'ai',
     ms: Math.round(ms * 100) / 100,
+    confidence: cleanParse ? 0.9 : 0.6,
   };
 }
 

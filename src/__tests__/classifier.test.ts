@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { heuristicScore, scoreToTier, classifyHeuristic } from '../classifier.js';
+import { heuristicScore, scoreToTier, scoreToConfidence, classifyHeuristic } from '../classifier.js';
 import type { ClassifyInput } from '../types.js';
 
 function makeInput(content: string, opts?: { system?: string; messageCount?: number }): ClassifyInput {
@@ -101,12 +101,39 @@ describe('heuristicScore', () => {
   });
 });
 
+describe('scoreToConfidence', () => {
+  it('extreme scores → high confidence', () => {
+    assert.equal(scoreToConfidence(0), 1.0);
+    assert.equal(scoreToConfidence(100), 1.0);
+  });
+
+  it('center score → low confidence', () => {
+    assert.equal(scoreToConfidence(50), 0.5);
+  });
+
+  it('near-boundary scores → moderate confidence', () => {
+    const conf40 = scoreToConfidence(40);
+    const conf60 = scoreToConfidence(60);
+    assert.ok(conf40 > 0.5 && conf40 < 1.0, `conf at 40: ${conf40}`);
+    assert.ok(conf60 > 0.5 && conf60 < 1.0, `conf at 60: ${conf60}`);
+    // Symmetric
+    assert.equal(conf40, conf60);
+  });
+
+  it('confidence increases with distance from center', () => {
+    assert.ok(scoreToConfidence(20) > scoreToConfidence(40));
+    assert.ok(scoreToConfidence(80) > scoreToConfidence(60));
+  });
+});
+
 describe('classifyHeuristic', () => {
-  it('returns full ClassifyResult', () => {
+  it('returns full ClassifyResult with confidence', () => {
     const result = classifyHeuristic(makeInput('translate hello'));
     assert.equal(result.method, 'heuristic');
     assert.equal(typeof result.score, 'number');
     assert.equal(typeof result.ms, 'number');
+    assert.equal(typeof result.confidence, 'number');
+    assert.ok(result.confidence >= 0 && result.confidence <= 1);
     assert.ok(result.ms >= 0);
     assert.ok(['haiku', 'sonnet', 'opus'].includes(result.tier));
   });

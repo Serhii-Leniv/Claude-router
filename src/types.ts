@@ -43,6 +43,12 @@ export interface RouteMeta {
   classifierMs: number;
   /** True if original tier was rate-limited and a different tier was used */
   fallbackUsed: boolean;
+  /** Classifier confidence 0–1 */
+  confidence: number;
+  /** True if response was retried on a higher tier */
+  retried: boolean;
+  /** Reason for retry: 'truncation' | 'refusal' | null */
+  retryReason: string | null;
 }
 
 export interface RoutedMessage extends Anthropic.Message {
@@ -66,4 +72,5 @@ export interface ClassifyResult {
   score: number;
   method: 'heuristic' | 'ai';
   ms: number;
+  confidence: number;
 }

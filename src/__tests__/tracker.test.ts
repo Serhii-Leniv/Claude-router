@@ -14,6 +14,9 @@ function makeMeta(overrides: Partial<RouteMeta> = {}): RouteMeta {
     classifierMethod: 'heuristic',
     classifierMs: 0.1,
     fallbackUsed: false,
+    confidence: 0.8,
+    retried: false,
+    retryReason: null,
     ...overrides,
   };
 }
