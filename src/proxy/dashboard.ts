@@ -1,5 +1,13 @@
 import type { RouteEvent } from './handler.js';
 
+function esc(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 export function renderDashboard(history: RouteEvent[]): string {
   const totalRequests = history.length;
   const totalCost = history.reduce((s, e) => s + e.costCents, 0);
@@ -23,15 +31,15 @@ export function renderDashboard(history: RouteEvent[]): string {
     .map(
       (e) => `
       <tr>
-        <td>${e.timestamp.replace('T', ' ').slice(0, 19)}</td>
-        <td><span class="badge badge-${e.tier}">${e.tier}</span></td>
-        <td>${e.model}</td>
+        <td>${esc(e.timestamp.replace('T', ' ').slice(0, 19))}</td>
+        <td><span class="badge badge-${esc(String(e.tier))}">${esc(String(e.tier))}</span></td>
+        <td>${esc(e.model)}</td>
         <td>$${(e.costCents / 100).toFixed(4)}</td>
         <td class="${e.savedCents >= 0 ? 'positive' : 'negative'}">$${(e.savedCents / 100).toFixed(4)}</td>
         <td>${e.confidence.toFixed(2)}</td>
         <td>${e.inputTokens}</td>
         <td>${e.outputTokens}</td>
-        <td>${e.retried ? `<span class="badge badge-retry">${e.retryReason}</span>` : '-'}</td>
+        <td>${e.retried ? `<span class="badge badge-retry">${esc(e.retryReason ?? '')}</span>` : '-'}</td>
       </tr>`,
     )
     .join('');

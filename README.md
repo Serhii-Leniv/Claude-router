@@ -142,13 +142,62 @@ const client = new Anthropic({
 --port, -p <number>      Port (default: 4000)
 --verbose, -v             Log routing decisions
 --classifier <mode>       heuristic | ai | hybrid (default: hybrid)
+--provider <mode>         anthropic | bedrock | vertex (default: anthropic)
+--region <string>         AWS/GCP region
 ```
 
-### How it works
+### Authentication
 
-- `model: "auto"` or model omitted → auto-route by complexity
-- Explicit model (e.g. `model: "claude-sonnet-4-6"`) → pass through unchanged
-- Response includes `x-router-*` headers with tier, cost, and savings info
+The proxy accepts any of these — no code changes needed:
+
+| Method | Header | Use case |
+|--------|--------|----------|
+| API key | `x-api-key: sk-ant-...` | Anthropic API subscribers |
+| Bearer token | `Authorization: Bearer <token>` | Claude Pro/Max subscription, Claude Code |
+| Env vars | — | AWS Bedrock, Google Vertex AI |
+
+### AWS Bedrock
+
+```bash
+npm install @anthropic-ai/bedrock-sdk
+
+AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... AWS_REGION=us-east-1 \
+  claude-router --provider bedrock --port 4000
+```
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:4000
+# No x-api-key needed — auth from AWS env vars
+```
+
+### Google Vertex AI
+
+```bash
+npm install @anthropic-ai/vertex-sdk
+gcloud auth application-default login
+
+ANTHROPIC_VERTEX_PROJECT_ID=my-project \
+  claude-router --provider vertex --port 4000
+```
+
+### Claude Code
+
+Works out of the box — just set the base URL:
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:4000 claude
+# or permanently:
+export ANTHROPIC_BASE_URL=http://localhost:4000
+```
+
+Claude Code with Pro/Max subscription (Bearer auth) is also supported automatically.
+
+### How routing works
+
+- `model: "auto"` or model omitted → classify and route to optimal tier
+- Explicit model (e.g. `model: "claude-sonnet-4-6"`) → pass through unchanged (Anthropic provider only)
+- Auto-retry: truncated or refused responses escalate one tier automatically
+- Response includes `x-router-*` headers with tier, cost, confidence, and savings
 
 ### Response headers
 
@@ -159,6 +208,7 @@ x-router-cost-cents: 0.045
 x-router-saved-cents: 1.200
 x-router-classifier: heuristic
 x-router-classifier-ms: 0.1
+x-router-confidence: 0.9
 ```
 
 ## How Classification Works
@@ -191,11 +241,14 @@ interface RouteMeta {
   model: string;
   inputTokens: number;
   outputTokens: number;
-  costCents: number;      // actual cost
-  savedCents: number;     // vs baseline (can be negative for opus)
+  costCents: number;        // actual cost in cents
+  savedCents: number;       // vs baseline (can be negative for opus)
   classifierMethod: 'heuristic' | 'ai';
   classifierMs: number;
-  fallbackUsed: boolean;
+  confidence: number;       // 0–1, how certain the classifier was
+  fallbackUsed: boolean;    // true if rate-limited and escalated
+  retried: boolean;         // true if auto-retried on bad output
+  retryReason: string | null; // 'truncation' | 'refusal' | null
 }
 ```
 

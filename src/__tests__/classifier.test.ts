@@ -1,7 +1,8 @@
-import { describe, it } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { heuristicScore, scoreToTier, scoreToConfidence, classifyHeuristic } from '../classifier.js';
+import { heuristicScore, scoreToTier, scoreToConfidence, classifyHeuristic, classifyAI, classifyHybrid } from '../classifier.js';
 import type { ClassifyInput } from '../types.js';
+import type Anthropic from '@anthropic-ai/sdk';
 
 function makeInput(content: string, opts?: { system?: string; messageCount?: number }): ClassifyInput {
   const messages: ClassifyInput['messages'] = [];
@@ -99,6 +100,60 @@ describe('heuristicScore', () => {
     assert.ok(low >= 0, `score should be >= 0, got ${low}`);
     assert.ok(low <= 100, `score should be <= 100, got ${low}`);
   });
+
+  // --- Math/science domain: short queries must not route to haiku ---
+
+  it('short math theorem query → opus', () => {
+    const score = heuristicScore(makeInput('Prove Fermat Last Theorem'));
+    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
+  });
+
+  it('P=NP question → opus', () => {
+    const score = heuristicScore(makeInput('P=NP?'));
+    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
+  });
+
+  it('Riemann Hypothesis → opus', () => {
+    const score = heuristicScore(makeInput('Prove the Riemann Hypothesis'));
+    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
+  });
+
+  it('quantum entanglement question → opus', () => {
+    const score = heuristicScore(makeInput('explain quantum entanglement and wave function collapse'));
+    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
+  });
+
+  it('NP-hard complexity → at least sonnet (not haiku)', () => {
+    // "Is 3-SAT NP-hard?" is a factual yes/no question — sonnet is correct routing.
+    // Key requirement: must NOT route to haiku.
+    const score = heuristicScore(makeInput('Is 3-SAT NP-hard?'));
+    assert.ok(scoreToTier(score) !== 'haiku', `NP-hard should not route to haiku, score=${score}`);
+  });
+
+  it('eigenvalue computation → opus', () => {
+    const score = heuristicScore(makeInput('compute eigenvalues of this matrix'));
+    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
+  });
+
+  it('integral calculus → opus', () => {
+    const score = heuristicScore(makeInput('solve this differential equation using integral transform'));
+    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
+  });
+
+  it('math notation (integral symbol) → high score', () => {
+    const score = heuristicScore(makeInput('∫f(x)dx'));
+    assert.ok(score >= 50, `integral symbol should bump score >= 50, got ${score}`);
+  });
+
+  it('LaTeX math → high score', () => {
+    const score = heuristicScore(makeInput('compute \\int_0^\\infty e^{-x} dx using \\frac{1}{s}'));
+    assert.ok(score >= 50, `LaTeX math should bump score >= 50, got ${score}`);
+  });
+
+  it('simple factual (no math) → still low', () => {
+    const score = heuristicScore(makeInput('what is the capital of France'));
+    assert.ok(score < 70, `non-math factual should not reach opus, got ${score}`);
+  });
 });
 
 describe('scoreToConfidence', () => {
@@ -136,5 +191,90 @@ describe('classifyHeuristic', () => {
     assert.ok(result.confidence >= 0 && result.confidence <= 1);
     assert.ok(result.ms >= 0);
     assert.ok(['haiku', 'sonnet', 'opus'].includes(result.tier));
+  });
+});
+
+function mockClient(responseText: string) {
+  return {
+    messages: {
+      create: mock.fn(async () => ({
+        content: responseText ? [{ type: 'text', text: responseText }] : [],
+      })),
+    },
+  } as unknown as Anthropic;
+}
+
+function mockClientEmpty() {
+  return {
+    messages: {
+      create: mock.fn(async () => ({
+        content: [],
+      })),
+    },
+  } as unknown as Anthropic;
+}
+
+describe('classifyAI', () => {
+  it('returns haiku for "1"', async () => {
+    const result = await classifyAI(mockClient('1'), makeInput('test'), 'claude-haiku-4-5-20251001');
+    assert.equal(result.tier, 'haiku');
+    assert.equal(result.confidence, 0.9);
+    assert.equal(result.method, 'ai');
+  });
+
+  it('returns sonnet for "2"', async () => {
+    const result = await classifyAI(mockClient('2'), makeInput('test'), 'claude-haiku-4-5-20251001');
+    assert.equal(result.tier, 'sonnet');
+    assert.equal(result.confidence, 0.9);
+  });
+
+  it('returns opus for "3"', async () => {
+    const result = await classifyAI(mockClient('3'), makeInput('test'), 'claude-haiku-4-5-20251001');
+    assert.equal(result.tier, 'opus');
+    assert.equal(result.confidence, 0.9);
+  });
+
+  it('defaults to sonnet on garbage response', async () => {
+    const result = await classifyAI(mockClient('banana'), makeInput('test'), 'claude-haiku-4-5-20251001');
+    assert.equal(result.tier, 'sonnet');
+    assert.equal(result.confidence, 0.6);
+  });
+
+  it('defaults to sonnet on empty content', async () => {
+    const result = await classifyAI(mockClientEmpty(), makeInput('test'), 'claude-haiku-4-5-20251001');
+    assert.equal(result.tier, 'sonnet');
+    assert.equal(result.confidence, 0.6);
+  });
+});
+
+describe('classifyHybrid', () => {
+  it('uses heuristic for clear haiku (score<40)', async () => {
+    const client = mockClient('1');
+    const result = await classifyHybrid(client, makeInput('translate hello'), 'claude-haiku-4-5-20251001');
+    assert.equal(result.method, 'heuristic');
+    // AI should NOT have been called
+    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 0);
+  });
+
+  it('uses heuristic for clear opus (score>60)', async () => {
+    const client = mockClient('3');
+    const input = makeInput(
+      'architect and design a distributed system, evaluate tradeoffs, strategize about scaling and prove correctness',
+    );
+    const result = await classifyHybrid(client, input, 'claude-haiku-4-5-20251001');
+    assert.equal(result.method, 'heuristic');
+    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 0);
+  });
+
+  it('calls AI for ambiguous zone (score 40-60)', async () => {
+    const client = mockClient('2');
+    // This prompt scores 45 — in the ambiguous 40-60 zone
+    const input = makeInput('explain compare write generate describe this code');
+    const score = heuristicScore(input);
+    assert.ok(score >= 40 && score <= 60, `expected score 40-60, got ${score}`);
+
+    const result = await classifyHybrid(client, input, 'claude-haiku-4-5-20251001');
+    assert.equal(result.method, 'ai');
+    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 1);
   });
 });

@@ -205,6 +205,111 @@ describe('ClaudeRouter.send', () => {
   });
 });
 
+describe('ClaudeRouter.send auto-retry', () => {
+  it('retries on truncation — escalates haiku→sonnet', async () => {
+    const { router } = createMockRouter();
+    let callNum = 0;
+    const mockCreate = mock.fn(async (params: { model: string }) => {
+      callNum++;
+      if (callNum === 1) {
+        return fakeMessage({
+          model: params.model,
+          stop_reason: 'max_tokens',
+          usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        });
+      }
+      return fakeMessage({ model: params.model });
+    });
+    (router as unknown as { _client: { messages: { create: typeof mockCreate } } })._client.messages.create = mockCreate;
+
+    const result = await router.send({
+      messages: [{ role: 'user', content: 'translate hello' }],
+      max_tokens: 100,
+    });
+
+    assert.equal(result.meta.retried, true);
+    assert.equal(result.meta.retryReason, 'truncation');
+    assert.equal(result.meta.tier, 'sonnet');
+    assert.equal(mockCreate.mock.calls.length, 2);
+
+    const firstModel = (mockCreate.mock.calls[0]!.arguments[0] as { model: string }).model;
+    const secondModel = (mockCreate.mock.calls[1]!.arguments[0] as { model: string }).model;
+    assert.equal(firstModel, DEFAULT_MODELS.haiku);
+    assert.equal(secondModel, DEFAULT_MODELS.sonnet);
+  });
+
+  it('retries on refusal — escalates tier', async () => {
+    const { router } = createMockRouter();
+    let callNum = 0;
+    const mockCreate = mock.fn(async (params: { model: string }) => {
+      callNum++;
+      if (callNum === 1) {
+        return fakeMessage({
+          model: params.model,
+          content: [{ type: 'text', text: "I can't help with that.", citations: null }],
+        });
+      }
+      return fakeMessage({ model: params.model });
+    });
+    (router as unknown as { _client: { messages: { create: typeof mockCreate } } })._client.messages.create = mockCreate;
+
+    const result = await router.send({
+      messages: [{ role: 'user', content: 'translate hello' }],
+      max_tokens: 100,
+    });
+
+    assert.equal(result.meta.retried, true);
+    assert.equal(result.meta.retryReason, 'refusal');
+  });
+
+  it('does NOT chain retries (only once)', async () => {
+    const { router } = createMockRouter();
+    const mockCreate = mock.fn(async (params: { model: string }) => {
+      // Always return truncated
+      return fakeMessage({
+        model: params.model,
+        stop_reason: 'max_tokens',
+        usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      });
+    });
+    (router as unknown as { _client: { messages: { create: typeof mockCreate } } })._client.messages.create = mockCreate;
+
+    const result = await router.send({
+      messages: [{ role: 'user', content: 'translate hello' }],
+      max_tokens: 100,
+    });
+
+    // Should only call twice: initial haiku + one retry to sonnet
+    // Should NOT chain to opus
+    assert.equal(mockCreate.mock.calls.length, 2);
+    assert.equal(result.meta.tier, 'sonnet');
+  });
+
+  it('confidence appears in meta', async () => {
+    const { router } = createMockRouter();
+
+    const result = await router.send({
+      messages: [{ role: 'user', content: 'translate hello' }],
+      max_tokens: 100,
+    });
+
+    assert.equal(typeof result.meta.confidence, 'number');
+    assert.ok(result.meta.confidence >= 0 && result.meta.confidence <= 1);
+  });
+
+  it('forced tier sets confidence to 1.0', async () => {
+    const { router } = createMockRouter();
+
+    const result = await router.send({
+      messages: [{ role: 'user', content: 'translate hello' }],
+      max_tokens: 100,
+      tier: 'opus',
+    });
+
+    assert.equal(result.meta.confidence, 1.0);
+  });
+});
+
 describe('ClaudeRouter.stats', () => {
   it('returns correct tier breakdown', async () => {
     const { router } = createMockRouter();

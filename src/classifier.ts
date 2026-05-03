@@ -21,6 +21,25 @@ const EXPERT_KEYWORDS = [
   'advanced', 'comprehensive', 'thorough', 'detailed analysis',
 ];
 
+// Math/science concepts that are inherently complex regardless of prompt length.
+// Short queries like "P=NP?" or "prove Riemann Hypothesis" must not route to Haiku.
+const MATH_SCIENCE_KEYWORDS = [
+  // Proof and theorem concepts
+  'theorem', 'conjecture', 'proof', 'lemma', 'corollary', 'hypothesis',
+  'axiom', 'postulate', 'proposition',
+  // Advanced math domains
+  'eigenvalue', 'eigenvector', 'determinant', 'matrix', 'tensor',
+  'derivative', 'integral', 'differential equation', 'gradient',
+  'topology', 'manifold', 'homomorphism', 'isomorphism',
+  'polynomial', 'prime', 'modular arithmetic', 'number theory',
+  'fourier', 'laplace', 'stochastic', 'markov',
+  // Complexity theory
+  'p=np', 'np-hard', 'np-complete', 'turing', 'halting problem',
+  // Physics concepts
+  'quantum', 'entanglement', 'wave function', 'hamiltonian',
+  'riemann', 'navier-stokes', 'euler equation',
+];
+
 function extractText(messages: Anthropic.MessageParam[]): string {
   const parts: string[] = [];
   for (const msg of messages) {
@@ -76,7 +95,9 @@ export function heuristicScore(input: ClassifyInput): number {
 
   // --- Token estimate (chars / 4) ---
   const estimatedTokens = text.length / 4;
-  if (estimatedTokens < 20) score -= 10;
+  // Only penalize truly empty/trivial prompts (< 5 tokens ≈ "hi", "ok", "2+2")
+  // Short but substantive questions like "Prove Fermat's Last Theorem" must not be penalized
+  if (estimatedTokens < 5) score -= 10;
   else if (estimatedTokens > 500) score += 10;
   else if (estimatedTokens > 2000) score += 20;
 
@@ -88,7 +109,7 @@ export function heuristicScore(input: ClassifyInput): number {
         sentences.length
       : 0;
   if (avgSentenceLen > 25) score += 10;
-  if (avgSentenceLen < 8) score -= 5;
+  // Removed short-sentence penalty: short questions are not inherently easy
 
   // --- Code block presence ---
   if (text.includes('```')) score += 10;
@@ -97,6 +118,21 @@ export function heuristicScore(input: ClassifyInput): number {
   const nonAlpha = (text.match(/[^a-zA-Z0-9\s]/g) || []).length;
   const density = text.length > 0 ? nonAlpha / text.length : 0;
   if (density > 0.15) score += 8;
+
+  // --- Math/science domain signals ---
+  // These are complexity signals independent of prompt length.
+  // "P=NP?" is 4 chars but inherently Opus-level.
+  const mathHits = countMatches(lower, MATH_SCIENCE_KEYWORDS);
+  if (mathHits > 0) {
+    score += mathHits * 25;
+    // Cancel short-prompt penalty + small bonus: "P=NP?" must not be penalized for brevity.
+    if (estimatedTokens < 5) score += 13;
+  }
+
+  // Math notation: Greek letters, equation symbols, LaTeX-style operators
+  const hasMathNotation = /[∫∑∂∇∈∉⊂⊃∪∩≤≥≠≈∞√∏∧∨∀∃α-ωΑ-Ω]/.test(text) ||
+    /d[²³]?[xyz]\/d[xyz]|\\frac|\\int|\\sum|\\nabla|\^\{|\^2|\^3/.test(text);
+  if (hasMathNotation) score += 20;
 
   // --- System prompt signals ---
   if (systemText.length > 500) score += 10;

@@ -1,9 +1,13 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import Anthropic from '@anthropic-ai/sdk';
 import { handleMessages, routeHistory, type HandlerConfig } from './handler.js';
 import { renderDashboard } from './dashboard.js';
 
-export function createProxyApp(config: HandlerConfig): Hono {
+export function createProxyApp(
+  config: HandlerConfig,
+  providerClient: Anthropic | null = null,
+): Hono {
   const app = new Hono();
 
   app.use('*', cors());
@@ -13,6 +17,7 @@ export function createProxyApp(config: HandlerConfig): Hono {
       status: 'ok',
       service: 'claude-router-proxy',
       classifier: config.classifier,
+      provider: config.provider,
       requests: routeHistory.length,
     }),
   );
@@ -21,7 +26,7 @@ export function createProxyApp(config: HandlerConfig): Hono {
     return c.html(renderDashboard(routeHistory));
   });
 
-  app.post('/v1/messages', (c) => handleMessages(c, config));
+  app.post('/v1/messages', (c) => handleMessages(c, config, providerClient));
 
   return app;
 }

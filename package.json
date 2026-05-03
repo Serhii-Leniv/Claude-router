@@ -1,6 +1,6 @@
 {
   "name": "@sheruq/claude-router",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "TypeScript-native Claude model router — auto-routes to Haiku/Sonnet/Opus by complexity, logs cost savings per call",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -39,6 +39,10 @@
     "@hono/node-server": "^2.0.1",
     "hono": "^4.12.16"
   },
+  "optionalDependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.29.0",
+    "@anthropic-ai/vertex-sdk": "^0.16.0"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
@@ -48,6 +52,7 @@
   },
   "files": [
     "dist",
+    "!dist/__tests__",
     "README.md",
     "LICENSE"
   ]

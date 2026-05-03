@@ -13,10 +13,14 @@ import {
 import { shouldRetry, nextTier } from '../retry.js';
 import type { ClassifyInput, ClassifyResult, Tier } from '../types.js';
 
+export type Provider = 'anthropic' | 'bedrock' | 'vertex';
+
 export interface HandlerConfig {
   classifier: 'heuristic' | 'ai' | 'hybrid';
   defaultModel: string;
   verbose: boolean;
+  provider: Provider;
+  models: Record<Tier, string>;
 }
 
 export interface RouteEvent {
@@ -69,9 +73,9 @@ async function classify(
     case 'heuristic':
       return classifyHeuristic(input);
     case 'ai':
-      return classifyAI(client, input, DEFAULT_MODELS.haiku);
+      return classifyAI(client, input, config.models.haiku);
     case 'hybrid':
-      return classifyHybrid(client, input, DEFAULT_MODELS.haiku);
+      return classifyHybrid(client, input, config.models.haiku);
   }
 }
 
@@ -111,27 +115,85 @@ function setRouterHeaders(
   }
 }
 
-export async function handleMessages(c: Context, config: HandlerConfig): Promise<Response> {
-  const apiKey = c.req.header('x-api-key');
-  if (!apiKey) {
-    return c.json({ error: { type: 'authentication_error', message: 'Missing x-api-key header' } }, 401);
+/**
+ * Create provider-specific client at startup.
+ * Returns null for 'anthropic' — client is created per-request from x-api-key header.
+ */
+export async function createProviderClient(provider: Provider): Promise<Anthropic | null> {
+  if (provider === 'bedrock') {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mod = await import('@anthropic-ai/bedrock-sdk' as any);
+      const AnthropicBedrock = mod.default ?? mod.AnthropicBedrock;
+      return new AnthropicBedrock() as unknown as Anthropic;
+    } catch {
+      throw new Error(
+        'Bedrock provider requires @anthropic-ai/bedrock-sdk.\nInstall it: npm install @anthropic-ai/bedrock-sdk\n' +
+        'Also set: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION',
+      );
+    }
+  }
+  if (provider === 'vertex') {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mod = await import('@anthropic-ai/vertex-sdk' as any);
+      const AnthropicVertex = mod.AnthropicVertex ?? mod.default;
+      return new AnthropicVertex({
+        projectId: process.env['ANTHROPIC_VERTEX_PROJECT_ID'] ?? '',
+        region: process.env['ANTHROPIC_VERTEX_REGION'] ?? 'us-east5',
+      }) as unknown as Anthropic;
+    } catch {
+      throw new Error(
+        'Vertex provider requires @anthropic-ai/vertex-sdk.\nInstall it: npm install @anthropic-ai/vertex-sdk\n' +
+        'Also set: ANTHROPIC_VERTEX_PROJECT_ID, run: gcloud auth application-default login',
+      );
+    }
+  }
+  return null; // 'anthropic' — per-request client
+}
+
+export async function handleMessages(
+  c: Context,
+  config: HandlerConfig,
+  providerClient: Anthropic | null,
+): Promise<Response> {
+  let client: Anthropic;
+
+  if (providerClient) {
+    // Bedrock or Vertex — use singleton client, no x-api-key needed
+    client = providerClient;
+  } else {
+    // Anthropic direct — accept x-api-key (API key) or Authorization: Bearer (Pro/Max subscription)
+    const apiKey = c.req.header('x-api-key');
+    const authHeader = c.req.header('authorization');
+    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    if (!apiKey && !bearerToken) {
+      return c.json(
+        { error: { type: 'authentication_error', message: 'Missing x-api-key or Authorization header' } },
+        401,
+      );
+    }
+
+    client = apiKey
+      ? new Anthropic({ apiKey })
+      : new Anthropic({ authToken: bearerToken! });
   }
 
   const body = await c.req.json<Record<string, unknown>>();
   const isStreaming = body.stream === true;
   const requestedModel = body.model as string | undefined;
 
-  // Passthrough: explicit model that isn't "auto"
-  if (requestedModel && requestedModel !== 'auto') {
-    return proxyPassthrough(c, apiKey, body, isStreaming);
+  // Passthrough only for Anthropic provider with explicit model (not "auto")
+  if (config.provider === 'anthropic' && requestedModel && requestedModel !== 'auto') {
+    return proxyPassthrough(c, body, isStreaming);
   }
 
-  const client = new Anthropic({ apiKey });
   const input = buildClassifyInput(body);
   const classifyResult = await classify(client, input, config);
 
   const tier = classifyResult.tier;
-  const model = DEFAULT_MODELS[tier];
+  const model = config.models[tier];
 
   // Remove 'model' and 'stream' from body, we control them
   const { model: _m, stream: _s, ...apiParams } = body;
@@ -163,7 +225,7 @@ async function handleNonStreaming(
     if (retryDecision.retry) {
       const escalatedTier = nextTier(tier);
       if (escalatedTier) {
-        const escalatedModel = DEFAULT_MODELS[escalatedTier];
+        const escalatedModel = config.models[escalatedTier];
         const retryResponse = await client.messages.create({
           ...apiParams,
           model: escalatedModel,
@@ -227,8 +289,10 @@ async function handleNonStreaming(
 
     return new Response(JSON.stringify(response), { status: 200, headers });
   } catch (err) {
-    if (err instanceof Anthropic.APIError) {
-      return c.json({ error: { type: 'api_error', message: err.message } }, err.status as 400);
+    // Catch Anthropic API errors from any provider SDK (instanceof fails cross-bundle)
+    if (err instanceof Anthropic.APIError || (err instanceof Error && 'status' in err && typeof (err as { status: unknown }).status === 'number')) {
+      const status = (err as { status: number }).status;
+      return c.json({ error: { type: 'api_error', message: err.message } }, status as 400);
     }
     throw err;
   }
@@ -306,28 +370,40 @@ async function handleStreaming(
 
 async function proxyPassthrough(
   c: Context,
-  apiKey: string,
   body: Record<string, unknown>,
   isStreaming: boolean,
 ): Promise<Response> {
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
+  try {
+    // Forward original auth headers (x-api-key or Authorization: Bearer)
+    const passthroughHeaders: Record<string, string> = {
       'content-type': 'application/json',
-      'x-api-key': apiKey,
       'anthropic-version': c.req.header('anthropic-version') ?? '2023-06-01',
-    },
-    body: JSON.stringify(body),
-  });
+    };
+    const apiKey = c.req.header('x-api-key');
+    const authHeader = c.req.header('authorization');
+    if (apiKey) passthroughHeaders['x-api-key'] = apiKey;
+    if (authHeader) passthroughHeaders['authorization'] = authHeader;
 
-  const headers = new Headers();
-  response.headers.forEach((value, key) => headers.set(key, value));
-  headers.set('x-router-tier', 'passthrough');
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: passthroughHeaders,
+      body: JSON.stringify(body),
+    });
 
-  if (isStreaming && response.body) {
-    return new Response(response.body, { status: response.status, headers });
+    const headers = new Headers();
+    response.headers.forEach((value, key) => headers.set(key, value));
+    headers.set('x-router-tier', 'passthrough');
+
+    if (isStreaming && response.body) {
+      return new Response(response.body, { status: response.status, headers });
+    }
+
+    const text = await response.text();
+    return new Response(text, { status: response.status, headers });
+  } catch (err) {
+    return c.json(
+      { error: { type: 'proxy_error', message: `Failed to reach Anthropic API: ${String(err)}` } },
+      502,
+    );
   }
-
-  const text = await response.text();
-  return new Response(text, { status: response.status, headers });
 }
