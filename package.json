@@ -11,10 +11,10 @@
     }
   },
   "bin": {
-    "claude-router": "./dist/proxy/cli.js"
+    "claude-router": "dist/proxy/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/proxy/cli.js",
     "test": "npm run build && node --test dist/__tests__/**/*.test.js",
     "dev": "tsc --watch",
     "proxy": "node dist/proxy/cli.js"
