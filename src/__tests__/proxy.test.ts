@@ -14,6 +14,7 @@ describe('createProxyApp', () => {
     verbose: false,
     provider: 'anthropic',
     models: DEFAULT_MODELS,
+    forceRoute: false,
   });
 
   it('GET /health returns ok', async () => {
@@ -225,6 +226,7 @@ describe('proxy passthrough', () => {
     verbose: false,
     provider: 'anthropic',
     models: DEFAULT_MODELS,
+    forceRoute: false,
   });
 
   it('POST /v1/messages with model=auto without key returns 401', async () => {

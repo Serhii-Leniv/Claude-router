@@ -21,6 +21,7 @@ export interface HandlerConfig {
   verbose: boolean;
   provider: Provider;
   models: Record<Tier, string>;
+  forceRoute: boolean;
 }
 
 export interface RouteEvent {
@@ -184,8 +185,8 @@ export async function handleMessages(
   const isStreaming = body.stream === true;
   const requestedModel = body.model as string | undefined;
 
-  // Passthrough only for Anthropic provider with explicit model (not "auto")
-  if (config.provider === 'anthropic' && requestedModel && requestedModel !== 'auto') {
+  // Passthrough only for Anthropic provider with explicit model (not "auto"), unless --force-route
+  if (!config.forceRoute && config.provider === 'anthropic' && requestedModel && requestedModel !== 'auto') {
     return proxyPassthrough(c, body, isStreaming);
   }
 
