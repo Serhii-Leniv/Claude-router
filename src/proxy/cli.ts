@@ -4,7 +4,7 @@ import { serve } from '@hono/node-server';
 import { createProxyApp } from './server.js';
 import { createProviderClient, type Provider } from './handler.js';
 import { DEFAULT_MODELS, BEDROCK_MODELS, VERTEX_MODELS } from '../models.js';
-import type { Tier } from '../types.js';
+import type { ModelPricing, Tier } from '../types.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -15,8 +15,39 @@ import { execSync } from 'node:child_process';
 const PLIST_LABEL = 'com.claude-router.proxy';
 const PLIST_PATH = path.join(os.homedir(), 'Library', 'LaunchAgents', `${PLIST_LABEL}.plist`);
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
+const CONFIG_PATH = path.join(os.homedir(), '.claude-router', 'config.json');
 const ZSHRC_PATH = path.join(os.homedir(), '.zshrc');
 const ZSHRC_MARKER = '# claude-router';
+
+// ── Config file ──────────────────────────────────────────────────────────────
+
+/** Shape of ~/.claude-router/config.json. Every field optional; CLI flags win. */
+interface FileConfig {
+  port?: number;
+  verbose?: boolean;
+  classifier?: 'heuristic' | 'ai' | 'hybrid';
+  provider?: Provider;
+  region?: string;
+  forceRoute?: boolean;
+  /** Override the model ID used for each tier. */
+  tiers?: Partial<Record<Tier, string>>;
+  /** Override pricing ($/1M tokens) for savings math, keyed by model ID. */
+  pricing?: Record<string, ModelPricing>;
+}
+
+let configFileLoaded = false;
+
+function loadFileConfig(): FileConfig {
+  if (!fs.existsSync(CONFIG_PATH)) return {};
+  try {
+    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) as FileConfig;
+    configFileLoaded = true;
+    return cfg;
+  } catch (err) {
+    console.error(`[claude-router] Ignoring invalid config at ${CONFIG_PATH}: ${String(err)}`);
+    return {};
+  }
+}
 const STATUSLINE_CMD =
   `curl -sf --max-time 0.3 http://localhost:4000/health | ` +
   `python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('lastTier') or 'ready'; r=d.get('requests',0); print(f'[auto:{t} #{r}]')" 2>/dev/null || echo '[auto:off]'`;
@@ -30,15 +61,19 @@ interface ServeOptions {
   provider: Provider;
   region: string;
   forceRoute: boolean;
+  tiers?: Partial<Record<Tier, string>>;
+  pricing?: Record<string, ModelPricing>;
 }
 
 function parseServeArgs(args: string[]): ServeOptions {
-  let port = 4000;
-  let verbose = false;
-  let classifier: 'heuristic' | 'ai' | 'hybrid' = 'hybrid';
-  let provider: Provider = 'anthropic';
-  let region = '';
-  let forceRoute = false;
+  // File config supplies defaults; any CLI flag below overrides it.
+  const file = loadFileConfig();
+  let port = file.port ?? 4000;
+  let verbose = file.verbose ?? false;
+  let classifier: 'heuristic' | 'ai' | 'hybrid' = file.classifier ?? 'hybrid';
+  let provider: Provider = file.provider ?? 'anthropic';
+  let region = file.region ?? '';
+  let forceRoute = file.forceRoute ?? false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -83,7 +118,7 @@ function parseServeArgs(args: string[]): ServeOptions {
     }
   }
 
-  return { port, verbose, classifier, provider, region, forceRoute };
+  return { port, verbose, classifier, provider, region, forceRoute, tiers: file.tiers, pricing: file.pricing };
 }
 
 function modelsForProvider(provider: Provider): Record<Tier, string> {
@@ -272,8 +307,9 @@ function cmdStop(): void {
 }
 
 async function cmdStart(args: string[]): Promise<void> {
-  const { port, verbose, classifier, provider, region, forceRoute } = parseServeArgs(args);
-  const models = modelsForProvider(provider);
+  const { port, verbose, classifier, provider, region, forceRoute, tiers, pricing } = parseServeArgs(args);
+  // Provider defaults, with per-tier overrides from the config file layered on top.
+  const models = { ...modelsForProvider(provider), ...(tiers ?? {}) };
 
   let providerClient;
   try {
@@ -290,6 +326,7 @@ async function cmdStart(args: string[]): Promise<void> {
     provider,
     models,
     forceRoute,
+    pricing,
   }, providerClient);
 
   const regionDisplay = region ||
@@ -303,7 +340,7 @@ async function cmdStart(args: string[]): Promise<void> {
 │  URL:         http://localhost:${String(port).padEnd(5)}         │
 │  Provider:    ${provider.padEnd(32)}│
 │  Classifier:  ${classifier.padEnd(32)}│
-│  Force-route: ${String(forceRoute).padEnd(32)}│${regionDisplay ? `\n│  Region:      ${regionDisplay.padEnd(32)}│` : ''}
+│  Force-route: ${String(forceRoute).padEnd(32)}│${regionDisplay ? `\n│  Region:      ${regionDisplay.padEnd(32)}│` : ''}${configFileLoaded ? `\n│  Config:      ${'~/.claude-router/config.json'.padEnd(32)}│` : ''}
 └──────────────────────────────────────────────┘
 `);
 
@@ -338,6 +375,13 @@ Options (install / start):
   --classifier <mode>      heuristic | ai | hybrid (default: hybrid)
   --provider <mode>        anthropic | bedrock | vertex (default: anthropic)
   --region <string>        AWS/GCP region
+
+Config file (optional):
+  ~/.claude-router/config.json supplies defaults for any option above plus
+  per-tier model overrides ("tiers") and custom pricing ("pricing").
+  CLI flags always override the file. Example:
+    { "classifier": "heuristic", "forceRoute": true,
+      "tiers": { "opus": "claude-opus-4-8" } }
 
 Quick start:
   claude-router install --force-route

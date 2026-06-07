@@ -6,12 +6,11 @@ import {
   classifyHybrid,
 } from '../classifier.js';
 import {
-  DEFAULT_MODELS,
   DEFAULT_PRICING,
   computeCostCents,
 } from '../models.js';
 import { shouldRetry, nextTier } from '../retry.js';
-import type { ClassifyInput, ClassifyResult, Tier } from '../types.js';
+import type { ClassifyInput, ClassifyResult, ModelPricing, Tier } from '../types.js';
 
 export type Provider = 'anthropic' | 'bedrock' | 'vertex';
 
@@ -22,6 +21,8 @@ export interface HandlerConfig {
   provider: Provider;
   models: Record<Tier, string>;
   forceRoute: boolean;
+  /** Pricing table for savings math (default: current-generation DEFAULT_PRICING) */
+  pricing?: Record<string, ModelPricing>;
 }
 
 export interface RouteEvent {
@@ -232,8 +233,8 @@ async function handleNonStreaming(
           model: escalatedModel,
         } as Anthropic.MessageCreateParamsNonStreaming);
 
-        const costCents = computeCostCents(escalatedModel, retryResponse.usage.input_tokens, retryResponse.usage.output_tokens, DEFAULT_PRICING);
-        const baselineCost = computeCostCents(config.defaultModel, retryResponse.usage.input_tokens, retryResponse.usage.output_tokens, DEFAULT_PRICING);
+        const costCents = computeCostCents(escalatedModel, retryResponse.usage.input_tokens, retryResponse.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
+        const baselineCost = computeCostCents(config.defaultModel, retryResponse.usage.input_tokens, retryResponse.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
         const savedCents = Math.round((baselineCost - costCents) * 1000) / 1000;
         const roundedCost = Math.round(costCents * 1000) / 1000;
 
@@ -262,8 +263,8 @@ async function handleNonStreaming(
       }
     }
 
-    const costCents = computeCostCents(model, response.usage.input_tokens, response.usage.output_tokens, DEFAULT_PRICING);
-    const baselineCost = computeCostCents(config.defaultModel, response.usage.input_tokens, response.usage.output_tokens, DEFAULT_PRICING);
+    const costCents = computeCostCents(model, response.usage.input_tokens, response.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
+    const baselineCost = computeCostCents(config.defaultModel, response.usage.input_tokens, response.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
     const savedCents = Math.round((baselineCost - costCents) * 1000) / 1000;
     const roundedCost = Math.round(costCents * 1000) / 1000;
 
@@ -335,8 +336,8 @@ async function handleStreaming(
         }
 
         const finalMessage = await stream.finalMessage();
-        const costCents = computeCostCents(model, finalMessage.usage.input_tokens, finalMessage.usage.output_tokens, DEFAULT_PRICING);
-        const baselineCost = computeCostCents(config.defaultModel, finalMessage.usage.input_tokens, finalMessage.usage.output_tokens, DEFAULT_PRICING);
+        const costCents = computeCostCents(model, finalMessage.usage.input_tokens, finalMessage.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
+        const baselineCost = computeCostCents(config.defaultModel, finalMessage.usage.input_tokens, finalMessage.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
         const savedCents = Math.round((baselineCost - costCents) * 1000) / 1000;
 
         if (config.verbose) {

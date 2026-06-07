@@ -1,34 +1,88 @@
 import type { ModelPricing, Tier } from './types.js';
 
 export const DEFAULT_MODELS: Record<Tier, string> = {
-  haiku: 'claude-haiku-4-5-20251001',
+  haiku: 'claude-haiku-4-5',
   sonnet: 'claude-sonnet-4-6',
-  opus: 'claude-opus-4-6',
+  opus: 'claude-opus-4-8',
 };
 
+// NOTE: Bedrock inference-profile IDs vary by account/region and Anthropic's
+// snapshot naming — verify these against your Bedrock console if routing 400s.
+// Pricing is unaffected (resolved by family in priceForModel).
 export const BEDROCK_MODELS: Record<Tier, string> = {
   haiku:  'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-  sonnet: 'us.anthropic.claude-sonnet-4-6-20250514-v1:0',
-  opus:   'us.anthropic.claude-opus-4-6-20250514-v1:0',
+  sonnet: 'us.anthropic.claude-sonnet-4-6-20250929-v1:0',
+  opus:   'us.anthropic.claude-opus-4-8-v1:0',
 };
 
 export const VERTEX_MODELS: Record<Tier, string> = {
-  haiku:  'claude-haiku-4-5-20251001',
+  haiku:  'claude-haiku-4-5',
   sonnet: 'claude-sonnet-4-6',
-  opus:   'claude-opus-4-6',
+  opus:   'claude-opus-4-8',
 };
 
+/**
+ * Current-generation Claude pricing ($ per 1M tokens), keyed by tier/family.
+ * Verified against platform.claude.com pricing for the 4.5+ generation (2026-06):
+ *   Haiku 4.5 — $1.00 / $5.00
+ *   Sonnet 4.6 — $3.00 / $15.00
+ *   Opus 4.6/4.7/4.8 — $5.00 / $25.00  (note: NOT the old $15/$75 of Opus 4.0/4.1)
+ *
+ * Pricing drift here silently corrupts every `savedCents` figure the router
+ * reports — keep this in sync when a new generation ships, and rely on the
+ * family fallback in `priceForModel` to cover Bedrock/Vertex/dated IDs.
+ */
+export const FAMILY_PRICING: Record<Tier, ModelPricing> = {
+  haiku:  { input: 1.00, output: 5.00 },
+  sonnet: { input: 3.00, output: 15.00 },
+  opus:   { input: 5.00, output: 25.00 },
+};
+
+/**
+ * Pricing keyed by exact model ID. Built from FAMILY_PRICING so the two never
+ * disagree. Any first-party, Bedrock, or Vertex ID not listed here is resolved
+ * by family in `priceForModel` — so a newly-dated snapshot still prices right.
+ */
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
-  'claude-haiku-4-5-20251001': { input: 0.80, output: 4.00 },
-  'claude-sonnet-4-6': { input: 3.00, output: 15.00 },
-  'claude-opus-4-6': { input: 15.00, output: 75.00 },
-  // Bedrock model IDs — same pricing
-  'us.anthropic.claude-haiku-4-5-20251001-v1:0': { input: 0.80, output: 4.00 },
-  'us.anthropic.claude-sonnet-4-6-20250514-v1:0': { input: 3.00, output: 15.00 },
-  'us.anthropic.claude-opus-4-6-20250514-v1:0': { input: 15.00, output: 75.00 },
+  'claude-haiku-4-5': FAMILY_PRICING.haiku,
+  'claude-haiku-4-5-20251001': FAMILY_PRICING.haiku,
+  'claude-sonnet-4-6': FAMILY_PRICING.sonnet,
+  'claude-opus-4-8': FAMILY_PRICING.opus,
+  'claude-opus-4-7': FAMILY_PRICING.opus,
+  'claude-opus-4-6': FAMILY_PRICING.opus,
 };
 
 export const TIER_ORDER: Tier[] = ['haiku', 'sonnet', 'opus'];
+
+/**
+ * Map any Claude model ID (first-party, Bedrock `us.anthropic.*`, Vertex,
+ * dated snapshot, or `auto`) to its tier by family name. Returns undefined for
+ * non-Claude IDs.
+ */
+export function familyForModel(model: string): Tier | undefined {
+  const m = model.toLowerCase();
+  if (m.includes('haiku')) return 'haiku';
+  if (m.includes('sonnet')) return 'sonnet';
+  if (m.includes('opus')) return 'opus';
+  return undefined;
+}
+
+/**
+ * Resolve pricing for a model: exact match first (so user overrides win), then
+ * fall back to the model's family. This keeps savings math correct across
+ * providers and across newly-released dated snapshots without a code change.
+ */
+export function priceForModel(
+  model: string,
+  pricing: Record<string, ModelPricing>,
+): ModelPricing | undefined {
+  if (pricing[model]) return pricing[model];
+  const fam = familyForModel(model);
+  if (!fam) return undefined;
+  // Honor a user override that targets the family's default model ID, else the
+  // canonical family price.
+  return pricing[DEFAULT_MODELS[fam]] ?? FAMILY_PRICING[fam];
+}
 
 export function computeCostCents(
   model: string,
@@ -36,7 +90,7 @@ export function computeCostCents(
   outputTokens: number,
   pricing: Record<string, ModelPricing>,
 ): number {
-  const p = pricing[model];
+  const p = priceForModel(model, pricing);
   if (!p) return 0;
   return ((inputTokens * p.input + outputTokens * p.output) / 1_000_000) * 100;
 }

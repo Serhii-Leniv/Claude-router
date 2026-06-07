@@ -352,5 +352,12 @@ export type {
 
 export { heuristicScore, scoreToTier, scoreToConfidence, classifyHeuristic } from './classifier.js';
 export { shouldRetry, nextTier } from './retry.js';
-export { DEFAULT_MODELS, DEFAULT_PRICING, computeCostCents } from './models.js';
+export {
+  DEFAULT_MODELS,
+  DEFAULT_PRICING,
+  FAMILY_PRICING,
+  computeCostCents,
+  priceForModel,
+  familyForModel,
+} from './models.js';
 export { CostTracker } from './tracker.js';
