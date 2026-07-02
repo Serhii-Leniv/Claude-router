@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>claude-router — auto-route Claude API calls to the cheapest capable model</title>
+<meta name="description" content="Drop-in proxy that routes every Claude request to Haiku, Sonnet, or Opus by task difficulty. Zero code changes. Every response reports exactly how much you saved.">
+<meta property="og:title" content="claude-router — cut your Claude bill automatically">
+<meta property="og:description" content="Auto-route every Claude request to the cheapest model that can handle it. Works with Claude Code out of the box.">
+<meta property="og:type" content="website">
+<style>
+  :root {
+    --bg: #0d1117; --bg2: #161b22; --border: #30363d;
+    --text: #c9d1d9; --muted: #8b949e; --dim: #484f58;
+    --accent: #d97757; --green: #3fb950; --blue: #58a6ff; --purple: #bc8cff; --yellow: #d29922;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+  a { color: var(--blue); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
+
+  header { padding: 88px 0 48px; text-align: center; }
+  .logo { font-size: 15px; color: var(--accent); font-weight: 600; letter-spacing: 1px; text-transform: lowercase; }
+  h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 700; margin: 16px 0 12px; line-height: 1.2; }
+  h1 em { color: var(--accent); font-style: normal; }
+  .sub { font-size: 18px; color: var(--muted); max-width: 620px; margin: 0 auto 32px; }
+  .cta { display: inline-block; background: var(--accent); color: #0d1117; font-weight: 600; padding: 12px 28px; border-radius: 8px; margin: 0 6px 10px; }
+  .cta:hover { text-decoration: none; filter: brightness(1.1); }
+  .cta.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  .badges { margin-top: 22px; }
+  .badges img { height: 20px; margin: 0 3px; vertical-align: middle; }
+
+  .term { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; text-align: left; margin: 48px auto 0; max-width: 720px; overflow: hidden; }
+  .term-bar { background: #21262d; padding: 9px 14px; font-size: 12px; color: var(--dim); }
+  .term-bar span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .term pre { padding: 18px 20px; font-size: 13px; overflow-x: auto; line-height: 1.7; }
+  .c-dim { color: var(--dim); } .c-green { color: var(--green); } .c-cyan { color: #56d4dd; }
+  .c-yellow { color: var(--yellow); } .c-purple { color: var(--purple); } .c-accent { color: var(--accent); } .c-red { color: #f85149; }
+
+  section { padding: 56px 0; border-top: 1px solid #21262d; }
+  h2 { font-size: 26px; margin-bottom: 28px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; }
+  .card h3 .ico { color: var(--accent); margin-right: 6px; }
+  .card p { font-size: 14px; color: var(--muted); }
+
+  .steps pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; font-size: 14px; margin: 12px 0 22px; overflow-x: auto; }
+  .steps .n { display: inline-block; background: var(--accent); color: #0d1117; font-weight: 700; width: 24px; height: 24px; border-radius: 50%; text-align: center; line-height: 24px; font-size: 13px; margin-right: 8px; }
+  .note { font-size: 14px; color: var(--muted); background: var(--bg2); border-left: 3px solid var(--accent); padding: 12px 16px; border-radius: 0 8px 8px 0; }
+
+  table { width: 100%; border-collapse: collapse; background: var(--bg2); border-radius: 10px; overflow: hidden; font-size: 14px; }
+  th { background: #21262d; text-align: left; padding: 10px 14px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  td { padding: 10px 14px; border-top: 1px solid #21262d; }
+  td:nth-child(n+2), th:nth-child(n+2) { text-align: right; }
+
+  footer { padding: 40px 0 56px; border-top: 1px solid #21262d; text-align: center; color: var(--dim); font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <div class="logo">claude-router</div>
+  <h1>Cut your Claude bill.<br>Change <em>zero</em> lines of code.</h1>
+  <p class="sub">A local proxy that scores every request's difficulty and routes it to the cheapest Claude model that can handle it — Haiku, Sonnet, or Opus. Every response reports exactly how much you saved.</p>
+  <a class="cta" href="https://www.npmjs.com/package/@sheruq/claude-router">Install from npm</a>
+  <a class="cta ghost" href="https://github.com/Serhii-Leniv/Claude-router">View on GitHub</a>
+  <div class="badges">
+    <a href="https://github.com/Serhii-Leniv/Claude-router/actions/workflows/test.yml"><img src="https://github.com/Serhii-Leniv/Claude-router/actions/workflows/test.yml/badge.svg" alt="CI"></a>
+    <a href="https://www.npmjs.com/package/@sheruq/claude-router"><img src="https://img.shields.io/npm/v/@sheruq/claude-router?color=D97757&label=npm" alt="npm"></a>
+    <img src="https://img.shields.io/npm/l/@sheruq/claude-router?color=D97757" alt="MIT">
+  </div>
+
+  <div class="term">
+    <div class="term-bar"><span style="background:#f85149"></span><span style="background:#d29922"></span><span style="background:#3fb950"></span>claude-router start --force-route --verbose</div>
+    <pre><span class="c-dim">[claude-router]</span> → <span class="c-cyan">haiku</span>  <span class="c-dim">(heuristic, 0ms)</span>  | cost: $0.0010 | <span class="c-green">saved: $0.0030</span> <span class="c-dim">vs claude-sonnet-5</span>
+<span class="c-dim">[claude-router]</span> → <span class="c-yellow">sonnet</span> <span class="c-dim">(heuristic, 0ms)</span>  | cost: $0.0180 | <span class="c-green">saved: $0.0000</span> <span class="c-dim">vs claude-sonnet-5</span>
+<span class="c-dim">[claude-router]</span> → <span class="c-purple">opus</span>   <span class="c-dim">(hybrid, 48ms)</span>   | cost: $0.0890 | <span class="c-red">extra: $0.0740</span> <span class="c-dim">vs claude-sonnet-5</span>
+<span class="c-dim">[claude-router]</span> → <span class="c-cyan">haiku</span>  <span class="c-dim">(ai, 0ms, cached)</span> | cost: $0.0008 | <span class="c-green">saved: $0.0034</span> <span class="c-dim">vs claude-sonnet-5</span></pre>
+  </div>
+</header>
+
+<section class="wrap">
+  <h2>Why it exists</h2>
+  <div class="grid">
+    <div class="card"><h3><span class="ico">◆</span>Zero code changes</h3><p>Point any Anthropic-compatible app — Claude Code, Cursor, Cline, your own SDK code — at the proxy via <code>ANTHROPIC_BASE_URL</code>. Or import it as a TypeScript library.</p></div>
+    <div class="card"><h3><span class="ico">◆</span>Measurable savings</h3><p>Cost math includes prompt-cache pricing. See exact cents saved per call, lifetime totals with <code>claude-router stats</code>, and a live dashboard.</p></div>
+    <div class="card"><h3><span class="ico">◆</span>Smart classification</h3><p>A 0-ms heuristic scores each prompt (verbs, code, math, tools, images). Ambiguous cases get confirmed by Haiku for ~$0.00004, with caching and automatic fallback.</p></div>
+    <div class="card"><h3><span class="ico">◆</span>Self-healing</h3><p>Truncated or refused responses auto-retry one tier up. Rate-limited tiers fall forward. A classifier outage never blocks a request.</p></div>
+    <div class="card"><h3><span class="ico">◆</span>Cross-platform install</h3><p>One command on Windows, macOS, or Linux: background daemon, login autostart, env var, and a Claude Code statusline — with honest, health-checked ✓s.</p></div>
+    <div class="card"><h3><span class="ico">◆</span>Local &amp; private</h3><p>Runs on 127.0.0.1 only. Your keys never leave your machine — the proxy forwards whatever credentials your app already sends.</p></div>
+  </div>
+</section>
+
+<section class="wrap steps">
+  <h2>Get started in 60 seconds</h2>
+  <p><span class="n">1</span>Install and set up (starts the proxy, wires up autostart + <code>ANTHROPIC_BASE_URL</code>):</p>
+  <pre>npm install -g @sheruq/claude-router
+claude-router install --force-route</pre>
+  <p><span class="n">2</span>Open a new terminal and use Claude Code normally:</p>
+  <pre>claude</pre>
+  <p><span class="n">3</span>Watch the savings:</p>
+  <pre>claude-router stats        <span class="c-dim"># lifetime savings + per-day breakdown</span>
+claude-router status       <span class="c-dim"># health and routing state</span></pre>
+  <p class="note"><strong>--force-route</strong> routes every request by difficulty even when the client pins a model (Claude Code always does). The proxy adapts model-specific parameters to the routed tier, so nothing breaks.</p>
+</section>
+
+<section class="wrap">
+  <h2>The economics</h2>
+  <table>
+    <thead><tr><th>Model</th><th>Input $/1M</th><th>Output $/1M</th><th>vs Sonnet</th></tr></thead>
+    <tbody>
+      <tr><td>Claude Haiku 4.5</td><td>$1.00</td><td>$5.00</td><td style="color:var(--green)">3× cheaper</td></tr>
+      <tr><td>Claude Sonnet 5</td><td>$3.00</td><td>$15.00</td><td>baseline</td></tr>
+      <tr><td>Claude Opus 4.8</td><td>$5.00</td><td>$25.00</td><td style="color:var(--yellow)">when it's worth it</td></tr>
+    </tbody>
+  </table>
+  <p style="margin-top:16px;font-size:14px;color:var(--muted)">Most coding-session turns are simple — file edits, short questions, formatting. Routing those to Haiku while keeping Opus for the hard architecture questions is where the savings come from.</p>
+</section>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/Serhii-Leniv/Claude-router">GitHub</a> ·
+    <a href="https://www.npmjs.com/package/@sheruq/claude-router">npm</a> ·
+    <a href="https://github.com/Serhii-Leniv/Claude-router/issues">Issues</a> ·
+    MIT License
+  </div>
+</footer>
+
+</body>
+</html>

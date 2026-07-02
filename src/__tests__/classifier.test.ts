@@ -426,7 +426,17 @@ describe('classifyAI — hardening', () => {
         create: mock.fn(
           (_params: unknown, opts?: { signal?: AbortSignal }) =>
             new Promise((_resolve, reject) => {
-              opts?.signal?.addEventListener('abort', () => reject(opts.signal!.reason));
+              // Ref'd timer keeps the event loop alive: AbortSignal.timeout's
+              // internal timer is unref'd, so on Node 18/22 the loop would
+              // otherwise drain before the abort ever fires.
+              const failsafe = setTimeout(
+                () => reject(new Error('abort never fired')),
+                5000,
+              );
+              opts?.signal?.addEventListener('abort', () => {
+                clearTimeout(failsafe);
+                reject(opts.signal!.reason);
+              });
             }),
         ),
       },
