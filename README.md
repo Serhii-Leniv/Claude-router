@@ -7,6 +7,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/Serhii-Leniv/Claude-router/actions/workflows/test.yml"><img src="https://github.com/Serhii-Leniv/Claude-router/actions/workflows/test.yml/badge.svg" alt="CI"></a>
   <a href="https://www.npmjs.com/package/@sheruq/claude-router"><img src="https://img.shields.io/npm/v/@sheruq/claude-router?color=D97757&label=npm" alt="npm version"></a>
   <img src="https://img.shields.io/npm/dm/@sheruq/claude-router?color=D97757" alt="npm downloads">
   <img src="https://img.shields.io/node/v/@sheruq/claude-router?color=D97757" alt="node version">
@@ -54,6 +55,7 @@ Manage it anytime:
 
 ```bash
 claude-router status    # health, routing stats, install state
+claude-router stats     # lifetime savings + per-day breakdown
 claude-router logs -f   # follow the daemon log
 claude-router doctor    # diagnose setup problems
 claude-router stop      # stop the background proxy
@@ -129,6 +131,7 @@ claude-router start -d              Run it in the background (daemon)
 claude-router stop                  Stop the background proxy
 claude-router restart [options]     Restart the background proxy
 claude-router status                Health, routing stats, install state
+claude-router stats [--json]        Lifetime savings and per-day breakdown
 claude-router logs [-f] [-n N]      Show (or follow) the daemon log
 claude-router init [--force]        Scaffold ~/.claude-router/config.json
 claude-router doctor                Diagnose common setup problems
@@ -196,7 +199,9 @@ AI classification is resilient by design: results are cached (LRU, 500 entries),
 
 ### How savings are measured
 
-Each response's `savedCents` is `(baseline cost − actual cost)` for the tokens used, where the baseline is your `defaultModel` (Sonnet by default). Pricing is the **current Claude generation**, and unknown/dated/Bedrock/Vertex model IDs are priced by family so the math stays correct across model launches:
+Each response's `savedCents` is `(baseline cost − actual cost)` for the tokens used, where the baseline is your `defaultModel` (Sonnet by default). **Prompt-cache tokens are included** — cache reads bill at 10% of the input rate and cache writes at 125%, so figures stay accurate for Claude Code, which caches heavily.
+
+Every routed request is also appended to `~/.claude-router/history.jsonl`, so savings survive restarts: see them with `claude-router stats` or as the *Lifetime Saved* card on the dashboard. Pricing is the **current Claude generation**, and unknown/dated/Bedrock/Vertex model IDs are priced by family so the math stays correct across model launches:
 
 | Model | ID | Input $/1M | Output $/1M |
 |-------|-----|-----------:|------------:|

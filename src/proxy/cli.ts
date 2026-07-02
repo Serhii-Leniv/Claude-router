@@ -26,6 +26,7 @@ import {
   startDaemon,
   stopDaemon,
 } from './daemon.js';
+import { readLifetimeStats } from './history.js';
 import {
   addStatusline,
   installAutostart,
@@ -41,7 +42,7 @@ import {
 } from './platform.js';
 
 const COMMANDS = [
-  'start', 'stop', 'restart', 'status', 'logs',
+  'start', 'stop', 'restart', 'status', 'stats', 'logs',
   'install', 'uninstall', 'init', 'doctor', 'help',
 ];
 
@@ -123,6 +124,7 @@ async function cmdStart(args: string[]): Promise<void> {
     forceRoute: options.forceRoute,
     pricing: options.pricing,
     routing: options.routing,
+    historyFile: paths.historyFile,
   }, providerClient);
 
   const regionDisplay = options.region ||
@@ -228,6 +230,52 @@ async function cmdStatus(args: string[]): Promise<void> {
     ['Env var', isEnvVarSet(options.port) ? term.green('set') : term.dim('not set')],
   ];
   console.log('\n' + term.box('claude-router status', rows) + '\n');
+}
+
+// ── stats ──────────────────────────────────────────────────────────────────
+
+function cmdStats(args: string[]): void {
+  const asJson = args.includes('--json');
+  const stats = readLifetimeStats(paths.historyFile);
+
+  if (asJson) {
+    console.log(JSON.stringify(stats, null, 2));
+    return;
+  }
+
+  if (stats.requests === 0) {
+    console.log(term.dim('No routing history yet — savings are recorded once requests flow through the proxy.'));
+    return;
+  }
+
+  const tierLine = ['haiku', 'sonnet', 'opus', 'passthrough']
+    .filter((t) => stats.tiers[t])
+    .map((t) => `${term.tier(t)} ${stats.tiers[t]}`)
+    .join(term.dim('  ·  '));
+
+  const rows: Array<[string, string]> = [
+    ['Requests', String(stats.requests)],
+    ['Total cost', `$${(stats.costCents / 100).toFixed(2)}`],
+    ['Total saved', stats.savedCents >= 0
+      ? term.green(`$${(stats.savedCents / 100).toFixed(2)}`)
+      : term.red(`-$${(Math.abs(stats.savedCents) / 100).toFixed(2)}`)],
+    ['Auto-retried', String(stats.retried)],
+    ['Tiers', tierLine || term.dim('none')],
+  ];
+  console.log('\n' + term.box('claude-router — lifetime savings', rows));
+
+  const days = Object.keys(stats.byDay).sort().slice(-7);
+  if (days.length > 0) {
+    console.log('\n' + term.bold('Last 7 days'));
+    for (const day of days) {
+      const d = stats.byDay[day]!;
+      const saved = d.savedCents >= 0
+        ? term.green(`saved $${(d.savedCents / 100).toFixed(2)}`)
+        : term.red(`extra $${(Math.abs(d.savedCents) / 100).toFixed(2)}`);
+      console.log(`  ${day}  ${String(d.requests).padStart(5)} req   ${saved}`);
+    }
+  }
+  console.log(term.dim(`\nHistory: ${paths.historyFile}`));
 }
 
 // ── logs ───────────────────────────────────────────────────────────────────
@@ -453,6 +501,7 @@ ${term.bold('Usage')}
   ${a('claude-router stop')}                  Stop the background proxy
   ${a('claude-router restart')} [options]     Restart the background proxy
   ${a('claude-router status')}                Health, routing stats, install state
+  ${a('claude-router stats')} [--json]        Lifetime savings and per-day breakdown
   ${a('claude-router logs')} [-f] [-n N]      Show (or follow) the daemon log
   ${a('claude-router init')} [--force]        Scaffold ~/.claude-router/config.json
   ${a('claude-router doctor')}                Diagnose common setup problems
@@ -514,6 +563,7 @@ async function main(): Promise<void> {
     case 'stop': return cmdStop();
     case 'restart': return cmdRestart(rest);
     case 'status': return cmdStatus(rest);
+    case 'stats': return cmdStats(rest);
     case 'logs': return cmdLogs(rest);
     case 'install': return cmdInstall(rest);
     case 'uninstall': return cmdUninstall();

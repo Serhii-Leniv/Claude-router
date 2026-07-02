@@ -84,8 +84,23 @@ describe('renderDashboard', () => {
   it('renders empty state', () => {
     const html = renderDashboard([]);
     assert.ok(html.includes('No requests yet'));
-    assert.ok(html.includes('Total Requests'));
+    assert.ok(html.includes('Session Requests'));
     assert.ok(html.includes('0'));
+    assert.ok(!html.includes('Lifetime Saved'), 'no lifetime card without history');
+  });
+
+  it('renders lifetime stats when provided', () => {
+    const html = renderDashboard([], {
+      requests: 42,
+      costCents: 100,
+      savedCents: 4700,
+      retried: 1,
+      tiers: { haiku: 40, opus: 2 },
+      byDay: {},
+    });
+    assert.ok(html.includes('Lifetime Saved'));
+    assert.ok(html.includes('$47.00'));
+    assert.ok(html.includes('42'));
   });
 
   it('renders with data', () => {

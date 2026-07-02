@@ -36,6 +36,8 @@ ClaudeRouter.send(params)
 
 ### Pricing (`src/models.ts`)
 
+`computeCostCents()` accepts optional prompt-cache tokens (5th param): cache reads bill at `CACHE_READ_RATE` (10%) and writes at `CACHE_WRITE_RATE` (125%) of the input rate. Both routed paths pass `usage.cache_read_input_tokens`/`cache_creation_input_tokens` — omitting them understates every Claude Code cost figure.
+
 Pricing is **family-based**, not per-ID. `priceForModel()` resolves an exact ID match first (so user overrides win), then falls back to the model's family (`familyForModel()` matches on `haiku`/`sonnet`/`opus` substrings). This keeps `savedCents` correct for dated snapshots and Bedrock/Vertex `us.anthropic.*` IDs without a code change. Default tiers (`DEFAULT_MODELS`): haiku→`claude-haiku-4-5`, sonnet→`claude-sonnet-5`, opus→`claude-opus-4-8`. Current generation (`FAMILY_PRICING`, $/1M in/out): Haiku 4.5 $1/$5, Sonnet 5 $3/$15 (standard; intro $2/$10 through 2026-08-31), Opus 4.6–4.8 $5/$25. **Opus is NOT the old $15/$75 — drift here silently corrupts every savings figure.**
 
 ### Classifier
@@ -76,6 +78,7 @@ src/proxy/
   daemon.ts     — detached-spawn daemon, ~/.claude-router/daemon.json state, health polling, stopDaemon
   platform.ts   — per-OS autostart/env-var/statusline (pure builders + execFileSync executors)
   term.ts       — zero-dep ANSI styling (Claude Code aesthetic), tier colors, box(), NO_COLOR/TTY detection
+  history.ts    — persistent route history (~/.claude-router/history.jsonl, append-only JSONL) with an incremental-read aggregate cache; powers `stats` and the dashboard's lifetime cards. Only active when HandlerConfig.historyFile is set (the CLI sets it; tests/library don't).
 ```
 
 Providers: `anthropic` (per-credential client from `x-api-key` or `Authorization: Bearer`, cached in an LRU of 100 via `getAnthropicClient()` to preserve keep-alive), `bedrock` (singleton `@anthropic-ai/bedrock-sdk`), `vertex` (singleton `@anthropic-ai/vertex-sdk`).
@@ -88,7 +91,7 @@ Streaming responses only set `x-router-tier/model/classifier/confidence` headers
 
 ### CLI (`src/proxy/cli.ts`)
 
-Subcommands: `start` (foreground; `-d`/`--daemon` for background), `stop`, `restart`, `status`, `logs [-f] [-n N]`, `install`/`uninstall` (**cross-platform**: detached daemon + per-OS autostart — Windows HKCU Run key, macOS LaunchAgent, Linux systemd user unit — plus env var via setx/rc-block and a node-based Claude Code statusline), `init` (scaffold config), `doctor` (diagnostics, exit code = failure count), `help`, `-V`/`--version`. Unknown subcommands error with a Levenshtein suggestion (no more silent fallthrough to `start`); bare flags still run `start` behind a deprecation warning. Install steps report honestly — ✓ only after the daemon's `/health` actually passes.
+Subcommands: `start` (foreground; `-d`/`--daemon` for background), `stop`, `restart`, `status`, `stats [--json]`, `logs [-f] [-n N]`, `install`/`uninstall` (**cross-platform**: detached daemon + per-OS autostart — Windows HKCU Run key, macOS LaunchAgent, Linux systemd user unit — plus env var via setx/rc-block and a node-based Claude Code statusline), `init` (scaffold config), `doctor` (diagnostics, exit code = failure count), `help`, `-V`/`--version`. Unknown subcommands error with a Levenshtein suggestion (no more silent fallthrough to `start`); bare flags still run `start` behind a deprecation warning. Install steps report honestly — ✓ only after the daemon's `/health` actually passes.
 
 The proxy binds `127.0.0.1` by default (`--host` / `FileConfig.host` to override). This is a security boundary, not a convenience: with `bedrock`/`vertex` the proxy uses the operator's cloud credentials and does not authenticate incoming requests — do not change the default bind.
 

@@ -12,6 +12,7 @@ import {
 import { shouldRetry, nextTier } from '../retry.js';
 import { normalizeParamsForTier } from '../params.js';
 import { term } from './term.js';
+import { appendEvent } from './history.js';
 import type { ClassifyInput, ClassifyResult, ModelPricing, RoutingTuning, Tier } from '../types.js';
 
 export type Provider = 'anthropic' | 'bedrock' | 'vertex';
@@ -27,6 +28,8 @@ export interface HandlerConfig {
   pricing?: Record<string, ModelPricing>;
   /** Classifier thresholds/band/timeout/cache tuning */
   routing?: RoutingTuning;
+  /** JSONL file for persistent route history (undefined = in-memory only) */
+  historyFile?: string;
 }
 
 export interface RouteEvent {
@@ -41,18 +44,38 @@ export interface RouteEvent {
   retryReason: string | null;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 }
 
 const MAX_HISTORY = 1000;
 export const routeHistory: RouteEvent[] = [];
 
-function recordEvent(event: RouteEvent): void {
+function recordEvent(event: RouteEvent, config?: HandlerConfig): void {
   routeHistory.push(event);
   if (routeHistory.length > MAX_HISTORY) {
     // shift() is O(n) at the cap; acceptable at n=1000 and keeps the
     // plain-array shape that /health, /dashboard, and tests consume.
     routeHistory.shift();
   }
+  if (config?.historyFile) appendEvent(config.historyFile, event);
+}
+
+/** Cost + savings for a completed response, including prompt-cache tokens. */
+function computeCosts(model: string, usage: Anthropic.Usage, config: HandlerConfig) {
+  const pricing = config.pricing ?? DEFAULT_PRICING;
+  const cache = {
+    readTokens: usage.cache_read_input_tokens ?? 0,
+    creationTokens: usage.cache_creation_input_tokens ?? 0,
+  };
+  const cost = computeCostCents(model, usage.input_tokens, usage.output_tokens, pricing, cache);
+  const baseline = computeCostCents(config.defaultModel, usage.input_tokens, usage.output_tokens, pricing, cache);
+  return {
+    costCents: Math.round(cost * 1000) / 1000,
+    savedCents: Math.round((baseline - cost) * 1000) / 1000,
+    cacheReadTokens: cache.readTokens,
+    cacheCreationTokens: cache.creationTokens,
+  };
 }
 
 function buildClassifyInput(body: Record<string, unknown>): ClassifyInput {
@@ -277,10 +300,8 @@ async function handleNonStreaming(
           ) as Anthropic.MessageCreateParamsNonStreaming,
         );
 
-        const costCents = computeCostCents(escalatedModel, retryResponse.usage.input_tokens, retryResponse.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
-        const baselineCost = computeCostCents(config.defaultModel, retryResponse.usage.input_tokens, retryResponse.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
-        const savedCents = Math.round((baselineCost - costCents) * 1000) / 1000;
-        const roundedCost = Math.round(costCents * 1000) / 1000;
+        const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens } =
+          computeCosts(escalatedModel, retryResponse.usage, config);
 
         if (config.verbose) {
           log(escalatedTier, escalatedModel, classifyResult, roundedCost, savedCents, config.defaultModel, true, retryDecision.reason);
@@ -298,7 +319,9 @@ async function handleNonStreaming(
           retryReason: retryDecision.reason,
           inputTokens: retryResponse.usage.input_tokens,
           outputTokens: retryResponse.usage.output_tokens,
-        });
+          cacheReadTokens,
+          cacheCreationTokens,
+        }, config);
 
         const headers = new Headers({ 'content-type': 'application/json' });
         setRouterHeaders(headers, escalatedTier, escalatedModel, roundedCost, savedCents, classifyResult, true, retryDecision.reason);
@@ -307,10 +330,8 @@ async function handleNonStreaming(
       }
     }
 
-    const costCents = computeCostCents(model, response.usage.input_tokens, response.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
-    const baselineCost = computeCostCents(config.defaultModel, response.usage.input_tokens, response.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
-    const savedCents = Math.round((baselineCost - costCents) * 1000) / 1000;
-    const roundedCost = Math.round(costCents * 1000) / 1000;
+    const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens } =
+      computeCosts(model, response.usage, config);
 
     if (config.verbose) {
       log(tier, model, classifyResult, roundedCost, savedCents, config.defaultModel);
@@ -328,7 +349,9 @@ async function handleNonStreaming(
       retryReason: null,
       inputTokens: response.usage.input_tokens,
       outputTokens: response.usage.output_tokens,
-    });
+      cacheReadTokens,
+      cacheCreationTokens,
+    }, config);
 
     const headers = new Headers({ 'content-type': 'application/json' });
     setRouterHeaders(headers, tier, model, roundedCost, savedCents, classifyResult);
@@ -379,19 +402,18 @@ async function handleStreaming(
         }
 
         const finalMessage = await stream.finalMessage();
-        const costCents = computeCostCents(model, finalMessage.usage.input_tokens, finalMessage.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
-        const baselineCost = computeCostCents(config.defaultModel, finalMessage.usage.input_tokens, finalMessage.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
-        const savedCents = Math.round((baselineCost - costCents) * 1000) / 1000;
+        const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens } =
+          computeCosts(model, finalMessage.usage, config);
 
         if (config.verbose) {
-          log(tier, model, classifyResult, Math.round(costCents * 1000) / 1000, savedCents, config.defaultModel);
+          log(tier, model, classifyResult, roundedCost, savedCents, config.defaultModel);
         }
 
         recordEvent({
           timestamp: new Date().toISOString(),
           tier,
           model,
-          costCents: Math.round(costCents * 1000) / 1000,
+          costCents: roundedCost,
           savedCents,
           confidence: classifyResult.confidence,
           classifier: classifyResult.method,
@@ -399,7 +421,9 @@ async function handleStreaming(
           retryReason: null,
           inputTokens: finalMessage.usage.input_tokens,
           outputTokens: finalMessage.usage.output_tokens,
-        });
+          cacheReadTokens,
+          cacheCreationTokens,
+        }, config);
 
         controller.close();
       } catch (err) {

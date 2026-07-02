@@ -88,15 +88,32 @@ export function priceForModel(
   return pricing[DEFAULT_MODELS[fam]] ?? FAMILY_PRICING[fam];
 }
 
+/**
+ * Prompt-cache pricing multipliers (fractions of the model's input rate):
+ * cache reads bill at 10%, cache writes (5-minute TTL) at 125%.
+ * Claude Code uses caching heavily — ignoring these understates every cost.
+ */
+export const CACHE_READ_RATE = 0.1;
+export const CACHE_WRITE_RATE = 1.25;
+
+export interface CacheTokens {
+  readTokens?: number;
+  creationTokens?: number;
+}
+
 export function computeCostCents(
   model: string,
   inputTokens: number,
   outputTokens: number,
   pricing: Record<string, ModelPricing>,
+  cache?: CacheTokens,
 ): number {
   const p = priceForModel(model, pricing);
   if (!p) return 0;
-  return ((inputTokens * p.input + outputTokens * p.output) / 1_000_000) * 100;
+  const cacheCost =
+    (cache?.readTokens ?? 0) * p.input * CACHE_READ_RATE +
+    (cache?.creationTokens ?? 0) * p.input * CACHE_WRITE_RATE;
+  return ((inputTokens * p.input + outputTokens * p.output + cacheCost) / 1_000_000) * 100;
 }
 
 export function tierForModel(

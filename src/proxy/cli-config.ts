@@ -11,6 +11,7 @@ export interface RouterPaths {
   configFile: string;
   daemonStateFile: string;
   logFile: string;
+  historyFile: string;
   plistFile: string;
   claudeSettingsFile: string;
   zshrcFile: string;
@@ -24,6 +25,7 @@ export function routerPaths(homeDir: string = os.homedir()): RouterPaths {
     configFile: path.join(configDir, 'config.json'),
     daemonStateFile: path.join(configDir, 'daemon.json'),
     logFile: path.join(configDir, 'proxy.log'),
+    historyFile: path.join(configDir, 'history.jsonl'),
     plistFile: path.join(homeDir, 'Library', 'LaunchAgents', 'com.claude-router.proxy.plist'),
     claudeSettingsFile: path.join(homeDir, '.claude', 'settings.json'),
     zshrcFile: path.join(homeDir, '.zshrc'),

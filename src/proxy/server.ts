@@ -3,6 +3,7 @@ import { cors } from 'hono/cors';
 import Anthropic from '@anthropic-ai/sdk';
 import { handleMessages, routeHistory, type HandlerConfig } from './handler.js';
 import { renderDashboard } from './dashboard.js';
+import { readLifetimeStats } from './history.js';
 
 export function createProxyApp(
   config: HandlerConfig,
@@ -32,7 +33,8 @@ export function createProxyApp(
   });
 
   app.get('/dashboard', (c) => {
-    return c.html(renderDashboard(routeHistory));
+    const lifetime = config.historyFile ? readLifetimeStats(config.historyFile) : undefined;
+    return c.html(renderDashboard(routeHistory, lifetime));
   });
 
   app.post('/v1/messages', (c) => handleMessages(c, config, providerClient));

@@ -26,6 +26,40 @@ describe('computeCostCents', () => {
     assert.equal(cost, 0);
   });
 
+  it('bills cache reads at 10% of the input rate', () => {
+    // sonnet input $3/M → 1M cache-read tokens = $0.30 = 30 cents
+    const base = computeCostCents('claude-sonnet-5', 0, 0, DEFAULT_PRICING);
+    const withReads = computeCostCents('claude-sonnet-5', 0, 0, DEFAULT_PRICING, {
+      readTokens: 1_000_000,
+    });
+    assert.equal(base, 0);
+    assert.equal(Math.round(withReads * 100) / 100, 30);
+  });
+
+  it('bills cache writes at 125% of the input rate', () => {
+    // sonnet input $3/M → 1M cache-creation tokens = $3.75 = 375 cents
+    const cost = computeCostCents('claude-sonnet-5', 0, 0, DEFAULT_PRICING, {
+      creationTokens: 1_000_000,
+    });
+    assert.equal(Math.round(cost * 100) / 100, 375);
+  });
+
+  it('combines regular, cache-read, and cache-write tokens', () => {
+    // haiku $1/M in, $5/M out:
+    // 1000 in = $0.001; 500 out = $0.0025; 10000 reads = $0.001; 2000 writes = $0.0025
+    const cost = computeCostCents('claude-haiku-4-5', 1000, 500, DEFAULT_PRICING, {
+      readTokens: 10_000,
+      creationTokens: 2_000,
+    });
+    assert.equal(Math.round(cost * 100000) / 100000, 0.7);
+  });
+
+  it('omitting cache tokens matches the old behavior', () => {
+    const without = computeCostCents('claude-sonnet-5', 1000, 500, DEFAULT_PRICING);
+    const withEmpty = computeCostCents('claude-sonnet-5', 1000, 500, DEFAULT_PRICING, {});
+    assert.equal(without, withEmpty);
+  });
+
   it('returns 0 for zero tokens', () => {
     const cost = computeCostCents('claude-sonnet-4-6', 0, 0, DEFAULT_PRICING);
     assert.equal(cost, 0);

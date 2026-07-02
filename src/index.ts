@@ -122,24 +122,31 @@ export class ClaudeRouter {
   private buildMeta(
     tier: Tier,
     model: string,
-    inputTokens: number,
-    outputTokens: number,
+    usage: Anthropic.Usage,
     classifyResult: ClassifyResult,
     fallbackUsed: boolean,
     retried: boolean = false,
     retryReason: string | null = null,
   ): RouteMeta {
+    const inputTokens = usage.input_tokens;
+    const outputTokens = usage.output_tokens;
+    const cache = {
+      readTokens: usage.cache_read_input_tokens ?? 0,
+      creationTokens: usage.cache_creation_input_tokens ?? 0,
+    };
     const costCents = computeCostCents(
       model,
       inputTokens,
       outputTokens,
       this.config.pricing,
+      cache,
     );
     const baselineCost = computeCostCents(
       this.config.defaultModel,
       inputTokens,
       outputTokens,
       this.config.pricing,
+      cache,
     );
 
     return {
@@ -147,6 +154,8 @@ export class ClaudeRouter {
       model,
       inputTokens,
       outputTokens,
+      cacheReadTokens: cache.readTokens,
+      cacheCreationTokens: cache.creationTokens,
       costCents: Math.round(costCents * 1000) / 1000,
       savedCents: Math.round((baselineCost - costCents) * 1000) / 1000,
       classifierMethod: classifyResult.method,
@@ -211,8 +220,7 @@ export class ClaudeRouter {
             const meta = this.buildMeta(
               escalatedTier,
               escalatedModel,
-              retryResponse.usage.input_tokens,
-              retryResponse.usage.output_tokens,
+              retryResponse.usage,
               classifyResult,
               true,
               true,
@@ -231,8 +239,7 @@ export class ClaudeRouter {
         const meta = this.buildMeta(
           tier,
           model,
-          response.usage.input_tokens,
-          response.usage.output_tokens,
+          response.usage,
           classifyResult,
           fallbackUsed,
         );
@@ -297,8 +304,7 @@ export class ClaudeRouter {
         const meta = this.buildMeta(
           tier,
           model,
-          finalMessage.usage.input_tokens,
-          finalMessage.usage.output_tokens,
+          finalMessage.usage,
           classifyResult,
           false,
         );

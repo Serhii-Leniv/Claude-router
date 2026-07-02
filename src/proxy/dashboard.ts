@@ -1,4 +1,5 @@
 import type { RouteEvent } from './handler.js';
+import type { LifetimeStats } from './history.js';
 
 function esc(s: string): string {
   return s
@@ -8,7 +9,7 @@ function esc(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
-export function renderDashboard(history: RouteEvent[]): string {
+export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats): string {
   const totalRequests = history.length;
   const totalCost = history.reduce((s, e) => s + e.costCents, 0);
   const totalSaved = history.reduce((s, e) => s + e.savedCents, 0);
@@ -86,21 +87,30 @@ export function renderDashboard(history: RouteEvent[]): string {
 
   <div class="stats">
     <div class="stat-card">
-      <div class="label">Total Requests</div>
+      <div class="label">Session Requests</div>
       <div class="value blue">${totalRequests}</div>
     </div>
     <div class="stat-card">
-      <div class="label">Total Cost</div>
+      <div class="label">Session Cost</div>
       <div class="value orange">$${(totalCost / 100).toFixed(4)}</div>
     </div>
     <div class="stat-card">
-      <div class="label">Total Saved</div>
+      <div class="label">Session Saved</div>
       <div class="value green">$${(totalSaved / 100).toFixed(4)}</div>
     </div>
     <div class="stat-card">
       <div class="label">Auto-retried</div>
       <div class="value">${retried}</div>
     </div>
+    ${lifetime ? `
+    <div class="stat-card">
+      <div class="label">Lifetime Saved</div>
+      <div class="value green">$${(lifetime.savedCents / 100).toFixed(2)}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Lifetime Requests</div>
+      <div class="value blue">${lifetime.requests}</div>
+    </div>` : ''}
   </div>
 
   <div class="tier-bar">

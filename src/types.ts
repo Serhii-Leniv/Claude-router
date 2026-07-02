@@ -49,6 +49,10 @@ export interface RouteMeta {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  /** Prompt-cache reads (billed at 10% of input rate) */
+  cacheReadTokens?: number;
+  /** Prompt-cache writes (billed at 125% of input rate) */
+  cacheCreationTokens?: number;
   /** Cost of this call in cents */
   costCents: number;
   /** Savings vs defaultModel baseline in cents */
