@@ -39,7 +39,7 @@
     "type": "git",
     "url": "git+https://github.com/Serhii-Leniv/Claude-router.git"
   },
-  "homepage": "https://github.com/Serhii-Leniv/Claude-router#readme",
+  "homepage": "https://serhii-leniv.github.io/Claude-router/",
   "bugs": {
     "url": "https://github.com/Serhii-Leniv/Claude-router/issues"
   },
@@ -64,6 +64,7 @@
     "!dist/__tests__",
     "assets",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ]
 }
