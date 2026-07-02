@@ -335,3 +335,36 @@ describe('ClaudeRouter.stats', () => {
     assert.ok(stats.tierBreakdown.opus >= 1);
   });
 });
+
+describe('ClaudeRouter — classifier resilience', () => {
+  it('hybrid mode still routes when the AI classifier call fails', async () => {
+    const router = new ClaudeRouter({
+      apiKey: 'sk-test',
+      classifier: 'hybrid',
+      verbose: false,
+    });
+
+    // Ambiguous prompt → hybrid wants AI confirmation. First create call
+    // (the classifier) rejects; the routed request itself succeeds.
+    let calls = 0;
+    (router as unknown as { _client: unknown })._client = {
+      messages: {
+        create: mock.fn(async (params: { max_tokens: number }) => {
+          calls++;
+          if (params.max_tokens === 4) throw new Error('haiku outage');
+          return fakeMessage();
+        }),
+        stream: mock.fn(),
+      },
+    };
+
+    const result = await router.send({
+      messages: [{ role: 'user', content: 'explain compare write generate describe this code' }],
+      max_tokens: 100,
+    });
+
+    assert.equal(result.meta.classifierMethod, 'heuristic');
+    assert.equal(calls, 2, 'classifier attempt + routed request');
+    assert.ok(result.meta.tier);
+  });
+});

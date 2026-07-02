@@ -2,7 +2,7 @@ import type { ModelPricing, Tier } from './types.js';
 
 export const DEFAULT_MODELS: Record<Tier, string> = {
   haiku: 'claude-haiku-4-5',
-  sonnet: 'claude-sonnet-4-6',
+  sonnet: 'claude-sonnet-5',
   opus: 'claude-opus-4-8',
 };
 
@@ -11,22 +11,25 @@ export const DEFAULT_MODELS: Record<Tier, string> = {
 // Pricing is unaffected (resolved by family in priceForModel).
 export const BEDROCK_MODELS: Record<Tier, string> = {
   haiku:  'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-  sonnet: 'us.anthropic.claude-sonnet-4-6-20250929-v1:0',
+  sonnet: 'us.anthropic.claude-sonnet-5-v1:0',
   opus:   'us.anthropic.claude-opus-4-8-v1:0',
 };
 
 export const VERTEX_MODELS: Record<Tier, string> = {
   haiku:  'claude-haiku-4-5',
-  sonnet: 'claude-sonnet-4-6',
+  sonnet: 'claude-sonnet-5',
   opus:   'claude-opus-4-8',
 };
 
 /**
  * Current-generation Claude pricing ($ per 1M tokens), keyed by tier/family.
- * Verified against platform.claude.com pricing for the 4.5+ generation (2026-06):
+ * Verified against platform.claude.com pricing for the current generation:
  *   Haiku 4.5 — $1.00 / $5.00
- *   Sonnet 4.6 — $3.00 / $15.00
+ *   Sonnet 5  — $3.00 / $15.00 standard (intro $2.00 / $10.00 through 2026-08-31)
  *   Opus 4.6/4.7/4.8 — $5.00 / $25.00  (note: NOT the old $15/$75 of Opus 4.0/4.1)
+ *
+ * We price Sonnet at the standard rate so savings math stays stable when the
+ * intro discount ends. Fable 5 ($10/$50) is intentionally not a tier here.
  *
  * Pricing drift here silently corrupts every `savedCents` figure the router
  * reports — keep this in sync when a new generation ships, and rely on the
@@ -46,6 +49,7 @@ export const FAMILY_PRICING: Record<Tier, ModelPricing> = {
 export const DEFAULT_PRICING: Record<string, ModelPricing> = {
   'claude-haiku-4-5': FAMILY_PRICING.haiku,
   'claude-haiku-4-5-20251001': FAMILY_PRICING.haiku,
+  'claude-sonnet-5': FAMILY_PRICING.sonnet,
   'claude-sonnet-4-6': FAMILY_PRICING.sonnet,
   'claude-opus-4-8': FAMILY_PRICING.opus,
   'claude-opus-4-7': FAMILY_PRICING.opus,

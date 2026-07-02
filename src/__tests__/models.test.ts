@@ -94,6 +94,7 @@ describe('current-generation pricing (guards against drift)', () => {
 describe('familyForModel', () => {
   it('maps first-party IDs to families', () => {
     assert.equal(familyForModel('claude-haiku-4-5'), 'haiku');
+    assert.equal(familyForModel('claude-sonnet-5'), 'sonnet');
     assert.equal(familyForModel('claude-sonnet-4-6'), 'sonnet');
     assert.equal(familyForModel('claude-opus-4-8'), 'opus');
   });

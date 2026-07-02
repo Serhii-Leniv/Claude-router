@@ -72,3 +72,19 @@ describe('CostTracker', () => {
     assert.equal(tracker.stats().totalSavedCents, -7.5);
   });
 });
+
+describe('CostTracker — volume', () => {
+  it('handles 10k records with O(1) stats and stable results', () => {
+    const tracker = new CostTracker();
+    for (let i = 0; i < 10_000; i++) {
+      tracker.record(makeMeta({ costCents: 0.1, savedCents: 0.05, tier: i % 2 === 0 ? 'haiku' : 'opus' }));
+    }
+    const first = tracker.stats();
+    const second = tracker.stats();
+    assert.equal(first.callCount, 10_000);
+    assert.equal(first.totalCostCents, 1000);
+    assert.equal(first.totalSavedCents, 500);
+    assert.deepEqual(first.tierBreakdown, { haiku: 5000, sonnet: 0, opus: 5000 });
+    assert.deepEqual(second, first);
+  });
+});

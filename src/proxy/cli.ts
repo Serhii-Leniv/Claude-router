@@ -1,124 +1,78 @@
 #!/usr/bin/env node
 
 import { serve } from '@hono/node-server';
+import fs from 'node:fs';
 import { createProxyApp } from './server.js';
 import { createProviderClient, type Provider } from './handler.js';
 import { DEFAULT_MODELS, BEDROCK_MODELS, VERTEX_MODELS } from '../models.js';
-import type { ModelPricing, Tier } from '../types.js';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
-import { execSync } from 'node:child_process';
+import type { Tier } from '../types.js';
+import { term } from './term.js';
+import {
+  CliUsageError,
+  applyRegionEnv,
+  getVersion,
+  loadFileConfig,
+  parseServeArgs,
+  routerPaths,
+  serveArgsFrom,
+  suggestCommand,
+  type FileConfig,
+  type ServeOptions,
+} from './cli-config.js';
+import {
+  checkHealth,
+  isProcessAlive,
+  readDaemonState,
+  startDaemon,
+  stopDaemon,
+} from './daemon.js';
+import {
+  addStatusline,
+  installAutostart,
+  isAutostartRegistered,
+  isEnvVarSet,
+  isStatuslineConfigured,
+  platformName,
+  removeStatusline,
+  setEnvVar,
+  uninstallAutostart,
+  unsetEnvVar,
+  type StepResult,
+} from './platform.js';
 
-// ── Constants ──────────────────────────────────────────────────────────────
+const COMMANDS = [
+  'start', 'stop', 'restart', 'status', 'logs',
+  'install', 'uninstall', 'init', 'doctor', 'help',
+];
 
-const PLIST_LABEL = 'com.claude-router.proxy';
-const PLIST_PATH = path.join(os.homedir(), 'Library', 'LaunchAgents', `${PLIST_LABEL}.plist`);
-const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
-const CONFIG_PATH = path.join(os.homedir(), '.claude-router', 'config.json');
-const ZSHRC_PATH = path.join(os.homedir(), '.zshrc');
-const ZSHRC_MARKER = '# claude-router';
+const paths = routerPaths();
 
-// ── Config file ──────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 
-/** Shape of ~/.claude-router/config.json. Every field optional; CLI flags win. */
-interface FileConfig {
-  port?: number;
-  verbose?: boolean;
-  classifier?: 'heuristic' | 'ai' | 'hybrid';
-  provider?: Provider;
-  region?: string;
-  forceRoute?: boolean;
-  /** Override the model ID used for each tier. */
-  tiers?: Partial<Record<Tier, string>>;
-  /** Override pricing ($/1M tokens) for savings math, keyed by model ID. */
-  pricing?: Record<string, ModelPricing>;
-}
-
-let configFileLoaded = false;
-
-function loadFileConfig(): FileConfig {
-  if (!fs.existsSync(CONFIG_PATH)) return {};
-  try {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) as FileConfig;
-    configFileLoaded = true;
-    return cfg;
-  } catch (err) {
-    console.error(`[claude-router] Ignoring invalid config at ${CONFIG_PATH}: ${String(err)}`);
-    return {};
+function loadConfigWarned(): FileConfig {
+  const { config, error } = loadFileConfig(paths.configFile);
+  if (error) {
+    console.error(term.warn() + ` Ignoring invalid config at ${paths.configFile}: ${error}`);
   }
-}
-const STATUSLINE_CMD =
-  `curl -sf --max-time 0.3 http://localhost:4000/health | ` +
-  `python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('lastTier') or 'ready'; r=d.get('requests',0); print(f'[auto:{t} #{r}]')" 2>/dev/null || echo '[auto:off]'`;
-
-// ── Server options ─────────────────────────────────────────────────────────
-
-interface ServeOptions {
-  port: number;
-  verbose: boolean;
-  classifier: 'heuristic' | 'ai' | 'hybrid';
-  provider: Provider;
-  region: string;
-  forceRoute: boolean;
-  tiers?: Partial<Record<Tier, string>>;
-  pricing?: Record<string, ModelPricing>;
+  return config;
 }
 
-function parseServeArgs(args: string[]): ServeOptions {
-  // File config supplies defaults; any CLI flag below overrides it.
-  const file = loadFileConfig();
-  let port = file.port ?? 4000;
-  let verbose = file.verbose ?? false;
-  let classifier: 'heuristic' | 'ai' | 'hybrid' = file.classifier ?? 'hybrid';
-  let provider: Provider = file.provider ?? 'anthropic';
-  let region = file.region ?? '';
-  let forceRoute = file.forceRoute ?? false;
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if ((arg === '--port' || arg === '-p') && args[i + 1]) {
-      const parsed = parseInt(args[i + 1]!, 10);
-      if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
-        console.error(`Invalid port: ${args[i + 1]}. Must be 1-65535.`);
-        process.exit(1);
-      }
-      port = parsed;
-      i++;
-    } else if (arg === '--verbose' || arg === '-v') {
-      verbose = true;
-    } else if (arg === '--classifier' && args[i + 1]) {
-      const val = args[i + 1]!;
-      if (val === 'heuristic' || val === 'ai' || val === 'hybrid') {
-        classifier = val;
-        i++;
-      }
-    } else if (arg === '--provider' && args[i + 1]) {
-      const val = args[i + 1]!;
-      if (val === 'anthropic' || val === 'bedrock' || val === 'vertex') {
-        provider = val as Provider;
-      } else {
-        console.error(`Invalid provider: ${val}. Must be anthropic | bedrock | vertex.`);
-        process.exit(1);
-      }
-      i++;
-    } else if (arg === '--region' && args[i + 1]) {
-      region = args[i + 1]!;
-      i++;
-    } else if (arg === '--force-route') {
-      forceRoute = true;
+/** Split command-specific boolean flags out of an arg list before serve parsing. */
+function extractFlags(args: string[], flags: string[]): { rest: string[]; found: Set<string> } {
+  const found = new Set<string>();
+  const rest = args.filter((a) => {
+    if (flags.includes(a)) {
+      found.add(a);
+      return false;
     }
-  }
+    return true;
+  });
+  return { rest, found };
+}
 
-  if (region) {
-    if (provider === 'bedrock' && !process.env['AWS_REGION']) {
-      process.env['AWS_REGION'] = region;
-    } else if (provider === 'vertex' && !process.env['ANTHROPIC_VERTEX_REGION']) {
-      process.env['ANTHROPIC_VERTEX_REGION'] = region;
-    }
-  }
-
-  return { port, verbose, classifier, provider, region, forceRoute, tiers: file.tiers, pricing: file.pricing };
+function printStep(result: StepResult): void {
+  const glyph = result.ok ? term.ok() : result.skipped ? term.warn() : term.fail();
+  console.log(`  ${glyph} ${result.detail}`);
 }
 
 function modelsForProvider(provider: Provider): Record<Tier, string> {
@@ -127,298 +81,460 @@ function modelsForProvider(provider: Provider): Record<Tier, string> {
   return DEFAULT_MODELS;
 }
 
-// ── Install helpers ────────────────────────────────────────────────────────
-
-function writePlist(port: number, forceRoute: boolean): void {
-  const nodePath = process.execPath;
-  const cliPath = process.argv[1]!;
-
-  const args = ['--port', String(port)];
-  if (forceRoute) args.push('--force-route');
-
-  const argXml = args
-    .map((a) => `    <string>${a}</string>`)
-    .join('\n');
-
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>${PLIST_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>${nodePath}</string>
-    <string>${cliPath}</string>
-    <string>start</string>
-${argXml}
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>StandardOutPath</key>
-  <string>/tmp/claude-router.log</string>
-  <key>StandardErrorPath</key>
-  <string>/tmp/claude-router.log</string>
-</dict>
-</plist>`;
-
-  fs.mkdirSync(path.dirname(PLIST_PATH), { recursive: true });
-  fs.writeFileSync(PLIST_PATH, plist, 'utf8');
+function resolveOptions(args: string[]): ServeOptions {
+  return parseServeArgs(args, loadConfigWarned());
 }
 
-function loadLaunchAgent(): void {
-  try {
-    execSync(`launchctl unload "${PLIST_PATH}" 2>/dev/null || true`);
-    execSync(`launchctl load "${PLIST_PATH}"`);
-  } catch {
-    // non-fatal — user can start manually
-  }
-}
-
-function unloadLaunchAgent(): void {
-  try {
-    execSync(`launchctl unload "${PLIST_PATH}" 2>/dev/null || true`);
-  } catch { /* ignore */ }
-}
-
-function addZshrcLine(port: number): void {
-  const line = `export ANTHROPIC_BASE_URL=http://localhost:${port}`;
-  if (fs.existsSync(ZSHRC_PATH)) {
-    const content = fs.readFileSync(ZSHRC_PATH, 'utf8');
-    if (content.includes(ZSHRC_MARKER)) return; // already installed
-    fs.appendFileSync(ZSHRC_PATH, `\n${ZSHRC_MARKER}\n${line}\n`);
-  } else {
-    fs.writeFileSync(ZSHRC_PATH, `${ZSHRC_MARKER}\n${line}\n`);
-  }
-}
-
-function removeZshrcLines(): void {
-  if (!fs.existsSync(ZSHRC_PATH)) return;
-  const lines = fs.readFileSync(ZSHRC_PATH, 'utf8').split('\n');
-  const filtered = lines.filter(
-    (l) => !l.startsWith(ZSHRC_MARKER) && !l.includes('ANTHROPIC_BASE_URL=http://localhost:4000'),
-  );
-  fs.writeFileSync(ZSHRC_PATH, filtered.join('\n'));
-}
-
-function addStatusline(): void {
-  let settings: Record<string, unknown> = {};
-  if (fs.existsSync(CLAUDE_SETTINGS_PATH)) {
-    try {
-      settings = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
-    } catch { /* start fresh */ }
-  }
-  if (!settings['statusLine']) {
-    settings['statusLine'] = { type: 'command', command: STATUSLINE_CMD };
-    fs.mkdirSync(path.dirname(CLAUDE_SETTINGS_PATH), { recursive: true });
-    fs.writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf8');
-  }
-}
-
-function removeStatusline(): void {
-  if (!fs.existsSync(CLAUDE_SETTINGS_PATH)) return;
-  try {
-    const settings = JSON.parse(fs.readFileSync(CLAUDE_SETTINGS_PATH, 'utf8'));
-    if (
-      settings['statusLine'] &&
-      typeof settings['statusLine'] === 'object' &&
-      (settings['statusLine'] as Record<string, unknown>)['command'] === STATUSLINE_CMD
-    ) {
-      delete settings['statusLine'];
-      fs.writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2), 'utf8');
-    }
-  } catch { /* ignore */ }
-}
-
-// ── Subcommands ────────────────────────────────────────────────────────────
-
-function cmdInstall(args: string[]): void {
-  const { port, forceRoute } = parseServeArgs(args);
-
-  console.log('Installing claude-router...\n');
-
-  writePlist(port, forceRoute);
-  console.log(`  ✓ LaunchAgent written → ${PLIST_PATH}`);
-
-  loadLaunchAgent();
-  console.log('  ✓ LaunchAgent loaded (auto-starts on login)');
-
-  addZshrcLine(port);
-  console.log(`  ✓ ANTHROPIC_BASE_URL added to ~/.zshrc`);
-
-  addStatusline();
-  console.log('  ✓ Statusline configured in ~/.claude/settings.json');
-
-  console.log(`
-Done. Proxy is running on http://localhost:${port}.
-
-  → Restart your terminal (or run: source ~/.zshrc)
-  → Use \`claude\` normally — all calls auto-routed
-
-Logs: tail -f /tmp/claude-router.log
-`);
-}
-
-function cmdUninstall(): void {
-  unloadLaunchAgent();
-  if (fs.existsSync(PLIST_PATH)) {
-    fs.unlinkSync(PLIST_PATH);
-  }
-  removeZshrcLines();
-  removeStatusline();
-  console.log('claude-router uninstalled.');
-}
-
-function cmdStatus(): void {
-  try {
-    const result = execSync(
-      'curl -sf --max-time 1 http://localhost:4000/health',
-      { encoding: 'utf8' },
-    );
-    const data = JSON.parse(result) as Record<string, unknown>;
-    const lastTier = data['lastTier'] ?? 'none';
-    const requests = data['requests'] ?? 0;
-    const forceRoute = data['forceRoute'] ?? false;
-    console.log(`Status:     running`);
-    console.log(`Force-route: ${forceRoute}`);
-    console.log(`Requests:   ${requests}`);
-    console.log(`Last tier:  ${lastTier}`);
-  } catch {
-    console.log('Status: not running');
-    console.log('Start with: claude-router install  (or)  claude-router start');
-  }
-}
-
-function cmdStop(): void {
-  try {
-    execSync(`launchctl unload "${PLIST_PATH}" 2>/dev/null || true`);
-    console.log('Proxy stopped.');
-  } catch {
-    // Try pkill fallback
-    try {
-      execSync("pkill -f 'claude-router.*start'");
-      console.log('Proxy stopped.');
-    } catch {
-      console.log('Proxy not running.');
-    }
-  }
-}
+// ── start ──────────────────────────────────────────────────────────────────
 
 async function cmdStart(args: string[]): Promise<void> {
-  const { port, verbose, classifier, provider, region, forceRoute, tiers, pricing } = parseServeArgs(args);
-  // Provider defaults, with per-tier overrides from the config file layered on top.
-  const models = { ...modelsForProvider(provider), ...(tiers ?? {}) };
+  const { rest, found } = extractFlags(args, ['--daemon', '-d']);
+  const options = resolveOptions(rest);
+
+  if (found.size > 0) {
+    const result = await startDaemon(serveArgsFrom(options), options.port, paths);
+    if (result.ok) {
+      console.log(`${term.ok()} ${result.detail}`);
+      console.log(term.dim(`  logs: claude-router logs   stop: claude-router stop`));
+    } else {
+      term.errorLine(result.detail);
+      process.exit(1);
+    }
+    return;
+  }
+
+  applyRegionEnv(options);
+  const models = { ...modelsForProvider(options.provider), ...(options.tiers ?? {}) };
 
   let providerClient;
   try {
-    providerClient = await createProviderClient(provider);
+    providerClient = await createProviderClient(options.provider);
   } catch (err) {
-    console.error(`\n[claude-router] Provider init failed:\n${String(err)}\n`);
+    term.errorLine(`Provider init failed: ${String(err)}`);
     process.exit(1);
   }
 
   const app = createProxyApp({
-    classifier,
+    classifier: options.classifier,
     defaultModel: models.sonnet,
-    verbose,
-    provider,
+    verbose: options.verbose,
+    provider: options.provider,
     models,
-    forceRoute,
-    pricing,
+    forceRoute: options.forceRoute,
+    pricing: options.pricing,
+    routing: options.routing,
   }, providerClient);
 
-  const regionDisplay = region ||
-    (provider === 'bedrock' ? process.env['AWS_REGION'] ?? 'us-east-1' :
-     provider === 'vertex' ? process.env['ANTHROPIC_VERTEX_REGION'] ?? 'us-east5' : '');
+  const regionDisplay = options.region ||
+    (options.provider === 'bedrock' ? process.env['AWS_REGION'] ?? 'us-east-1' :
+     options.provider === 'vertex' ? process.env['ANTHROPIC_VERTEX_REGION'] ?? 'us-east5' : '');
 
-  console.log(`
-┌──────────────────────────────────────────────┐
-│  claude-router proxy                         │
-├──────────────────────────────────────────────┤
-│  URL:         http://localhost:${String(port).padEnd(5)}         │
-│  Provider:    ${provider.padEnd(32)}│
-│  Classifier:  ${classifier.padEnd(32)}│
-│  Force-route: ${String(forceRoute).padEnd(32)}│${regionDisplay ? `\n│  Region:      ${regionDisplay.padEnd(32)}│` : ''}${configFileLoaded ? `\n│  Config:      ${'~/.claude-router/config.json'.padEnd(32)}│` : ''}
-└──────────────────────────────────────────────┘
-`);
+  const exposed = options.host !== '127.0.0.1' && options.host !== 'localhost';
+  if (exposed && (options.provider === 'bedrock' || options.provider === 'vertex')) {
+    console.error(
+      term.warn() +
+        ` Binding to ${options.host} with the ${options.provider} provider exposes YOUR cloud credentials to the network — incoming requests are not authenticated.`,
+    );
+  }
+
+  const displayHost = exposed ? options.host : 'localhost';
+  const { loaded } = loadFileConfig(paths.configFile);
+  const rows: Array<[string, string]> = [
+    ['URL', term.accent(`http://${displayHost}:${options.port}`)],
+    ['Dashboard', `http://${displayHost}:${options.port}/dashboard`],
+    ['Provider', options.provider],
+    ['Classifier', options.classifier],
+    ['Force-route', options.forceRoute ? term.green('on') : term.dim('off')],
+    ['Tiers', `${term.tier('haiku')} ${term.dim('→')} ${models.haiku}`],
+    ['', `${term.tier('sonnet')} ${term.dim('→')} ${models.sonnet}`],
+    ['', `${term.tier('opus')} ${term.dim('→')} ${models.opus}`],
+  ];
+  if (exposed) rows.push(['Bind', `${options.host} ${term.yellow('(network-exposed)')}`]);
+  if (regionDisplay) rows.push(['Region', regionDisplay]);
+  if (loaded) rows.push(['Config', paths.configFile]);
+
+  console.log('\n' + term.box(`claude-router ${term.dim('v' + getVersion())}`, rows) + '\n');
 
   process.on('unhandledRejection', (err) => {
-    console.error(`\n[claude-router] Fatal error:\n${String(err)}`);
-    if (provider === 'vertex') {
+    term.errorLine(`Fatal error: ${String(err)}`);
+    if (options.provider === 'vertex') {
       console.error('\nVertex auth failed. Run: gcloud auth application-default login');
-    } else if (provider === 'bedrock') {
+    } else if (options.provider === 'bedrock') {
       console.error('\nBedrock auth failed. Check: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION');
     }
     process.exit(1);
   });
 
-  serve({ fetch: app.fetch, port });
+  serve({ fetch: app.fetch, port: options.port, hostname: options.host });
 }
 
-function printHelp(): void {
+// ── stop / restart ─────────────────────────────────────────────────────────
+
+async function cmdStop(): Promise<void> {
+  const result = await stopDaemon(paths);
+  if (result.ok) {
+    console.log(`${term.ok()} ${result.detail}`);
+  } else {
+    term.errorLine(result.detail);
+    process.exit(1);
+  }
+}
+
+async function cmdRestart(args: string[]): Promise<void> {
+  const state = readDaemonState(paths);
+  const stop = await stopDaemon(paths);
+  if (!stop.ok) {
+    term.errorLine(stop.detail);
+    process.exit(1);
+  }
+  // Reuse the previous daemon's args unless new flags were given
+  const options = resolveOptions(args.length > 0 ? args : state?.args ?? []);
+  const result = await startDaemon(serveArgsFrom(options), options.port, paths);
+  if (result.ok) {
+    console.log(`${term.ok()} ${result.detail}`);
+  } else {
+    term.errorLine(result.detail);
+    process.exit(1);
+  }
+}
+
+// ── status ─────────────────────────────────────────────────────────────────
+
+async function cmdStatus(args: string[]): Promise<void> {
+  const options = resolveOptions(args);
+  const health = await checkHealth(options.port);
+  const state = readDaemonState(paths);
+
+  if (!health) {
+    console.log(`${term.fail()} ${term.bold('stopped')} ${term.dim(`(no proxy on port ${options.port})`)}`);
+    if (state && !isProcessAlive(state.pid)) {
+      console.log(term.dim(`  stale daemon state found (pid ${state.pid} is gone)`));
+    }
+    console.log(`\nStart it:  ${term.accent('claude-router start -d')}  ${term.dim('(or claude-router install)')}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const rows: Array<[string, string]> = [
+    ['Status', `${term.green('running')}${state ? term.dim(` (pid ${state.pid})`) : ''}`],
+    ['URL', `http://localhost:${options.port}`],
+    ['Dashboard', `http://localhost:${options.port}/dashboard`],
+    ['Provider', health.provider],
+    ['Classifier', health.classifier],
+    ['Force-route', health.forceRoute ? term.green('on') : term.dim('off')],
+    ['Requests', String(health.requests)],
+    ['Last tier', health.lastTier ? term.tier(health.lastTier) : term.dim('none')],
+    ['Autostart', isAutostartRegistered(paths) ? term.green('registered') : term.dim('not registered')],
+    ['Env var', isEnvVarSet(options.port) ? term.green('set') : term.dim('not set')],
+  ];
+  console.log('\n' + term.box('claude-router status', rows) + '\n');
+}
+
+// ── logs ───────────────────────────────────────────────────────────────────
+
+function cmdLogs(args: string[]): void {
+  let lines = 50;
+  let follow = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === '-f' || arg === '--follow') follow = true;
+    else if ((arg === '-n' || arg === '--lines') && args[i + 1]) {
+      lines = parseInt(args[++i]!, 10) || 50;
+    } else {
+      term.errorLine(`Unknown option '${arg}' for logs.`);
+      process.exit(1);
+    }
+  }
+
+  if (!fs.existsSync(paths.logFile)) {
+    console.log(term.dim(`No log file yet (${paths.logFile}). Start the daemon: claude-router start -d`));
+    return;
+  }
+
+  const printTail = (fromSize = 0): number => {
+    const content = fs.readFileSync(paths.logFile, 'utf8');
+    if (fromSize === 0) {
+      const tail = content.split('\n').slice(-lines - 1).join('\n');
+      process.stdout.write(tail.endsWith('\n') ? tail : tail + '\n');
+    } else if (content.length > fromSize) {
+      process.stdout.write(content.slice(fromSize));
+    }
+    return content.length;
+  };
+
+  let size = printTail();
+  if (follow) {
+    console.log(term.dim('— following (ctrl+c to exit) —'));
+    fs.watchFile(paths.logFile, { interval: 500 }, () => {
+      size = printTail(size);
+    });
+  }
+}
+
+// ── install / uninstall ────────────────────────────────────────────────────
+
+async function cmdInstall(args: string[]): Promise<void> {
+  const { rest, found } = extractFlags(args, ['--no-autostart', '--no-env', '--no-statusline']);
+  const options = resolveOptions(rest);
+  const serveArgs = serveArgsFrom(options);
+
+  console.log(`\nInstalling claude-router ${term.dim(`(${platformName()})`)}\n`);
+  let failures = 0;
+
+  // 1. Start the daemon (✓ only after /health passes)
+  const running = await checkHealth(options.port);
+  if (running) {
+    printStep({ ok: true, detail: `Proxy already running on port ${options.port}` });
+  } else {
+    const start = await startDaemon(serveArgs, options.port, paths);
+    printStep({ ok: start.ok, detail: start.detail });
+    if (!start.ok) failures++;
+  }
+
+  // 2. Autostart on login
+  if (!found.has('--no-autostart')) {
+    const result = installAutostart(serveArgs, paths);
+    printStep(result);
+    if (!result.ok && !result.skipped) failures++;
+  }
+
+  // 3. Environment variable
+  if (!found.has('--no-env')) {
+    const result = setEnvVar(options.port, paths);
+    printStep(result);
+    if (!result.ok && !result.skipped) failures++;
+  }
+
+  // 4. Claude Code statusline
+  if (!found.has('--no-statusline')) {
+    const result = addStatusline(options.port, paths);
+    printStep(result);
+    if (!result.ok && !result.skipped) failures++;
+  }
+
+  if (failures > 0) {
+    console.log(`\n${term.fail()} Install finished with ${failures} failed step(s) — see above.`);
+    process.exit(1);
+  }
+
+  const envNote = platformName() === 'windows'
+    ? 'Open a new terminal (setx applies to new sessions only)'
+    : 'Restart your terminal (or: source your shell rc file)';
   console.log(`
-claude-router — auto-route Claude API calls by prompt complexity
+${term.ok()} Done. Requests to ${term.accent(`http://localhost:${options.port}`)} are auto-routed.
 
-Usage:
-  claude-router install [options]    One-time setup (LaunchAgent + env + statusline)
-  claude-router uninstall            Remove all installed components
-  claude-router start [options]      Start proxy in foreground
-  claude-router stop                 Stop the background proxy
-  claude-router status               Show proxy health
+  ${term.dim('→')} ${envNote}
+  ${term.dim('→')} Use ${term.accent('claude')} normally — calls route through the proxy
+  ${term.dim('→')} Check anytime: ${term.accent('claude-router status')} · ${term.accent('claude-router doctor')}
+`);
+}
 
-Options (install / start):
+async function cmdUninstall(): Promise<void> {
+  console.log(`\nUninstalling claude-router ${term.dim(`(${platformName()})`)}\n`);
+
+  const stop = await stopDaemon(paths);
+  printStep({ ok: stop.ok, detail: stop.detail, skipped: !stop.ok });
+  printStep(uninstallAutostart(paths));
+  printStep(unsetEnvVar(paths));
+  printStep(removeStatusline(paths));
+
+  console.log(`\n${term.ok()} claude-router uninstalled.\n`);
+}
+
+// ── init ───────────────────────────────────────────────────────────────────
+
+function cmdInit(args: string[]): void {
+  const { rest, found } = extractFlags(args, ['--force']);
+  if (fs.existsSync(paths.configFile) && !found.has('--force')) {
+    term.errorLine(`${paths.configFile} already exists. Use --force to overwrite.`);
+    process.exit(1);
+  }
+
+  const options = parseServeArgs(rest, {});
+  const config: FileConfig = {
+    port: options.port,
+    classifier: options.classifier,
+    provider: options.provider,
+    forceRoute: options.forceRoute,
+    verbose: options.verbose,
+  };
+  if (options.region) config.region = options.region;
+  if (options.host !== '127.0.0.1') config.host = options.host;
+
+  fs.mkdirSync(paths.configDir, { recursive: true });
+  fs.writeFileSync(paths.configFile, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  console.log(`${term.ok()} Wrote ${paths.configFile}`);
+  console.log(term.dim('  Edit it to add per-tier model overrides ("tiers") or pricing ("pricing").'));
+}
+
+// ── doctor ─────────────────────────────────────────────────────────────────
+
+async function cmdDoctor(args: string[]): Promise<void> {
+  const options = resolveOptions(args);
+  console.log(`\n${term.bold('claude-router doctor')} ${term.dim(`(${platformName()})`)}\n`);
+  let failures = 0;
+  const check = (ok: boolean, label: string, hint?: string, warnOnly = false) => {
+    const glyph = ok ? term.ok() : warnOnly ? term.warn() : term.fail();
+    console.log(`  ${glyph} ${label}`);
+    if (!ok && hint) console.log(term.dim(`      ${hint}`));
+    if (!ok && !warnOnly) failures++;
+  };
+
+  const [major] = process.versions.node.split('.').map(Number);
+  check(major! >= 18, `Node ${process.versions.node} (need ≥ 18)`);
+
+  const { loaded, error } = loadFileConfig(paths.configFile);
+  if (error) check(false, `Config file invalid: ${error}`, `Fix or regenerate: claude-router init --force`);
+  else check(true, loaded ? `Config file loaded (${paths.configFile})` : 'No config file (defaults in use)');
+
+  const health = await checkHealth(options.port);
+  check(
+    health !== null,
+    health ? `Proxy healthy on port ${options.port}` : `No proxy responding on port ${options.port}`,
+    'Start it: claude-router start -d',
+  );
+
+  const envOk = isEnvVarSet(options.port);
+  check(
+    envOk,
+    envOk
+      ? `ANTHROPIC_BASE_URL points at the proxy`
+      : `ANTHROPIC_BASE_URL is not set to http://localhost:${options.port}`,
+    platformName() === 'windows'
+      ? `Set it: setx ANTHROPIC_BASE_URL http://localhost:${options.port} (then open a new terminal)`
+      : `Add to your shell rc: export ANTHROPIC_BASE_URL=http://localhost:${options.port}`,
+  );
+
+  check(
+    Boolean(process.env['ANTHROPIC_API_KEY']) || options.provider !== 'anthropic',
+    process.env['ANTHROPIC_API_KEY']
+      ? 'ANTHROPIC_API_KEY is set'
+      : 'ANTHROPIC_API_KEY not set (fine if Claude Code sends its own auth)',
+    undefined,
+    true,
+  );
+
+  const state = readDaemonState(paths);
+  if (state) {
+    check(
+      isProcessAlive(state.pid),
+      isProcessAlive(state.pid)
+        ? `Daemon state matches a live process (pid ${state.pid})`
+        : `Stale daemon state (pid ${state.pid} is gone)`,
+      'Clear it by restarting: claude-router restart',
+      true,
+    );
+  }
+
+  check(isAutostartRegistered(paths), isAutostartRegistered(paths) ? 'Autostart registered' : 'Autostart not registered', 'Register it: claude-router install', true);
+  check(isStatuslineConfigured(paths), isStatuslineConfigured(paths) ? 'Claude Code statusline configured' : 'Statusline not configured', 'Add it: claude-router install', true);
+
+  console.log(
+    failures === 0
+      ? `\n${term.ok()} Everything looks good.\n`
+      : `\n${term.fail()} ${failures} problem(s) found.\n`,
+  );
+  process.exit(failures);
+}
+
+// ── help ───────────────────────────────────────────────────────────────────
+
+function printHelp(): void {
+  const a = (s: string) => term.accent(s);
+  const d = (s: string) => term.dim(s);
+  console.log(`
+${term.bold('claude-router')} ${d('v' + getVersion())} — auto-route Claude API calls by prompt complexity
+
+${term.bold('Usage')}
+  ${a('claude-router install')} [options]     One-time setup: daemon + autostart + env + statusline
+  ${a('claude-router uninstall')}             Remove everything install added
+  ${a('claude-router start')} [options]       Run the proxy in the foreground
+  ${a('claude-router start -d')}              Run it in the background (daemon)
+  ${a('claude-router stop')}                  Stop the background proxy
+  ${a('claude-router restart')} [options]     Restart the background proxy
+  ${a('claude-router status')}                Health, routing stats, install state
+  ${a('claude-router logs')} [-f] [-n N]      Show (or follow) the daemon log
+  ${a('claude-router init')} [--force]        Scaffold ~/.claude-router/config.json
+  ${a('claude-router doctor')}                Diagnose common setup problems
+
+${term.bold('Options')} ${d('(install / start / restart / status / doctor)')}
   --port, -p <number>      Port (default: 4000)
-  --force-route            Override model field — required for Claude Code
-  --verbose, -v            Log routing decisions
+  --host <address>         Bind address (default: 127.0.0.1 — local only; 0.0.0.0 exposes to the network)
+  --force-route            Route even explicit model requests — required for Claude Code
+  --verbose, -v            Log each routing decision
   --classifier <mode>      heuristic | ai | hybrid (default: hybrid)
   --provider <mode>        anthropic | bedrock | vertex (default: anthropic)
   --region <string>        AWS/GCP region
+  --version, -V            Print version
 
-Config file (optional):
-  ~/.claude-router/config.json supplies defaults for any option above plus
-  per-tier model overrides ("tiers") and custom pricing ("pricing").
-  CLI flags always override the file. Example:
-    { "classifier": "heuristic", "forceRoute": true,
-      "tiers": { "opus": "claude-opus-4-8" } }
+${term.bold('Install-only options')}
+  --no-autostart           Skip login autostart registration
+  --no-env                 Skip setting ANTHROPIC_BASE_URL
+  --no-statusline          Skip the Claude Code statusline
 
-Quick start:
-  claude-router install --force-route
-  # restart terminal, then use \`claude\` normally
+${term.bold('Config file')} ${d('(~/.claude-router/config.json — flags always win)')}
+  Any option above, plus per-tier model overrides ("tiers"), pricing ("pricing"),
+  and classifier tuning ("routing"). Scaffold with: ${a('claude-router init')}
+
+${term.bold('Quick start')}
+  ${a('claude-router install --force-route')}
+  ${d('# open a new terminal, then use `claude` normally')}
 `);
 }
 
 // ── Entry ──────────────────────────────────────────────────────────────────
 
-async function main() {
+async function main(): Promise<void> {
   const [subcommand, ...rest] = process.argv.slice(2);
 
-  if (!subcommand || subcommand === '--help' || subcommand === '-h') {
+  if (!subcommand || subcommand === '--help' || subcommand === '-h' || subcommand === 'help') {
     printHelp();
-    process.exit(0);
+    return;
+  }
+
+  if (subcommand === '--version' || subcommand === '-V') {
+    console.log(getVersion());
+    return;
+  }
+
+  // Legacy invocation: bare flags with no subcommand used to mean `start`
+  if (subcommand.startsWith('-')) {
+    console.error(term.warn() + ' Deprecated: bare flags now require the `start` subcommand — running `start` for you.');
+    await cmdStart(process.argv.slice(2));
+    return;
+  }
+
+  if (rest.includes('--help') || rest.includes('-h')) {
+    printHelp();
+    return;
   }
 
   switch (subcommand) {
-    case 'install':
-      cmdInstall(rest);
-      break;
-    case 'uninstall':
-      cmdUninstall();
-      break;
-    case 'status':
-      cmdStatus();
-      break;
-    case 'stop':
-      cmdStop();
-      break;
-    case 'start':
-      await cmdStart(rest);
-      break;
-    default:
-      // Legacy: no subcommand → treat all args as start options
-      await cmdStart(process.argv.slice(2));
+    case 'start': return cmdStart(rest);
+    case 'stop': return cmdStop();
+    case 'restart': return cmdRestart(rest);
+    case 'status': return cmdStatus(rest);
+    case 'logs': return cmdLogs(rest);
+    case 'install': return cmdInstall(rest);
+    case 'uninstall': return cmdUninstall();
+    case 'init': return cmdInit(rest);
+    case 'doctor': return cmdDoctor(rest);
+    default: {
+      const suggestion = suggestCommand(subcommand, COMMANDS);
+      term.errorLine(
+        `Unknown command '${subcommand}'.` + (suggestion ? ` Did you mean '${suggestion}'?` : ''),
+      );
+      console.error(term.dim(`Run 'claude-router help' for usage.`));
+      process.exit(1);
+    }
   }
 }
 
-main();
+main().catch((err) => {
+  if (err instanceof CliUsageError) {
+    term.errorLine(err.message);
+  } else {
+    term.errorLine(String(err));
+  }
+  process.exit(1);
+});

@@ -1,7 +1,17 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { heuristicScore, scoreToTier, scoreToConfidence, classifyHeuristic, classifyAI, classifyHybrid } from '../classifier.js';
-import type { ClassifyInput } from '../types.js';
+import {
+  heuristicScore,
+  heuristicScoreDetailed,
+  scoreToTier,
+  scoreToConfidence,
+  classifyHeuristic,
+  classifyAI,
+  classifyHybrid,
+  classify,
+} from '../classifier.js';
+import { LruCache } from '../cache.js';
+import type { ClassifyInput, ClassifyResult } from '../types.js';
 import type Anthropic from '@anthropic-ai/sdk';
 
 function makeInput(content: string, opts?: { system?: string; messageCount?: number }): ClassifyInput {
@@ -276,5 +286,233 @@ describe('classifyHybrid', () => {
     const result = await classifyHybrid(client, input, 'claude-haiku-4-5-20251001');
     assert.equal(result.method, 'ai');
     assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 1);
+  });
+
+  it('calls AI for signal-poor non-English prompts outside the band', async () => {
+    const client = mockClient('2');
+    // No English keywords fire, but the text is substantive (>20 est. tokens)
+    const input = makeInput(
+      'напиши будь ласка довгий детальний огляд цієї архітектури і поясни компроміси між рішеннями',
+    );
+    const detail = heuristicScoreDetailed(input);
+    assert.equal(detail.keywordHits, 0, 'expected no keyword hits');
+    await classifyHybrid(client, input, 'claude-haiku-4-5-20251001');
+    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 1);
+  });
+
+  it('respects a custom hybrid band', async () => {
+    const client = mockClient('2');
+    const input = makeInput('translate hello'); // clear haiku score, outside default band
+    const score = heuristicScore(input);
+    await classifyHybrid(client, input, 'claude-haiku-4-5-20251001', {
+      hybridBand: [Math.max(0, score - 1), score + 1],
+    });
+    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 1);
+  });
+});
+
+describe('heuristicScore — word boundaries', () => {
+  it('"listen" does not match simple verb "list"', () => {
+    const withFalsePositive = heuristicScore(makeInput('listen to this song and name the tempo'));
+    const withRealMatch = heuristicScore(makeInput('list to this song and name the tempo'));
+    assert.ok(withFalsePositive > withRealMatch, 'listen must not get the simple-verb penalty');
+  });
+
+  it('"planets" does not match complex verb "plan"', () => {
+    const withFalsePositive = heuristicScore(makeInput('the planets orbit the sun'));
+    const withRealMatch = heuristicScore(makeInput('the plan orbit the sun'));
+    assert.ok(withFalsePositive < withRealMatch, 'planets must not get the complex-verb bonus');
+  });
+
+  it('plural forms still match ("eigenvalues")', () => {
+    const score = heuristicScore(makeInput('Compute the eigenvalues of A'));
+    assert.ok(score > 50, `expected math signal to fire, got ${score}`);
+  });
+});
+
+describe('heuristicScore — token branches', () => {
+  it('very long prompts (>2000 tokens) score higher than long prompts (>500)', () => {
+    const long = heuristicScore(makeInput('word '.repeat(500))); // ~625 tokens
+    const veryLong = heuristicScore(makeInput('word '.repeat(2000))); // ~2500 tokens
+    assert.ok(veryLong > long, `expected ${veryLong} > ${long}`);
+  });
+});
+
+describe('heuristicScore — tool and image signals', () => {
+  const base = makeInput('what is the weather');
+
+  it('tool_use blocks raise the score', () => {
+    const withTools: ClassifyInput = {
+      messages: [
+        { role: 'user', content: 'what is the weather' },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 't1', name: 'get_weather', input: {} }],
+        },
+      ],
+    };
+    assert.ok(heuristicScore(withTools) > heuristicScore(base));
+  });
+
+  it('tool_result content counts toward token estimate, not keywords', () => {
+    const bigResult: ClassifyInput = {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 't1', content: 'translate list count '.repeat(500) },
+          ],
+        },
+      ],
+    };
+    // 10500 chars of tool output → >2000 est. tokens, but the simple verbs
+    // inside the tool output must NOT apply their -12 penalties
+    const detail = heuristicScoreDetailed(bigResult);
+    assert.ok(detail.estimatedTokens > 2000);
+    assert.equal(detail.keywordHits, 0);
+  });
+
+  it('defined tools raise the score, many tools raise it more', () => {
+    const fewTools: ClassifyInput = { ...base, tools: [{}, {}] };
+    const manyTools: ClassifyInput = { ...base, tools: Array.from({ length: 10 }, () => ({})) };
+    assert.ok(heuristicScore(fewTools) > heuristicScore(base));
+    assert.ok(heuristicScore(manyTools) > heuristicScore(fewTools));
+  });
+
+  it('image blocks raise the score', () => {
+    const withImage: ClassifyInput = {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'what is the weather' },
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: '' },
+            },
+          ],
+        },
+      ],
+    };
+    assert.ok(heuristicScore(withImage) > heuristicScore(base));
+  });
+});
+
+describe('scoreToTier — custom thresholds', () => {
+  it('haikuMax override widens the haiku band', () => {
+    assert.equal(scoreToTier(35), 'sonnet');
+    assert.equal(scoreToTier(35, { haikuMax: 40 }), 'haiku');
+  });
+
+  it('opusMin override widens the opus band', () => {
+    assert.equal(scoreToTier(65), 'sonnet');
+    assert.equal(scoreToTier(65, { opusMin: 60 }), 'opus');
+  });
+});
+
+describe('classifyAI — hardening', () => {
+  it('falls back to heuristic when the API call rejects', async () => {
+    const client = {
+      messages: { create: mock.fn(async () => { throw new Error('network down'); }) },
+    } as unknown as Anthropic;
+    const result = await classifyAI(client, makeInput('translate hello'), 'claude-haiku-4-5-20251001');
+    assert.equal(result.method, 'heuristic');
+    assert.equal(result.tier, 'haiku');
+  });
+
+  it('falls back to heuristic on timeout', async () => {
+    const client = {
+      messages: {
+        create: mock.fn(
+          (_params: unknown, opts?: { signal?: AbortSignal }) =>
+            new Promise((_resolve, reject) => {
+              opts?.signal?.addEventListener('abort', () => reject(opts.signal!.reason));
+            }),
+        ),
+      },
+    } as unknown as Anthropic;
+    const result = await classifyAI(client, makeInput('translate hello'), 'claude-haiku-4-5-20251001', {
+      timeoutMs: 20,
+    });
+    assert.equal(result.method, 'heuristic');
+  });
+
+  it('parses the digit from any text block, not just the first', async () => {
+    const client = {
+      messages: {
+        create: mock.fn(async () => ({
+          content: [
+            { type: 'tool_use', id: 'x', name: 'noop', input: {} },
+            { type: 'text', text: 'complexity: 3' },
+          ],
+        })),
+      },
+    } as unknown as Anthropic;
+    const result = await classifyAI(client, makeInput('test'), 'claude-haiku-4-5-20251001');
+    assert.equal(result.tier, 'opus');
+    assert.equal(result.confidence, 0.9);
+  });
+
+  it('sends system snippet and head+tail of long prompts', async () => {
+    const client = mockClient('2');
+    const longText = 'A'.repeat(800) + 'MIDDLE' + 'Z'.repeat(800);
+    await classifyAI(client, makeInput(longText, { system: 'You are a legal expert' }), 'claude-haiku-4-5-20251001');
+    const createMock = client.messages.create as unknown as ReturnType<typeof mock.fn>;
+    const params = createMock.mock.calls[0]!.arguments[0] as Anthropic.MessageCreateParamsNonStreaming;
+    const prompt = (params.messages[0]!.content as string);
+    assert.ok(prompt.includes('System: You are a legal expert'));
+    assert.ok(prompt.includes('AAA'), 'head of prompt missing');
+    assert.ok(prompt.includes('ZZZ'), 'tail of prompt missing');
+    assert.ok(!prompt.includes('MIDDLE'), 'middle should be elided');
+  });
+});
+
+describe('classify — unified entry with cache', () => {
+  it('identical inputs hit the cache, calling the API only once', async () => {
+    const client = mockClient('3');
+    const cache = new LruCache<string, ClassifyResult>(10);
+    const input = makeInput('test prompt');
+
+    const first = await classify(client, input, 'ai', 'claude-haiku-4-5-20251001', { cache });
+    const second = await classify(client, input, 'ai', 'claude-haiku-4-5-20251001', { cache });
+
+    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 1);
+    assert.equal(first.tier, 'opus');
+    assert.equal(second.tier, 'opus');
+    assert.ok(!first.cached);
+    assert.equal(second.cached, true);
+  });
+
+  it('different inputs are classified separately', async () => {
+    const client = mockClient('2');
+    const cache = new LruCache<string, ClassifyResult>(10);
+    await classify(client, makeInput('first prompt'), 'ai', 'claude-haiku-4-5-20251001', { cache });
+    await classify(client, makeInput('second prompt'), 'ai', 'claude-haiku-4-5-20251001', { cache });
+    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 2);
+  });
+
+  it('heuristic fallbacks are not cached', async () => {
+    let failures = 0;
+    const client = {
+      messages: {
+        create: mock.fn(async () => {
+          failures++;
+          throw new Error('down');
+        }),
+      },
+    } as unknown as Anthropic;
+    const cache = new LruCache<string, ClassifyResult>(10);
+    const input = makeInput('test prompt');
+    await classify(client, input, 'ai', 'claude-haiku-4-5-20251001', { cache });
+    await classify(client, input, 'ai', 'claude-haiku-4-5-20251001', { cache });
+    assert.equal(failures, 2, 'second call should retry the AI, not serve a cached fallback');
+    assert.equal(cache.size, 0);
+  });
+
+  it('heuristic mode never touches the client', async () => {
+    const client = mockClient('3');
+    const result = await classify(client, makeInput('translate hello'), 'heuristic', 'claude-haiku-4-5-20251001');
+    assert.equal(result.method, 'heuristic');
+    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 0);
   });
 });

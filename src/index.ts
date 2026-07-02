@@ -1,10 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { MessageStream } from '@anthropic-ai/sdk/lib/MessageStream.js';
 import {
-  classifyHeuristic,
-  classifyAI,
-  classifyHybrid,
+  classify,
+  DEFAULT_CLASSIFY_CACHE_SIZE,
 } from './classifier.js';
+import { LruCache } from './cache.js';
 import {
   DEFAULT_MODELS,
   DEFAULT_PRICING,
@@ -13,6 +13,7 @@ import {
 } from './models.js';
 import { CostTracker } from './tracker.js';
 import { shouldRetry, nextTier } from './retry.js';
+import { normalizeParamsForTier } from './params.js';
 import type {
   ClassifyInput,
   ClassifyResult,
@@ -21,6 +22,7 @@ import type {
   RouteMeta,
   RouterConfig,
   RouterStats,
+  RoutingTuning,
   Tier,
 } from './types.js';
 
@@ -32,6 +34,7 @@ interface ResolvedConfig {
   pricing: Record<string, ModelPricing>;
   fallback: boolean;
   verbose: boolean;
+  routing: RoutingTuning;
 }
 
 export interface StreamResult {
@@ -65,6 +68,7 @@ function resolveConfig(config: RouterConfig): ResolvedConfig {
     pricing: { ...DEFAULT_PRICING, ...config.pricing },
     fallback: config.fallback ?? true,
     verbose: config.verbose ?? false,
+    routing: config.routing ?? {},
   };
 }
 
@@ -82,7 +86,11 @@ function buildClassifyInput(
     );
   }
 
-  return { messages: params.messages, system: systemInput };
+  return {
+    messages: params.messages,
+    system: systemInput,
+    tools: (params as { tools?: unknown[] }).tools,
+  };
 }
 
 export class ClaudeRouter {
@@ -90,22 +98,25 @@ export class ClaudeRouter {
   _client: Anthropic;
   private config: ResolvedConfig;
   private tracker: CostTracker;
+  private classifyCache: LruCache<string, ClassifyResult>;
 
   constructor(config: RouterConfig) {
     this.config = resolveConfig(config);
     this._client = new Anthropic({ apiKey: this.config.apiKey });
     this.tracker = new CostTracker();
+    this.classifyCache = new LruCache(
+      this.config.routing.classifyCacheSize ?? DEFAULT_CLASSIFY_CACHE_SIZE,
+    );
   }
 
   private async classify(input: ClassifyInput): Promise<ClassifyResult> {
-    switch (this.config.classifier) {
-      case 'heuristic':
-        return classifyHeuristic(input);
-      case 'ai':
-        return classifyAI(this._client, input, this.config.tiers.haiku);
-      case 'hybrid':
-        return classifyHybrid(this._client, input, this.config.tiers.haiku);
-    }
+    return classify(
+      this._client,
+      input,
+      this.config.classifier,
+      this.config.tiers.haiku,
+      { ...this.config.routing, cache: this.classifyCache },
+    );
   }
 
   private buildMeta(
@@ -180,10 +191,9 @@ export class ClaudeRouter {
       const fallbackUsed = i !== startIndex;
 
       try {
-        const response = await this._client.messages.create({
-          ...apiParams,
-          model,
-        });
+        const response = await this._client.messages.create(
+          normalizeParamsForTier({ ...apiParams, model }, tier),
+        );
 
         // Auto-retry on bad output (truncation/refusal)
         const retryDecision = shouldRetry(response, tier);
@@ -191,10 +201,12 @@ export class ClaudeRouter {
           const escalatedTier = nextTier(tier);
           if (escalatedTier) {
             const escalatedModel = this.config.tiers[escalatedTier];
-            const retryResponse = await this._client.messages.create({
-              ...apiParams,
-              model: escalatedModel,
-            });
+            const retryResponse = await this._client.messages.create(
+              normalizeParamsForTier(
+                { ...apiParams, model: escalatedModel },
+                escalatedTier,
+              ),
+            );
 
             const meta = this.buildMeta(
               escalatedTier,
@@ -262,7 +274,6 @@ export class ClaudeRouter {
       : this.classify(input);
 
     // We need to classify first, then start stream
-    let streamInstance: MessageStream | undefined;
     let resolveStream: (s: MessageStream) => void;
     let rejectStream: (e: unknown) => void;
 
@@ -276,12 +287,10 @@ export class ClaudeRouter {
         const tier = classifyResult.tier;
         const model = this.config.tiers[tier];
 
-        const s = this._client.messages.stream({
-          ...apiParams,
-          model,
-        });
+        const s = this._client.messages.stream(
+          normalizeParamsForTier({ ...apiParams, model }, tier),
+        );
 
-        streamInstance = s;
         resolveStream!(s);
 
         const finalMessage = await s.finalMessage();
@@ -320,7 +329,7 @@ export class ClaudeRouter {
     });
 
     return {
-      stream: streamInstance ?? streamProxy,
+      stream: streamProxy,
       meta: metaPromise,
     };
   }
@@ -346,12 +355,22 @@ export type {
   RouteMeta,
   RoutedMessage,
   RouterStats,
+  RoutingTuning,
   ClassifyInput,
   ClassifyResult,
 } from './types.js';
 
-export { heuristicScore, scoreToTier, scoreToConfidence, classifyHeuristic } from './classifier.js';
+export {
+  heuristicScore,
+  heuristicScoreDetailed,
+  scoreToTier,
+  scoreToConfidence,
+  classifyHeuristic,
+  classify,
+  HEURISTIC_WEIGHTS,
+} from './classifier.js';
 export { shouldRetry, nextTier } from './retry.js';
+export { normalizeParamsForTier } from './params.js';
 export {
   DEFAULT_MODELS,
   DEFAULT_PRICING,

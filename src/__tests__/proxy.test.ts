@@ -1,11 +1,40 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createProxyApp } from '../proxy/server.js';
-import { routeHistory } from '../proxy/handler.js';
+import { routeHistory, getAnthropicClient, clearClientCache } from '../proxy/handler.js';
 import { renderDashboard } from '../proxy/dashboard.js';
 import type { RouteEvent } from '../proxy/handler.js';
 
 import { DEFAULT_MODELS } from '../models.js';
+
+describe('getAnthropicClient — per-credential cache', () => {
+  it('returns the same instance for the same api key', () => {
+    clearClientCache();
+    const a = getAnthropicClient('sk-test-1', null);
+    const b = getAnthropicClient('sk-test-1', null);
+    assert.equal(a, b);
+  });
+
+  it('returns different instances for different credentials', () => {
+    clearClientCache();
+    const a = getAnthropicClient('sk-test-1', null);
+    const b = getAnthropicClient('sk-test-2', null);
+    const c = getAnthropicClient(undefined, 'bearer-token');
+    assert.notEqual(a, b);
+    assert.notEqual(a, c);
+  });
+
+  it('evicts old clients past the cache cap', () => {
+    clearClientCache();
+    const first = getAnthropicClient('sk-evict-0', null);
+    for (let i = 1; i <= 100; i++) {
+      getAnthropicClient(`sk-evict-${i}`, null);
+    }
+    const firstAgain = getAnthropicClient('sk-evict-0', null);
+    assert.notEqual(first, firstAgain, 'first client should have been evicted');
+    clearClientCache();
+  });
+});
 
 describe('createProxyApp', () => {
   const app = createProxyApp({
@@ -250,5 +279,64 @@ describe('proxy passthrough', () => {
     assert.equal(res.headers.get('x-router-tier'), 'passthrough');
     // Anthropic rejects invalid key with 401
     assert.equal(res.status, 401);
+  });
+});
+
+describe('proxy parameter normalization', () => {
+  // Inject a mock client via the provider path so we can inspect the exact params
+  // that reach messages.create. A Claude-Code-style body (adaptive thinking +
+  // effort) routed to Haiku 4.5 used to 400 — the router must strip those.
+  it('strips adaptive thinking + effort when routing to haiku', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const mockClient = {
+      messages: {
+        create: async (params: Record<string, unknown>) => {
+          captured = params;
+          return {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            model: params.model,
+            content: [{ type: 'text', text: 'hello there' }],
+            stop_reason: 'end_turn',
+            stop_sequence: null,
+            usage: { input_tokens: 5, output_tokens: 3 },
+          };
+        },
+      },
+    };
+
+    const app = createProxyApp(
+      {
+        classifier: 'heuristic',
+        defaultModel: DEFAULT_MODELS.sonnet,
+        verbose: false,
+        provider: 'bedrock',
+        models: DEFAULT_MODELS,
+        forceRoute: true,
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockClient as any,
+    );
+
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-opus-4-8', // client pins a model; --force-route overrides it
+        messages: [{ role: 'user', content: 'hi' }], // trivial → classifies to haiku
+        max_tokens: 10,
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'high' },
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'haiku');
+    assert.ok(captured, 'messages.create should have been called');
+    assert.equal(captured!.model, DEFAULT_MODELS.haiku);
+    assert.ok(!('thinking' in captured!), 'adaptive thinking must be stripped for Haiku');
+    assert.ok(!('output_config' in captured!), 'effort must be stripped for Haiku');
+    assert.deepEqual(captured!.messages, [{ role: 'user', content: 'hi' }]);
   });
 });

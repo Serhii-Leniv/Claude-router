@@ -9,12 +9,27 @@ export interface ModelPricing {
   output: number;
 }
 
+export interface RoutingTuning {
+  /** Heuristic score below this routes to haiku (default 30) */
+  haikuMax?: number;
+  /** Heuristic score above this routes to opus (default 70) */
+  opusMin?: number;
+  /** Hybrid mode confirms with AI when score falls in this inclusive band (default [40, 60]) */
+  hybridBand?: [number, number];
+  /** AI classifier timeout in ms; on timeout/error falls back to heuristic (default 1500) */
+  aiTimeoutMs?: number;
+  /** LRU size for the AI classification cache; 0 disables (default 500) */
+  classifyCacheSize?: number;
+}
+
 export interface RouterConfig {
   apiKey: string;
   /** Model used as baseline for savings calculation (default: sonnet tier model) */
   defaultModel?: string;
   /** Classification strategy (default: 'hybrid') */
   classifier?: 'heuristic' | 'ai' | 'hybrid';
+  /** Tune classifier thresholds, hybrid band, AI timeout, and cache size */
+  routing?: RoutingTuning;
   /** Override default model IDs per tier */
   tiers?: {
     haiku?: string;
@@ -65,6 +80,8 @@ export interface RouterStats {
 export interface ClassifyInput {
   messages: Anthropic.MessageParam[];
   system?: string | Anthropic.TextBlockParam[];
+  /** Request-level tool definitions; only the count is inspected */
+  tools?: unknown[];
 }
 
 export interface ClassifyResult {
@@ -73,4 +90,6 @@ export interface ClassifyResult {
   method: 'heuristic' | 'ai';
   ms: number;
   confidence: number;
+  /** True when the result was served from the classification cache */
+  cached?: boolean;
 }

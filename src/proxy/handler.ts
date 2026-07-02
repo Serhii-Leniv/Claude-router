@@ -1,16 +1,18 @@
 import type { Context } from 'hono';
 import Anthropic from '@anthropic-ai/sdk';
 import {
-  classifyHeuristic,
-  classifyAI,
-  classifyHybrid,
+  classify as classifyUnified,
+  DEFAULT_CLASSIFY_CACHE_SIZE,
 } from '../classifier.js';
+import { LruCache } from '../cache.js';
 import {
   DEFAULT_PRICING,
   computeCostCents,
 } from '../models.js';
 import { shouldRetry, nextTier } from '../retry.js';
-import type { ClassifyInput, ClassifyResult, ModelPricing, Tier } from '../types.js';
+import { normalizeParamsForTier } from '../params.js';
+import { term } from './term.js';
+import type { ClassifyInput, ClassifyResult, ModelPricing, RoutingTuning, Tier } from '../types.js';
 
 export type Provider = 'anthropic' | 'bedrock' | 'vertex';
 
@@ -23,6 +25,8 @@ export interface HandlerConfig {
   forceRoute: boolean;
   /** Pricing table for savings math (default: current-generation DEFAULT_PRICING) */
   pricing?: Record<string, ModelPricing>;
+  /** Classifier thresholds/band/timeout/cache tuning */
+  routing?: RoutingTuning;
 }
 
 export interface RouteEvent {
@@ -45,6 +49,8 @@ export const routeHistory: RouteEvent[] = [];
 function recordEvent(event: RouteEvent): void {
   routeHistory.push(event);
   if (routeHistory.length > MAX_HISTORY) {
+    // shift() is O(n) at the cap; acceptable at n=1000 and keeps the
+    // plain-array shape that /health, /dashboard, and tests consume.
     routeHistory.shift();
   }
 }
@@ -63,34 +69,39 @@ function buildClassifyInput(body: Record<string, unknown>): ClassifyInput {
     );
   }
 
-  return { messages, system: systemInput };
+  return { messages, system: systemInput, tools: body.tools as unknown[] | undefined };
 }
+
+// One classification cache per handler config (i.e. per proxy app instance)
+const classifyCaches = new WeakMap<HandlerConfig, LruCache<string, ClassifyResult>>();
 
 async function classify(
   client: Anthropic,
   input: ClassifyInput,
   config: HandlerConfig,
 ): Promise<ClassifyResult> {
-  switch (config.classifier) {
-    case 'heuristic':
-      return classifyHeuristic(input);
-    case 'ai':
-      return classifyAI(client, input, config.models.haiku);
-    case 'hybrid':
-      return classifyHybrid(client, input, config.models.haiku);
+  let cache = classifyCaches.get(config);
+  if (!cache) {
+    cache = new LruCache(config.routing?.classifyCacheSize ?? DEFAULT_CLASSIFY_CACHE_SIZE);
+    classifyCaches.set(config, cache);
   }
+  return classifyUnified(client, input, config.classifier, config.models.haiku, {
+    ...config.routing,
+    cache,
+  });
 }
 
 function log(tier: Tier, model: string, classifyResult: ClassifyResult, costCents: number, savedCents: number, defaultModel: string, retried: boolean = false, retryReason: string | null = null): void {
   const saved =
     savedCents >= 0
-      ? `saved: $${(savedCents / 100).toFixed(4)}`
-      : `extra: $${(Math.abs(savedCents) / 100).toFixed(4)}`;
+      ? term.green(`saved: $${(savedCents / 100).toFixed(4)}`)
+      : term.red(`extra: $${(Math.abs(savedCents) / 100).toFixed(4)}`);
 
-  const retryNote = retried ? ` [retried: ${retryReason}]` : '';
+  const retryNote = retried ? term.yellow(` [retried: ${retryReason}]`) : '';
+  const cachedNote = classifyResult.cached ? ', cached' : '';
 
   console.log(
-    `[claude-router] → ${tier} (${classifyResult.method}, ${classifyResult.ms}ms, conf:${classifyResult.confidence}${retryNote}) | cost: $${(costCents / 100).toFixed(4)} | ${saved} vs ${defaultModel}`,
+    `${term.dim('[claude-router]')} → ${term.tier(tier)} ${term.dim(`(${classifyResult.method}, ${classifyResult.ms}ms, conf:${classifyResult.confidence}${cachedNote})`)}${retryNote} | cost: $${(costCents / 100).toFixed(4)} | ${saved} ${term.dim(`vs ${defaultModel}`)}`,
   );
 }
 
@@ -154,6 +165,30 @@ export async function createProviderClient(provider: Provider): Promise<Anthropi
   return null; // 'anthropic' — per-request client
 }
 
+// Reusing clients per credential preserves HTTP keep-alive connections to the API.
+const MAX_CLIENT_CACHE = 100;
+const clientCache = new LruCache<string, Anthropic>(MAX_CLIENT_CACHE);
+
+export function getAnthropicClient(
+  apiKey: string | undefined,
+  bearerToken: string | null,
+): Anthropic {
+  const key = apiKey ? `k:${apiKey}` : `b:${bearerToken}`;
+  let client = clientCache.get(key);
+  if (!client) {
+    client = apiKey
+      ? new Anthropic({ apiKey })
+      : new Anthropic({ authToken: bearerToken! });
+    clientCache.set(key, client);
+  }
+  return client;
+}
+
+/** @internal Test hook */
+export function clearClientCache(): void {
+  clientCache.clear();
+}
+
 export async function handleMessages(
   c: Context,
   config: HandlerConfig,
@@ -177,18 +212,26 @@ export async function handleMessages(
       );
     }
 
-    client = apiKey
-      ? new Anthropic({ apiKey })
-      : new Anthropic({ authToken: bearerToken! });
+    client = getAnthropicClient(apiKey, bearerToken);
   }
 
-  const body = await c.req.json<Record<string, unknown>>();
+  // Read once as text so passthrough can forward the exact client bytes
+  const rawBody = await c.req.text();
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(rawBody) as Record<string, unknown>;
+  } catch {
+    return c.json(
+      { error: { type: 'invalid_request_error', message: 'Request body is not valid JSON' } },
+      400,
+    );
+  }
   const isStreaming = body.stream === true;
   const requestedModel = body.model as string | undefined;
 
   // Passthrough only for Anthropic provider with explicit model (not "auto"), unless --force-route
   if (!config.forceRoute && config.provider === 'anthropic' && requestedModel && requestedModel !== 'auto') {
-    return proxyPassthrough(c, body, isStreaming);
+    return proxyPassthrough(c, rawBody);
   }
 
   const input = buildClassifyInput(body);
@@ -217,10 +260,9 @@ async function handleNonStreaming(
   config: HandlerConfig,
 ): Promise<Response> {
   try {
-    const response = await client.messages.create({
-      ...apiParams,
-      model,
-    } as Anthropic.MessageCreateParamsNonStreaming);
+    const response = await client.messages.create(
+      normalizeParamsForTier({ ...apiParams, model }, tier) as Anthropic.MessageCreateParamsNonStreaming,
+    );
 
     // Auto-retry on bad output
     const retryDecision = shouldRetry(response, tier);
@@ -228,10 +270,12 @@ async function handleNonStreaming(
       const escalatedTier = nextTier(tier);
       if (escalatedTier) {
         const escalatedModel = config.models[escalatedTier];
-        const retryResponse = await client.messages.create({
-          ...apiParams,
-          model: escalatedModel,
-        } as Anthropic.MessageCreateParamsNonStreaming);
+        const retryResponse = await client.messages.create(
+          normalizeParamsForTier(
+            { ...apiParams, model: escalatedModel },
+            escalatedTier,
+          ) as Anthropic.MessageCreateParamsNonStreaming,
+        );
 
         const costCents = computeCostCents(escalatedModel, retryResponse.usage.input_tokens, retryResponse.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
         const baselineCost = computeCostCents(config.defaultModel, retryResponse.usage.input_tokens, retryResponse.usage.output_tokens, config.pricing ?? DEFAULT_PRICING);
@@ -309,10 +353,9 @@ async function handleStreaming(
   classifyResult: ClassifyResult,
   config: HandlerConfig,
 ): Promise<Response> {
-  const stream = client.messages.stream({
-    ...apiParams,
-    model,
-  } as Anthropic.MessageStreamParams);
+  const stream = client.messages.stream(
+    normalizeParamsForTier({ ...apiParams, model }, tier) as Anthropic.MessageStreamParams,
+  );
 
   const headers = new Headers({
     'content-type': 'text/event-stream',
@@ -372,8 +415,7 @@ async function handleStreaming(
 
 async function proxyPassthrough(
   c: Context,
-  body: Record<string, unknown>,
-  isStreaming: boolean,
+  rawBody: string,
 ): Promise<Response> {
   try {
     // Forward original auth headers (x-api-key or Authorization: Bearer)
@@ -389,19 +431,18 @@ async function proxyPassthrough(
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: passthroughHeaders,
-      body: JSON.stringify(body),
+      body: rawBody,
     });
 
     const headers = new Headers();
     response.headers.forEach((value, key) => headers.set(key, value));
+    // fetch already decompressed the body; origin encoding headers no longer apply
+    headers.delete('content-encoding');
+    headers.delete('content-length');
     headers.set('x-router-tier', 'passthrough');
 
-    if (isStreaming && response.body) {
-      return new Response(response.body, { status: response.status, headers });
-    }
-
-    const text = await response.text();
-    return new Response(text, { status: response.status, headers });
+    // Pipe the upstream body through without buffering
+    return new Response(response.body, { status: response.status, headers });
   } catch (err) {
     return c.json(
       { error: { type: 'proxy_error', message: `Failed to reach Anthropic API: ${String(err)}` } },

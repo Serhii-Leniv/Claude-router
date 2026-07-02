@@ -7,12 +7,18 @@ const REFUSAL_PATTERNS = [
   "i'm unable",
   "i cannot",
   "i apologize but i'm not able",
-  "i don't have",
+  "i don't have the ability",
+  "i don't have access",
   "as an ai",
   "i'm not able to",
   "i am unable",
   "i am not able",
 ];
+
+// Refusals lead with the refusal — only scan the opening of the response,
+// so a legitimate short answer that merely contains a pattern mid-sentence
+// (e.g. quoting) doesn't trigger escalation.
+const REFUSAL_SCAN_CHARS = 80;
 
 export interface RetryDecision {
   retry: boolean;
@@ -42,10 +48,10 @@ export function shouldRetry(response: Anthropic.Message, tier: Tier): RetryDecis
     return { retry: true, reason: 'truncation' };
   }
 
-  // Refusal: very short output matching refusal patterns
+  // Refusal: very short output opening with a refusal pattern
   const text = extractResponseText(response);
   if (text.length < 200) {
-    const lower = text.toLowerCase();
+    const lower = text.toLowerCase().slice(0, REFUSAL_SCAN_CHARS);
     for (const pattern of REFUSAL_PATTERNS) {
       if (lower.includes(pattern)) {
         return { retry: true, reason: 'refusal' };
