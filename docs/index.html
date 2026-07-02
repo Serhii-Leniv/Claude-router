@@ -8,46 +8,77 @@
 <meta property="og:title" content="claude-router — cut your Claude bill automatically">
 <meta property="og:description" content="Auto-route every Claude request to the cheapest model that can handle it. Works with Claude Code out of the box.">
 <meta property="og:type" content="website">
+<meta property="og:url" content="https://serhii-leniv.github.io/Claude-router/">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="claude-router — cut your Claude bill automatically">
+<meta name="twitter:description" content="Local proxy that routes each Claude request to Haiku, Sonnet, or Opus by difficulty. Zero code changes.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%230d1117'/%3E%3Cpath d='M50 18 L82 50 L50 82 L18 50 Z' fill='%23d97757'/%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #0d1117; --bg2: #161b22; --border: #30363d;
     --text: #c9d1d9; --muted: #8b949e; --dim: #484f58;
-    --accent: #d97757; --green: #3fb950; --blue: #58a6ff; --purple: #bc8cff; --yellow: #d29922;
+    --accent: #d97757; --green: #3fb950; --blue: #58a6ff; --purple: #bc8cff; --yellow: #d29922; --cyan: #56d4dd;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
   .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
   a { color: var(--blue); text-decoration: none; }
   a:hover { text-decoration: underline; }
   code, pre { font-family: 'SF Mono', 'Cascadia Code', Consolas, monospace; }
+  code { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; font-size: 0.9em; }
+  pre code { background: none; border: none; padding: 0; }
 
-  header { padding: 88px 0 48px; text-align: center; }
-  .logo { font-size: 15px; color: var(--accent); font-weight: 600; letter-spacing: 1px; text-transform: lowercase; }
-  h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 700; margin: 16px 0 12px; line-height: 1.2; }
+  nav { position: sticky; top: 0; z-index: 10; background: rgba(13,17,23,0.92); backdrop-filter: blur(8px); border-bottom: 1px solid #21262d; }
+  nav .wrap { display: flex; align-items: center; gap: 22px; height: 52px; font-size: 14px; }
+  nav .brand { color: var(--accent); font-weight: 700; margin-right: auto; }
+  nav a { color: var(--muted); }
+  nav a:hover { color: var(--text); text-decoration: none; }
+  nav .gh { color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 4px 12px; }
+
+  header { padding: 72px 0 48px; text-align: center; }
+  header img.logo { max-width: 420px; width: 80%; margin-bottom: 10px; }
+  h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 700; margin: 10px 0 12px; line-height: 1.2; }
   h1 em { color: var(--accent); font-style: normal; }
-  .sub { font-size: 18px; color: var(--muted); max-width: 620px; margin: 0 auto 32px; }
+  .sub { font-size: 18px; color: var(--muted); max-width: 640px; margin: 0 auto 30px; }
   .cta { display: inline-block; background: var(--accent); color: #0d1117; font-weight: 600; padding: 12px 28px; border-radius: 8px; margin: 0 6px 10px; }
   .cta:hover { text-decoration: none; filter: brightness(1.1); }
   .cta.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
-  .badges { margin-top: 22px; }
+  .badges { margin-top: 20px; }
   .badges img { height: 20px; margin: 0 3px; vertical-align: middle; }
 
-  .term { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; text-align: left; margin: 48px auto 0; max-width: 720px; overflow: hidden; }
-  .term-bar { background: #21262d; padding: 9px 14px; font-size: 12px; color: var(--dim); }
-  .term-bar span { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
-  .term pre { padding: 18px 20px; font-size: 13px; overflow-x: auto; line-height: 1.7; }
-  .c-dim { color: var(--dim); } .c-green { color: var(--green); } .c-cyan { color: #56d4dd; }
-  .c-yellow { color: var(--yellow); } .c-purple { color: var(--purple); } .c-accent { color: var(--accent); } .c-red { color: #f85149; }
+  .term { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; text-align: left; margin: 44px auto 0; max-width: 760px; overflow: hidden; box-shadow: 0 16px 48px rgba(0,0,0,0.4); }
+  .term-bar { background: #21262d; padding: 9px 14px; font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 6px; }
+  .term-bar i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .term pre { padding: 18px 20px; font-size: 13px; overflow-x: auto; line-height: 1.75; }
+  .c-dim { color: var(--dim); } .c-green { color: var(--green); } .c-cyan { color: var(--cyan); }
+  .c-yellow { color: var(--yellow); } .c-purple { color: var(--purple); } .c-accent { color: var(--accent); } .c-red { color: #f85149; } .c-blue { color: var(--blue); }
 
   section { padding: 56px 0; border-top: 1px solid #21262d; }
-  h2 { font-size: 26px; margin-bottom: 28px; }
+  h2 { font-size: 26px; margin-bottom: 8px; }
+  .lede { color: var(--muted); margin-bottom: 28px; max-width: 640px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; }
-  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 20px; }
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 20px; transition: border-color .15s; }
+  .card:hover { border-color: var(--accent); }
   .card h3 { font-size: 15px; margin-bottom: 8px; }
   .card h3 .ico { color: var(--accent); margin-right: 6px; }
   .card p { font-size: 14px; color: var(--muted); }
 
-  .steps pre { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; font-size: 14px; margin: 12px 0 22px; overflow-x: auto; }
+  .band { margin: 26px 0 10px; }
+  .band-bar { display: flex; height: 40px; border-radius: 8px; overflow: hidden; font-size: 13px; font-weight: 600; }
+  .band-bar div { display: flex; align-items: center; justify-content: center; color: #0d1117; }
+  .band-haiku { width: 30%; background: var(--cyan); }
+  .band-sonnet { width: 40%; background: var(--yellow); }
+  .band-opus { width: 30%; background: var(--purple); }
+  .band-scale { display: flex; justify-content: space-between; font-size: 12px; color: var(--dim); padding: 6px 2px 0; }
+  .sig { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+  .sig span { font-size: 13px; background: var(--bg2); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; color: var(--muted); }
+  .sig b { color: var(--text); font-weight: 600; }
+
+  .codebox { position: relative; background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; margin: 12px 0 22px; }
+  .codebox pre { padding: 16px 20px; font-size: 14px; overflow-x: auto; }
+  .copy { position: absolute; top: 8px; right: 8px; background: #21262d; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; padding: 4px 10px; cursor: pointer; }
+  .copy:hover { color: var(--text); }
   .steps .n { display: inline-block; background: var(--accent); color: #0d1117; font-weight: 700; width: 24px; height: 24px; border-radius: 50%; text-align: center; line-height: 24px; font-size: 13px; margin-right: 8px; }
   .note { font-size: 14px; color: var(--muted); background: var(--bg2); border-left: 3px solid var(--accent); padding: 12px 16px; border-radius: 0 8px 8px 0; }
 
@@ -56,17 +87,29 @@
   td { padding: 10px 14px; border-top: 1px solid #21262d; }
   td:nth-child(n+2), th:nth-child(n+2) { text-align: right; }
 
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  @media (max-width: 720px) { .two { grid-template-columns: 1fr; } }
+
   footer { padding: 40px 0 56px; border-top: 1px solid #21262d; text-align: center; color: var(--dim); font-size: 14px; }
 </style>
 </head>
 <body>
 
+<nav><div class="wrap">
+  <span class="brand">claude-router</span>
+  <a href="#features">Features</a>
+  <a href="#how">How it works</a>
+  <a href="#start">Quickstart</a>
+  <a href="#library">Library</a>
+  <a class="gh" href="https://github.com/Serhii-Leniv/Claude-router">GitHub ↗</a>
+</div></nav>
+
 <header class="wrap">
-  <div class="logo">claude-router</div>
+  <img class="logo" src="claude-router.svg" alt="claude-router" onerror="this.style.display='none'">
   <h1>Cut your Claude bill.<br>Change <em>zero</em> lines of code.</h1>
   <p class="sub">A local proxy that scores every request's difficulty and routes it to the cheapest Claude model that can handle it — Haiku, Sonnet, or Opus. Every response reports exactly how much you saved.</p>
-  <a class="cta" href="https://www.npmjs.com/package/@sheruq/claude-router">Install from npm</a>
-  <a class="cta ghost" href="https://github.com/Serhii-Leniv/Claude-router">View on GitHub</a>
+  <a class="cta" href="#start">Get started</a>
+  <a class="cta ghost" href="https://www.npmjs.com/package/@sheruq/claude-router">npm ↗</a>
   <div class="badges">
     <a href="https://github.com/Serhii-Leniv/Claude-router/actions/workflows/test.yml"><img src="https://github.com/Serhii-Leniv/Claude-router/actions/workflows/test.yml/badge.svg" alt="CI"></a>
     <a href="https://www.npmjs.com/package/@sheruq/claude-router"><img src="https://img.shields.io/npm/v/@sheruq/claude-router?color=D97757&label=npm" alt="npm"></a>
@@ -74,7 +117,7 @@
   </div>
 
   <div class="term">
-    <div class="term-bar"><span style="background:#f85149"></span><span style="background:#d29922"></span><span style="background:#3fb950"></span>claude-router start --force-route --verbose</div>
+    <div class="term-bar"><i style="background:#f85149"></i><i style="background:#d29922"></i><i style="background:#3fb950"></i>&nbsp;claude-router start --force-route --verbose</div>
     <pre><span class="c-dim">[claude-router]</span> → <span class="c-cyan">haiku</span>  <span class="c-dim">(heuristic, 0ms)</span>  | cost: $0.0010 | <span class="c-green">saved: $0.0030</span> <span class="c-dim">vs claude-sonnet-5</span>
 <span class="c-dim">[claude-router]</span> → <span class="c-yellow">sonnet</span> <span class="c-dim">(heuristic, 0ms)</span>  | cost: $0.0180 | <span class="c-green">saved: $0.0000</span> <span class="c-dim">vs claude-sonnet-5</span>
 <span class="c-dim">[claude-router]</span> → <span class="c-purple">opus</span>   <span class="c-dim">(hybrid, 48ms)</span>   | cost: $0.0890 | <span class="c-red">extra: $0.0740</span> <span class="c-dim">vs claude-sonnet-5</span>
@@ -82,52 +125,108 @@
   </div>
 </header>
 
-<section class="wrap">
+<section class="wrap" id="features">
   <h2>Why it exists</h2>
+  <p class="lede">Your client pins one model, so you pay one price for everything — including the "rename this variable" turns. claude-router prices each request for what it actually needs.</p>
   <div class="grid">
     <div class="card"><h3><span class="ico">◆</span>Zero code changes</h3><p>Point any Anthropic-compatible app — Claude Code, Cursor, Cline, your own SDK code — at the proxy via <code>ANTHROPIC_BASE_URL</code>. Or import it as a TypeScript library.</p></div>
-    <div class="card"><h3><span class="ico">◆</span>Measurable savings</h3><p>Cost math includes prompt-cache pricing. See exact cents saved per call, lifetime totals with <code>claude-router stats</code>, and a live dashboard.</p></div>
-    <div class="card"><h3><span class="ico">◆</span>Smart classification</h3><p>A 0-ms heuristic scores each prompt (verbs, code, math, tools, images). Ambiguous cases get confirmed by Haiku for ~$0.00004, with caching and automatic fallback.</p></div>
-    <div class="card"><h3><span class="ico">◆</span>Self-healing</h3><p>Truncated or refused responses auto-retry one tier up. Rate-limited tiers fall forward. A classifier outage never blocks a request.</p></div>
-    <div class="card"><h3><span class="ico">◆</span>Cross-platform install</h3><p>One command on Windows, macOS, or Linux: background daemon, login autostart, env var, and a Claude Code statusline — with honest, health-checked ✓s.</p></div>
-    <div class="card"><h3><span class="ico">◆</span>Local &amp; private</h3><p>Runs on 127.0.0.1 only. Your keys never leave your machine — the proxy forwards whatever credentials your app already sends.</p></div>
+    <div class="card"><h3><span class="ico">◆</span>Measurable savings</h3><p>Cost math includes prompt-cache pricing. Exact cents saved per call, lifetime totals with <code>claude-router stats</code>, and a live dashboard.</p></div>
+    <div class="card"><h3><span class="ico">◆</span>Smart classification</h3><p>A 0-ms heuristic scores each prompt. Ambiguous cases get confirmed by Haiku itself for ~$0.00004 — cached, time-boxed, and never able to block a request.</p></div>
+    <div class="card"><h3><span class="ico">◆</span>Self-healing</h3><p>Truncated or refused responses auto-retry one tier up. Rate-limited tiers fall forward to the next. Failures degrade gracefully, never fatally.</p></div>
+    <div class="card"><h3><span class="ico">◆</span>Cross-platform install</h3><p>One command on Windows, macOS, or Linux: background daemon, login autostart, env var, Claude Code statusline — every ✓ verified against a real health check.</p></div>
+    <div class="card"><h3><span class="ico">◆</span>Local &amp; private</h3><p>Binds to 127.0.0.1 only. Your keys never leave your machine — the proxy forwards whatever credentials your app already sends.</p></div>
   </div>
 </section>
 
-<section class="wrap steps">
+<section class="wrap" id="how">
+  <h2>How routing works</h2>
+  <p class="lede">Every request gets a difficulty score from 0 to 100. The score decides the tier; thresholds are tunable in the config.</p>
+  <div class="band">
+    <div class="band-bar">
+      <div class="band-haiku">Haiku · score &lt; 30</div>
+      <div class="band-sonnet">Sonnet · 30 – 70</div>
+      <div class="band-opus">Opus · &gt; 70</div>
+    </div>
+    <div class="band-scale"><span>0</span><span>30</span><span>70</span><span>100</span></div>
+  </div>
+  <div class="sig">
+    <span><b>−</b> simple verbs (translate, list, format)</span>
+    <span><b>+</b> complex verbs (architect, prove, design)</span>
+    <span><b>+</b> math &amp; science signals</span>
+    <span><b>+</b> code blocks</span>
+    <span><b>+</b> tool use &amp; images</span>
+    <span><b>+</b> long context &amp; deep conversations</span>
+    <span><b>+</b> expert system prompts</span>
+  </div>
+  <p style="margin-top:22px;font-size:14px;color:var(--muted)">Scores in the ambiguous middle band (40–60) — or prompts the heuristic can't read, like non-English text — get a second opinion from Haiku itself: a 1–3 complexity rating costing ~$0.00004, cached so repeats are free, with a 1.5s timeout that falls back to the heuristic. After the response, two safety nets: truncated or refused answers retry one tier up; rate-limited tiers fall forward.</p>
+</section>
+
+<section class="wrap steps" id="start">
   <h2>Get started in 60 seconds</h2>
-  <p><span class="n">1</span>Install and set up (starts the proxy, wires up autostart + <code>ANTHROPIC_BASE_URL</code>):</p>
-  <pre>npm install -g @sheruq/claude-router
-claude-router install --force-route</pre>
+  <p style="margin-top:18px"><span class="n">1</span>Install and set up (starts the proxy, wires up autostart + <code>ANTHROPIC_BASE_URL</code>):</p>
+  <div class="codebox"><button class="copy" data-c="npm install -g @sheruq/claude-router&#10;claude-router install --force-route">copy</button><pre><code>npm install -g @sheruq/claude-router
+claude-router install --force-route</code></pre></div>
   <p><span class="n">2</span>Open a new terminal and use Claude Code normally:</p>
-  <pre>claude</pre>
+  <div class="codebox"><button class="copy" data-c="claude">copy</button><pre><code>claude</code></pre></div>
   <p><span class="n">3</span>Watch the savings:</p>
-  <pre>claude-router stats        <span class="c-dim"># lifetime savings + per-day breakdown</span>
-claude-router status       <span class="c-dim"># health and routing state</span></pre>
+  <div class="codebox"><button class="copy" data-c="claude-router stats">copy</button><pre><code>claude-router stats        <span class="c-dim"># lifetime savings + per-day breakdown</span>
+claude-router status       <span class="c-dim"># health and routing state</span>
+claude-router doctor       <span class="c-dim"># diagnose setup problems</span></code></pre></div>
   <p class="note"><strong>--force-route</strong> routes every request by difficulty even when the client pins a model (Claude Code always does). The proxy adapts model-specific parameters to the routed tier, so nothing breaks.</p>
 </section>
 
-<section class="wrap">
+<section class="wrap" id="economics">
   <h2>The economics</h2>
-  <table>
-    <thead><tr><th>Model</th><th>Input $/1M</th><th>Output $/1M</th><th>vs Sonnet</th></tr></thead>
-    <tbody>
-      <tr><td>Claude Haiku 4.5</td><td>$1.00</td><td>$5.00</td><td style="color:var(--green)">3× cheaper</td></tr>
-      <tr><td>Claude Sonnet 5</td><td>$3.00</td><td>$15.00</td><td>baseline</td></tr>
-      <tr><td>Claude Opus 4.8</td><td>$5.00</td><td>$25.00</td><td style="color:var(--yellow)">when it's worth it</td></tr>
-    </tbody>
-  </table>
-  <p style="margin-top:16px;font-size:14px;color:var(--muted)">Most coding-session turns are simple — file edits, short questions, formatting. Routing those to Haiku while keeping Opus for the hard architecture questions is where the savings come from.</p>
+  <div class="two" style="margin-top:20px">
+    <table>
+      <thead><tr><th>Model</th><th>Input $/1M</th><th>Output $/1M</th></tr></thead>
+      <tbody>
+        <tr><td style="color:var(--cyan)">Claude Haiku 4.5</td><td>$1.00</td><td>$5.00</td></tr>
+        <tr><td style="color:var(--yellow)">Claude Sonnet 5</td><td>$3.00</td><td>$15.00</td></tr>
+        <tr><td style="color:var(--purple)">Claude Opus 4.8</td><td>$5.00</td><td>$25.00</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:14px;color:var(--muted)">Most coding-session turns are simple — file edits, short questions, formatting. Haiku output costs <b style="color:var(--green)">3× less</b> than Sonnet and <b style="color:var(--green)">5× less</b> than Opus. Routing the easy majority down while keeping Opus for the genuinely hard questions is where the savings come from — and every response header tells you exactly what you saved.</p>
+  </div>
+</section>
+
+<section class="wrap" id="library">
+  <h2>Or use it as a library</h2>
+  <p class="lede">Prefer routing inside your own app? Same engine, no proxy.</p>
+  <div class="codebox"><button class="copy" data-c="npm install @sheruq/claude-router">copy</button><pre><code>npm install @sheruq/claude-router</code></pre></div>
+  <div class="codebox"><pre><code><span class="c-purple">import</span> { createRouter } <span class="c-purple">from</span> <span class="c-green">'@sheruq/claude-router'</span>;
+
+<span class="c-purple">const</span> router = <span class="c-blue">createRouter</span>({ apiKey: process.env.<span class="c-cyan">ANTHROPIC_API_KEY</span> });
+
+<span class="c-purple">const</span> res = <span class="c-purple">await</span> router.<span class="c-blue">send</span>({
+  messages: [{ role: <span class="c-green">'user'</span>, content: <span class="c-green">'Translate to French: Hello'</span> }],
+  max_tokens: <span class="c-accent">100</span>,
+});
+
+res.meta.tier;        <span class="c-dim">// 'haiku'</span>
+res.meta.savedCents;  <span class="c-dim">// 1.2</span></code></pre></div>
 </section>
 
 <footer>
   <div class="wrap">
     <a href="https://github.com/Serhii-Leniv/Claude-router">GitHub</a> ·
     <a href="https://www.npmjs.com/package/@sheruq/claude-router">npm</a> ·
+    <a href="https://github.com/Serhii-Leniv/Claude-router/blob/master/CHANGELOG.md">Changelog</a> ·
     <a href="https://github.com/Serhii-Leniv/Claude-router/issues">Issues</a> ·
-    MIT License
+    MIT License · built by <a href="https://github.com/Serhii-Leniv">Serhii Leniv</a>
   </div>
 </footer>
+
+<script>
+  document.querySelectorAll('.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      navigator.clipboard.writeText(btn.dataset.c).then(function () {
+        btn.textContent = 'copied!';
+        setTimeout(function () { btn.textContent = 'copy'; }, 1500);
+      });
+    });
+  });
+</script>
 
 </body>
 </html>
