@@ -15,7 +15,7 @@
   },
   "scripts": {
     "build": "tsc && node -e \"require('fs').chmodSync('dist/proxy/cli.js', 0o755)\"",
-    "test": "npm run build && node --test \"dist/__tests__/*.test.js\"",
+    "test": "npm run build && node scripts/run-tests.mjs",
     "dev": "tsc --watch",
     "proxy": "node dist/proxy/cli.js",
     "prepublishOnly": "npm test"
