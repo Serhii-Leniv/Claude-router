@@ -385,3 +385,36 @@ describe('proxy parameter normalization', () => {
     assert.deepEqual(captured!.messages, [{ role: 'user', content: 'hi' }]);
   });
 });
+
+describe('proxy resilience to responses missing usage', () => {
+  it('returns 200 (does not crash) when the response has no usage field', async () => {
+    // computeCosts read response.usage.cache_read_input_tokens; a response without
+    // usage threw an uncaught TypeError → 500 + wedged proxy. Cost math must not crash.
+    const app = createProxyApp(
+      {
+        classifier: 'heuristic',
+        defaultModel: DEFAULT_MODELS.sonnet,
+        verbose: false,
+        provider: 'bedrock',
+        models: DEFAULT_MODELS,
+        forceRoute: true,
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      {
+        messages: {
+          create: async () => ({
+            id: 'm', type: 'message', role: 'assistant', model: 'x',
+            content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', stop_sequence: null,
+            // usage deliberately omitted
+          }),
+        },
+      } as any,
+    );
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+    assert.equal(res.status, 200);
+  });
+});

@@ -61,20 +61,26 @@ function recordEvent(event: RouteEvent, config?: HandlerConfig): void {
   if (config?.historyFile) appendEvent(config.historyFile, event);
 }
 
-/** Cost + savings for a completed response, including prompt-cache tokens. */
-function computeCosts(model: string, usage: Anthropic.Usage, config: HandlerConfig) {
+/** Cost + savings for a completed response, including prompt-cache tokens.
+ * `usage` may be missing/partial on an unexpected response shape — guard every
+ * field so cost math (and the event record built from it) can't crash the request. */
+function computeCosts(model: string, usage: Anthropic.Usage | undefined, config: HandlerConfig) {
   const pricing = config.pricing ?? DEFAULT_PRICING;
+  const inputTokens = usage?.input_tokens ?? 0;
+  const outputTokens = usage?.output_tokens ?? 0;
   const cache = {
-    readTokens: usage.cache_read_input_tokens ?? 0,
-    creationTokens: usage.cache_creation_input_tokens ?? 0,
+    readTokens: usage?.cache_read_input_tokens ?? 0,
+    creationTokens: usage?.cache_creation_input_tokens ?? 0,
   };
-  const cost = computeCostCents(model, usage.input_tokens, usage.output_tokens, pricing, cache);
-  const baseline = computeCostCents(config.defaultModel, usage.input_tokens, usage.output_tokens, pricing, cache);
+  const cost = computeCostCents(model, inputTokens, outputTokens, pricing, cache);
+  const baseline = computeCostCents(config.defaultModel, inputTokens, outputTokens, pricing, cache);
   return {
     costCents: Math.round(cost * 1000) / 1000,
     savedCents: Math.round((baseline - cost) * 1000) / 1000,
     cacheReadTokens: cache.readTokens,
     cacheCreationTokens: cache.creationTokens,
+    inputTokens,
+    outputTokens,
   };
 }
 
@@ -300,7 +306,7 @@ async function handleNonStreaming(
           ) as Anthropic.MessageCreateParamsNonStreaming,
         );
 
-        const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens } =
+        const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
           computeCosts(escalatedModel, retryResponse.usage, config);
 
         if (config.verbose) {
@@ -317,8 +323,8 @@ async function handleNonStreaming(
           classifier: classifyResult.method,
           retried: true,
           retryReason: retryDecision.reason,
-          inputTokens: retryResponse.usage.input_tokens,
-          outputTokens: retryResponse.usage.output_tokens,
+          inputTokens,
+          outputTokens,
           cacheReadTokens,
           cacheCreationTokens,
         }, config);
@@ -330,7 +336,7 @@ async function handleNonStreaming(
       }
     }
 
-    const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens } =
+    const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
       computeCosts(model, response.usage, config);
 
     if (config.verbose) {
@@ -347,8 +353,8 @@ async function handleNonStreaming(
       classifier: classifyResult.method,
       retried: false,
       retryReason: null,
-      inputTokens: response.usage.input_tokens,
-      outputTokens: response.usage.output_tokens,
+      inputTokens,
+      outputTokens,
       cacheReadTokens,
       cacheCreationTokens,
     }, config);
@@ -402,7 +408,7 @@ async function handleStreaming(
         }
 
         const finalMessage = await stream.finalMessage();
-        const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens } =
+        const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
           computeCosts(model, finalMessage.usage, config);
 
         if (config.verbose) {
@@ -419,8 +425,8 @@ async function handleStreaming(
           classifier: classifyResult.method,
           retried: false,
           retryReason: null,
-          inputTokens: finalMessage.usage.input_tokens,
-          outputTokens: finalMessage.usage.output_tokens,
+          inputTokens,
+          outputTokens,
           cacheReadTokens,
           cacheCreationTokens,
         }, config);
