@@ -58,6 +58,23 @@ describe('shouldRetry', () => {
     assert.equal(result.retry, false);
   });
 
+  it('does not throw when response.content is undefined', () => {
+    // Regression: extractResponseText did response.content.filter(...) and an
+    // undefined content threw TypeError, uncaught in the proxy handler — it
+    // surfaced as a 500 plus a leaked connection.
+    const result = shouldRetry(fakeResponse({ content: undefined }), 'haiku');
+    assert.equal(result.retry, false);
+    assert.equal(result.reason, null);
+  });
+
+  it('does not throw when usage is undefined on a max_tokens stop', () => {
+    const result = shouldRetry(
+      fakeResponse({ stop_reason: 'max_tokens', usage: undefined }),
+      'haiku',
+    );
+    assert.equal(result.retry, false);
+  });
+
   it('retry on refusal pattern', () => {
     const result = shouldRetry(
       fakeResponse({
