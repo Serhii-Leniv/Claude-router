@@ -245,6 +245,43 @@ export function isAutostartRegistered(paths: RouterPaths = routerPaths()): boole
   return fs.existsSync(systemdUnitPath());
 }
 
+/**
+ * PID of the proxy if the OS autostart supervisor (launchd / systemd) is
+ * currently running it. Lets `install` record the supervised process in the
+ * daemon state file instead of starting a redundant daemon that would race it
+ * on the port. Returns null when no supervisor owns the process (e.g. Windows,
+ * or a manually started daemon).
+ */
+export function supervisorPid(paths: RouterPaths = routerPaths()): number | null {
+  const platform = platformName();
+  try {
+    if (platform === 'macos') {
+      const out = execFileSync('launchctl', ['list'], { encoding: 'utf8', stdio: 'pipe' });
+      for (const line of out.split('\n')) {
+        // columns: "<pid>\t<last exit>\t<label>"; pid is '-' when not running
+        const [pid, , label] = line.split('\t');
+        if (label === PLIST_LABEL && pid && pid !== '-') {
+          const n = parseInt(pid, 10);
+          return Number.isNaN(n) ? null : n;
+        }
+      }
+      return null;
+    }
+    if (platform === 'linux') {
+      const out = execFileSync(
+        'systemctl',
+        ['--user', 'show', SYSTEMD_UNIT, '--property=MainPID', '--value'],
+        { encoding: 'utf8', stdio: 'pipe' },
+      );
+      const n = parseInt(out.trim(), 10);
+      return n > 0 ? n : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function unloadLaunchAgent(paths: RouterPaths = routerPaths()): void {
   if (platformName() !== 'macos' || !fs.existsSync(paths.plistFile)) return;
   try {
