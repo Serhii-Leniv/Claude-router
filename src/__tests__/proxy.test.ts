@@ -282,6 +282,36 @@ describe('proxy passthrough', () => {
     assert.equal(res.status, 401);
   });
 
+  it('POST /v1/messages/count_tokens forwards to Anthropic instead of 404', async () => {
+    // Claude Code / the VS Code extension call count_tokens; a 404 breaks them.
+    const res = await app.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': 'sk-test-fake' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    assert.notEqual(res.status, 404, 'count_tokens must reach the origin, not 404 locally');
+    assert.equal(res.headers.get('x-router-tier'), 'passthrough');
+  });
+
+  it('count_tokens on a non-anthropic provider 404s with a clear message', async () => {
+    const bedrockApp = createProxyApp({
+      classifier: 'heuristic',
+      defaultModel: 'claude-sonnet-4-6',
+      verbose: false,
+      provider: 'bedrock',
+      models: DEFAULT_MODELS,
+      forceRoute: false,
+    });
+    const res = await bedrockApp.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'x', messages: [] }),
+    });
+    assert.equal(res.status, 404);
+    const body = await res.json() as { error: { type: string } };
+    assert.equal(body.error.type, 'not_found_error');
+  });
+
   it('POST /v1/messages with explicit model and key passes through to Anthropic', async () => {
     // With explicit model + key, passthrough forwards to real Anthropic API
     // Fake key → Anthropic returns 401 with its own error format (not ours)

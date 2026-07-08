@@ -437,6 +437,56 @@ async function handleStreaming(
   return new Response(readable, { status: 200, headers });
 }
 
+/**
+ * Forward a non-routed endpoint (count_tokens, model listing, …) straight to the
+ * Anthropic API, preserving the client's auth + beta headers. Routing only makes
+ * sense for /v1/messages; every other endpoint the client needs must still reach
+ * the origin, or Claude Code (and the VS Code extension) 404s on count_tokens.
+ */
+export async function handlePassthrough(
+  c: Context,
+  config: HandlerConfig,
+): Promise<Response> {
+  if (config.provider !== 'anthropic') {
+    // ponytail: bedrock/vertex have no HTTP passthrough target; count_tokens there is rare.
+    return c.json(
+      { error: { type: 'not_found_error', message: `${c.req.path} is only proxied for the anthropic provider` } },
+      404,
+    );
+  }
+
+  const url = new URL(c.req.url);
+  const headers = new Headers();
+  c.req.raw.headers.forEach((value, key) => {
+    // host/content-length are recomputed by fetch; forward everything else
+    // (x-api-key, authorization, anthropic-version, anthropic-beta, …).
+    if (key === 'host' || key === 'content-length') return;
+    headers.set(key, value);
+  });
+
+  const method = c.req.method;
+  const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text();
+
+  try {
+    const response = await fetch('https://api.anthropic.com' + url.pathname + url.search, {
+      method,
+      headers,
+      body,
+    });
+    const outHeaders = new Headers();
+    response.headers.forEach((value, key) => outHeaders.set(key, value));
+    outHeaders.delete('content-encoding');
+    outHeaders.delete('content-length');
+    outHeaders.set('x-router-tier', 'passthrough');
+    return new Response(response.body, { status: response.status, headers: outHeaders });
+  } catch (err) {
+    return c.json(
+      { error: { type: 'proxy_error', message: `Failed to reach Anthropic API: ${String(err)}` } },
+      502,
+    );
+  }
+}
+
 async function proxyPassthrough(
   c: Context,
   rawBody: string,
