@@ -204,6 +204,12 @@ export async function createProviderClient(provider: Provider): Promise<Anthropi
 // connection open for an hour under load.
 const CLIENT_TIMEOUT_MS = 15 * 60 * 1000;
 
+// The real Anthropic API. Pinned explicitly so the proxy's own SDK clients never
+// inherit ANTHROPIC_BASE_URL from the environment — which, once the proxy is the
+// thing that variable points at (localhost), makes the proxy call itself in an
+// infinite loop (routing AND the classifier's Haiku call both go through here).
+const ANTHROPIC_UPSTREAM = 'https://api.anthropic.com';
+
 // Reusing clients per credential preserves HTTP keep-alive connections to the API.
 const MAX_CLIENT_CACHE = 100;
 const clientCache = new LruCache<string, Anthropic>(MAX_CLIENT_CACHE);
@@ -216,8 +222,8 @@ export function getAnthropicClient(
   let client = clientCache.get(key);
   if (!client) {
     client = apiKey
-      ? new Anthropic({ apiKey, timeout: CLIENT_TIMEOUT_MS })
-      : new Anthropic({ authToken: bearerToken!, timeout: CLIENT_TIMEOUT_MS });
+      ? new Anthropic({ apiKey, timeout: CLIENT_TIMEOUT_MS, baseURL: ANTHROPIC_UPSTREAM })
+      : new Anthropic({ authToken: bearerToken!, timeout: CLIENT_TIMEOUT_MS, baseURL: ANTHROPIC_UPSTREAM });
     clientCache.set(key, client);
   }
   return client;

@@ -35,6 +35,19 @@ describe('getAnthropicClient — per-credential cache', () => {
     assert.notEqual(first, firstAgain, 'first client should have been evicted');
     clearClientCache();
   });
+
+  it('pins the upstream to api.anthropic.com even when ANTHROPIC_BASE_URL points at the proxy', () => {
+    // Otherwise the SDK inherits ANTHROPIC_BASE_URL (the proxy's own address) and
+    // the proxy calls itself in an infinite loop.
+    const prev = process.env['ANTHROPIC_BASE_URL'];
+    process.env['ANTHROPIC_BASE_URL'] = 'http://localhost:4000';
+    clearClientCache();
+    const client = getAnthropicClient('sk-loop-test', null) as unknown as { baseURL: string };
+    assert.equal(client.baseURL.replace(/\/$/, ''), 'https://api.anthropic.com');
+    clearClientCache();
+    if (prev === undefined) delete process.env['ANTHROPIC_BASE_URL'];
+    else process.env['ANTHROPIC_BASE_URL'] = prev;
+  });
 });
 
 describe('createProxyApp', () => {
