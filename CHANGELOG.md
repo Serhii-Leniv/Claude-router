@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/) (pre-1.0: minor = features, patch = fixes).
 
+## [Unreleased]
+
+### Fixed
+- **Proxy no longer 500s on an unexpected response shape** — `shouldRetry` read `response.content.filter(...)`; when the upstream response omitted `content`, the resulting `TypeError` was uncaught in the non-streaming handler and surfaced as a 500 (leaking the connection). Retry inspection now guards missing `content`/`usage` and skips retry instead of throwing.
+
 ## [0.2.0] — 2026-07-02
 
 ### Added
