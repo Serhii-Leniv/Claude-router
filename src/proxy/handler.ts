@@ -288,11 +288,21 @@ export async function handleMessages(
   // Remove 'model' and 'stream' from body, we control them
   const { model: _m, stream: _s, ...apiParams } = body;
 
+  // Forward the client's anthropic-beta header on routed calls. The SDK rebuilds the
+  // request and would otherwise drop it, breaking beta features the body relies on
+  // (e.g. context_management → "Extra inputs are not permitted").
+  const anthropicBeta = c.req.header('anthropic-beta');
+
   if (isStreaming) {
-    return handleStreaming(c, client, apiParams, tier, model, classifyResult, config);
+    return handleStreaming(c, client, apiParams, tier, model, classifyResult, config, anthropicBeta);
   }
 
-  return handleNonStreaming(c, client, apiParams, tier, model, classifyResult, config);
+  return handleNonStreaming(c, client, apiParams, tier, model, classifyResult, config, anthropicBeta);
+}
+
+/** SDK request options that relay the client's anthropic-beta header, if any. */
+function betaRequestOptions(anthropicBeta: string | undefined): { headers: Record<string, string> } | undefined {
+  return anthropicBeta ? { headers: { 'anthropic-beta': anthropicBeta } } : undefined;
 }
 
 async function handleNonStreaming(
@@ -303,10 +313,13 @@ async function handleNonStreaming(
   model: string,
   classifyResult: ClassifyResult,
   config: HandlerConfig,
+  anthropicBeta?: string,
 ): Promise<Response> {
+  const reqOpts = betaRequestOptions(anthropicBeta);
   try {
     const response = await client.messages.create(
       normalizeParamsForTier({ ...apiParams, model }, tier) as Anthropic.MessageCreateParamsNonStreaming,
+      reqOpts,
     );
 
     // Auto-retry on bad output
@@ -320,6 +333,7 @@ async function handleNonStreaming(
             { ...apiParams, model: escalatedModel },
             escalatedTier,
           ) as Anthropic.MessageCreateParamsNonStreaming,
+          reqOpts,
         );
 
         const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
@@ -403,9 +417,11 @@ async function handleStreaming(
   model: string,
   classifyResult: ClassifyResult,
   config: HandlerConfig,
+  anthropicBeta?: string,
 ): Promise<Response> {
   const stream = client.messages.stream(
     normalizeParamsForTier({ ...apiParams, model }, tier) as Anthropic.MessageStreamParams,
+    betaRequestOptions(anthropicBeta),
   );
 
   const headers = new Headers({

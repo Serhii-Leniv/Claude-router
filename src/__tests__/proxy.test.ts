@@ -443,3 +443,20 @@ describe('proxy non-streaming timeout guard', () => {
     assert.ok(body.error?.type, 'error body must be structured JSON');
   });
 });
+
+describe('proxy forwards anthropic-beta on routed calls', () => {
+  it('relays the anthropic-beta header to messages.create', async () => {
+    let opts: { headers?: Record<string, string> } | undefined;
+    const app = createProxyApp(
+      { classifier: 'heuristic', defaultModel: DEFAULT_MODELS.sonnet, verbose: false, provider: 'bedrock', models: DEFAULT_MODELS, forceRoute: true },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { messages: { create: async (_p: Record<string, unknown>, o: { headers?: Record<string, string> }) => { opts = o; return { id: 'm', type: 'message', role: 'assistant', model: 'x', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }; } } } as any,
+    );
+    const res = await app.request('/v1/messages', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'anthropic-beta': 'context-management-2025-06-27' },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(opts?.headers?.['anthropic-beta'], 'context-management-2025-06-27');
+  });
+});
