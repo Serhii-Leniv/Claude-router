@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/) (pre-1.0: minor = features, patch = fixes).
 
+## [Unreleased]
+
+### Fixed
+- **`install` no longer fights the autostart supervisor for the port** — it started a detached daemon *and* registered a KeepAlive LaunchAgent (macOS) / `--now` systemd unit (Linux), so both bound port 4000 and the supervisor's instance looped forever on `EADDRINUSE`, flooding the log. Autostart is now registered first; the daemon is only started if the supervisor didn't already bring the proxy up, and the supervised PID is recorded so `status`/`stop`/`restart` keep working. Windows (login-only Run key) still starts a daemon at install time.
+
 ## [0.2.0] — 2026-07-02
 
 ### Added
