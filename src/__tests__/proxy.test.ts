@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import Anthropic from '@anthropic-ai/sdk';
 import { createProxyApp } from '../proxy/server.js';
 import { routeHistory, getAnthropicClient, clearClientCache } from '../proxy/handler.js';
 import { renderDashboard } from '../proxy/dashboard.js';
@@ -388,33 +389,44 @@ describe('proxy parameter normalization', () => {
 
 describe('proxy resilience to responses missing usage', () => {
   it('returns 200 (does not crash) when the response has no usage field', async () => {
-    // computeCosts read response.usage.cache_read_input_tokens; a response without
-    // usage threw an uncaught TypeError → 500 + wedged proxy. Cost math must not crash.
     const app = createProxyApp(
-      {
-        classifier: 'heuristic',
-        defaultModel: DEFAULT_MODELS.sonnet,
-        verbose: false,
-        provider: 'bedrock',
-        models: DEFAULT_MODELS,
-        forceRoute: true,
-      },
+      { classifier: 'heuristic', defaultModel: DEFAULT_MODELS.sonnet, verbose: false, provider: 'bedrock', models: DEFAULT_MODELS, forceRoute: true },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      {
-        messages: {
-          create: async () => ({
-            id: 'm', type: 'message', role: 'assistant', model: 'x',
-            content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', stop_sequence: null,
-            // usage deliberately omitted
-          }),
-        },
-      } as any,
+      { messages: { create: async () => ({ id: 'm', type: 'message', role: 'assistant', model: 'x', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', stop_sequence: null }) } } as any,
     );
     const res = await app.request('/v1/messages', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
     });
     assert.equal(res.status, 200);
+  });
+});
+
+describe('proxy non-streaming timeout guard', () => {
+  function appWithCreate(create: (p: Record<string, unknown>, o?: Record<string, unknown>) => unknown) {
+    return createProxyApp(
+      { classifier: 'heuristic', defaultModel: DEFAULT_MODELS.sonnet, verbose: false, provider: 'bedrock', models: DEFAULT_MODELS, forceRoute: true },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { messages: { create } } as any,
+    );
+  }
+
+  it('gives the per-credential client a timeout above the SDK 10-min non-streaming ceiling', () => {
+    clearClientCache();
+    const client = getAnthropicClient('sk-timeout-test', null) as unknown as { timeout: number };
+    assert.equal(typeof client.timeout, 'number');
+    assert.ok(client.timeout > 10 * 60 * 1000, 'client timeout must exceed the 10-min guard ceiling');
+    clearClientCache();
+  });
+
+  it('returns a clean error (not an uncaught 500) when the SDK throws a non-API AnthropicError', async () => {
+    const app = appWithCreate(() => { throw new Anthropic.AnthropicError('Streaming is strongly recommended \u2026'); });
+    const res = await app.request('/v1/messages', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+    assert.equal(res.status, 500);
+    const body = await res.json() as { error?: { type?: string } };
+    assert.ok(body.error?.type, 'error body must be structured JSON');
   });
 });

@@ -167,7 +167,7 @@ export async function createProviderClient(provider: Provider): Promise<Anthropi
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mod = await import('@anthropic-ai/bedrock-sdk' as any);
       const AnthropicBedrock = mod.default ?? mod.AnthropicBedrock;
-      return new AnthropicBedrock() as unknown as Anthropic;
+      return new AnthropicBedrock({ timeout: CLIENT_TIMEOUT_MS }) as unknown as Anthropic;
     } catch {
       throw new Error(
         'Bedrock provider requires @anthropic-ai/bedrock-sdk.\nInstall it: npm install @anthropic-ai/bedrock-sdk\n' +
@@ -183,6 +183,7 @@ export async function createProviderClient(provider: Provider): Promise<Anthropi
       return new AnthropicVertex({
         projectId: process.env['ANTHROPIC_VERTEX_PROJECT_ID'] ?? '',
         region: process.env['ANTHROPIC_VERTEX_REGION'] ?? 'us-east5',
+        timeout: CLIENT_TIMEOUT_MS,
       }) as unknown as Anthropic;
     } catch {
       throw new Error(
@@ -193,6 +194,15 @@ export async function createProviderClient(provider: Provider): Promise<Anthropi
   }
   return null; // 'anthropic' — per-request client
 }
+
+// The SDK refuses a non-streaming create whose implied duration exceeds 10 min
+// (expectedTimeout = 3600 * max_tokens / 128000 s), throwing a base AnthropicError.
+// Claude Code sends large max_tokens on non-streaming requests, tripping that guard.
+// The guard is skipped entirely once a CLIENT-level timeout is set (it only falls
+// back to the guard when this._options.timeout is null), so any value suppresses it.
+// 15 min clears the guard for the largest max_tokens while not pinning a dead
+// connection open for an hour under load.
+const CLIENT_TIMEOUT_MS = 15 * 60 * 1000;
 
 // Reusing clients per credential preserves HTTP keep-alive connections to the API.
 const MAX_CLIENT_CACHE = 100;
@@ -206,8 +216,8 @@ export function getAnthropicClient(
   let client = clientCache.get(key);
   if (!client) {
     client = apiKey
-      ? new Anthropic({ apiKey })
-      : new Anthropic({ authToken: bearerToken! });
+      ? new Anthropic({ apiKey, timeout: CLIENT_TIMEOUT_MS })
+      : new Anthropic({ authToken: bearerToken!, timeout: CLIENT_TIMEOUT_MS });
     clientCache.set(key, client);
   }
   return client;
@@ -368,6 +378,12 @@ async function handleNonStreaming(
     if (err instanceof Anthropic.APIError || (err instanceof Error && 'status' in err && typeof (err as { status: unknown }).status === 'number')) {
       const status = (err as { status: number }).status;
       return c.json({ error: { type: 'api_error', message: err.message } }, status as 400);
+    }
+    // Non-API SDK errors (e.g. the client-side non-streaming timeout guard) are
+    // AnthropicError without a status. Return a clean error instead of letting it
+    // throw uncaught — that surfaced as an opaque 500 and leaked the connection.
+    if (err instanceof Anthropic.AnthropicError) {
+      return c.json({ error: { type: 'proxy_error', message: err.message } }, 500);
     }
     throw err;
   }
