@@ -7,6 +7,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 
 ### Fixed
 - **count_tokens and other `/v1` endpoints no longer 404** — the proxy only served `POST /v1/messages`, so Claude Code and the VS Code extension 404'd on `/v1/messages/count_tokens` (and model listing). Non-routable `/v1/*` requests now forward verbatim to Anthropic (auth + `anthropic-beta` headers preserved), tagged `x-router-tier: passthrough`. Non-`anthropic` providers return a clear 404 for these.
+- **`ANTHROPIC_BASE_URL` now reaches GUI-launched apps on macOS** — `install` also runs `launchctl setenv` (and `uninstall` runs `launchctl unsetenv`), so VS Code / the Claude Code extension started from Dock/Finder inherit the proxy URL without being relaunched from a terminal. The shell-rc export alone never reached them.
 
 ## [0.2.0] — 2026-07-02
 
