@@ -61,8 +61,10 @@ function recordEvent(event: RouteEvent, config?: HandlerConfig): void {
   if (config?.historyFile) appendEvent(config.historyFile, event);
 }
 
-/** Cost + savings for a completed response, including prompt-cache tokens. */
-function computeCosts(model: string, usage: Anthropic.Usage, config: HandlerConfig) {
+/** Cost + savings for a completed response, including prompt-cache tokens.
+ * `usage` may be missing/partial on an unexpected response shape — computeRouteCost
+ * guards every field so cost math (and the event record built from it) can't crash. */
+function computeCosts(model: string, usage: Anthropic.Usage | undefined, config: HandlerConfig) {
   return computeRouteCost(model, usage, config.defaultModel, config.pricing ?? DEFAULT_PRICING);
 }
 
@@ -149,7 +151,7 @@ export async function createProviderClient(provider: Provider): Promise<Anthropi
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mod = await import('@anthropic-ai/bedrock-sdk' as any);
       const AnthropicBedrock = mod.default ?? mod.AnthropicBedrock;
-      return new AnthropicBedrock() as unknown as Anthropic;
+      return new AnthropicBedrock({ timeout: CLIENT_TIMEOUT_MS }) as unknown as Anthropic;
     } catch {
       throw new Error(
         'Bedrock provider requires @anthropic-ai/bedrock-sdk.\nInstall it: npm install @anthropic-ai/bedrock-sdk\n' +
@@ -165,6 +167,7 @@ export async function createProviderClient(provider: Provider): Promise<Anthropi
       return new AnthropicVertex({
         projectId: process.env['ANTHROPIC_VERTEX_PROJECT_ID'] ?? '',
         region: process.env['ANTHROPIC_VERTEX_REGION'] ?? 'us-east5',
+        timeout: CLIENT_TIMEOUT_MS,
       }) as unknown as Anthropic;
     } catch {
       throw new Error(
@@ -175,6 +178,21 @@ export async function createProviderClient(provider: Provider): Promise<Anthropi
   }
   return null; // 'anthropic' — per-request client
 }
+
+// The SDK refuses a non-streaming create whose implied duration exceeds 10 min
+// (expectedTimeout = 3600 * max_tokens / 128000 s), throwing a base AnthropicError.
+// Claude Code sends large max_tokens on non-streaming requests, tripping that guard.
+// The guard is skipped entirely once a CLIENT-level timeout is set (it only falls
+// back to the guard when this._options.timeout is null), so any value suppresses it.
+// 15 min clears the guard for the largest max_tokens while not pinning a dead
+// connection open for an hour under load.
+const CLIENT_TIMEOUT_MS = 15 * 60 * 1000;
+
+// The real Anthropic API. Pinned explicitly so the proxy's own SDK clients never
+// inherit ANTHROPIC_BASE_URL from the environment — which, once the proxy is the
+// thing that variable points at (localhost), makes the proxy call itself in an
+// infinite loop (routing AND the classifier's Haiku call both go through here).
+const ANTHROPIC_UPSTREAM = 'https://api.anthropic.com';
 
 // Reusing clients per credential preserves HTTP keep-alive connections to the API.
 const MAX_CLIENT_CACHE = 100;
@@ -188,8 +206,8 @@ export function getAnthropicClient(
   let client = clientCache.get(key);
   if (!client) {
     client = apiKey
-      ? new Anthropic({ apiKey })
-      : new Anthropic({ authToken: bearerToken! });
+      ? new Anthropic({ apiKey, timeout: CLIENT_TIMEOUT_MS, baseURL: ANTHROPIC_UPSTREAM })
+      : new Anthropic({ authToken: bearerToken!, timeout: CLIENT_TIMEOUT_MS, baseURL: ANTHROPIC_UPSTREAM });
     clientCache.set(key, client);
   }
   return client;
@@ -254,11 +272,21 @@ export async function handleMessages(
   // Remove 'model' and 'stream' from body, we control them
   const { model: _m, stream: _s, ...apiParams } = body;
 
+  // Forward the client's anthropic-beta header on routed calls. The SDK rebuilds the
+  // request and would otherwise drop it, breaking beta features the body relies on
+  // (e.g. context_management → "Extra inputs are not permitted").
+  const anthropicBeta = c.req.header('anthropic-beta');
+
   if (isStreaming) {
-    return handleStreaming(c, client, apiParams, tier, model, classifyResult, config);
+    return handleStreaming(c, client, apiParams, tier, model, classifyResult, config, anthropicBeta);
   }
 
-  return handleNonStreaming(c, client, apiParams, tier, classifyResult, config);
+  return handleNonStreaming(c, client, apiParams, tier, model, classifyResult, config, anthropicBeta);
+}
+
+/** SDK request options that relay the client's anthropic-beta header, if any. */
+function betaRequestOptions(anthropicBeta: string | undefined): { headers: Record<string, string> } | undefined {
+  return anthropicBeta ? { headers: { 'anthropic-beta': anthropicBeta } } : undefined;
 }
 
 async function handleNonStreaming(
@@ -266,17 +294,22 @@ async function handleNonStreaming(
   client: Anthropic,
   apiParams: Record<string, unknown>,
   tier: Tier,
+  model: string,
   classifyResult: ClassifyResult,
   config: HandlerConfig,
+  anthropicBeta?: string,
 ): Promise<Response> {
+  const reqOpts = betaRequestOptions(anthropicBeta);
   try {
     // Proxy does not walk up on rate limits (a 429 surfaces to the client);
-    // executeRoute still handles the truncation/refusal escalation.
+    // executeRoute still handles the truncation/refusal escalation and forwards
+    // the anthropic-beta header on both the initial and any escalated call.
     const result = await executeRoute(client, apiParams, tier, config.models, {
       fallbackOnRateLimit: false,
+      requestOptions: reqOpts,
     });
 
-    const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens } =
+    const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
       computeCosts(result.model, result.response.usage, config);
 
     if (config.verbose) {
@@ -293,8 +326,8 @@ async function handleNonStreaming(
       classifier: classifyResult.method,
       retried: result.retried,
       retryReason: result.retryReason,
-      inputTokens: result.response.usage.input_tokens,
-      outputTokens: result.response.usage.output_tokens,
+      inputTokens,
+      outputTokens,
       cacheReadTokens,
       cacheCreationTokens,
     }, config);
@@ -309,6 +342,12 @@ async function handleNonStreaming(
       const status = (err as { status: number }).status;
       return c.json({ error: { type: 'api_error', message: err.message } }, status as 400);
     }
+    // Non-API SDK errors (e.g. the client-side non-streaming timeout guard) are
+    // AnthropicError without a status. Return a clean error instead of letting it
+    // throw uncaught — that surfaced as an opaque 500 and leaked the connection.
+    if (err instanceof Anthropic.AnthropicError) {
+      return c.json({ error: { type: 'proxy_error', message: err.message } }, 500);
+    }
     throw err;
   }
 }
@@ -321,9 +360,11 @@ async function handleStreaming(
   model: string,
   classifyResult: ClassifyResult,
   config: HandlerConfig,
+  anthropicBeta?: string,
 ): Promise<Response> {
   const stream = client.messages.stream(
     normalizeParamsForTier({ ...apiParams, model }, tier) as Anthropic.MessageStreamParams,
+    betaRequestOptions(anthropicBeta),
   );
 
   const headers = new Headers({
@@ -348,7 +389,7 @@ async function handleStreaming(
         }
 
         const finalMessage = await stream.finalMessage();
-        const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens } =
+        const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
           computeCosts(model, finalMessage.usage, config);
 
         if (config.verbose) {
@@ -365,8 +406,8 @@ async function handleStreaming(
           classifier: classifyResult.method,
           retried: false,
           retryReason: null,
-          inputTokens: finalMessage.usage.input_tokens,
-          outputTokens: finalMessage.usage.output_tokens,
+          inputTokens,
+          outputTokens,
           cacheReadTokens,
           cacheCreationTokens,
         }, config);
@@ -381,6 +422,56 @@ async function handleStreaming(
   });
 
   return new Response(readable, { status: 200, headers });
+}
+
+/**
+ * Forward a non-routed endpoint (count_tokens, model listing, …) straight to the
+ * Anthropic API, preserving the client's auth + beta headers. Routing only makes
+ * sense for /v1/messages; every other endpoint the client needs must still reach
+ * the origin, or Claude Code (and the VS Code extension) 404s on count_tokens.
+ */
+export async function handlePassthrough(
+  c: Context,
+  config: HandlerConfig,
+): Promise<Response> {
+  if (config.provider !== 'anthropic') {
+    // ponytail: bedrock/vertex have no HTTP passthrough target; count_tokens there is rare.
+    return c.json(
+      { error: { type: 'not_found_error', message: `${c.req.path} is only proxied for the anthropic provider` } },
+      404,
+    );
+  }
+
+  const url = new URL(c.req.url);
+  const headers = new Headers();
+  c.req.raw.headers.forEach((value, key) => {
+    // host/content-length are recomputed by fetch; forward everything else
+    // (x-api-key, authorization, anthropic-version, anthropic-beta, …).
+    if (key === 'host' || key === 'content-length') return;
+    headers.set(key, value);
+  });
+
+  const method = c.req.method;
+  const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text();
+
+  try {
+    const response = await fetch('https://api.anthropic.com' + url.pathname + url.search, {
+      method,
+      headers,
+      body,
+    });
+    const outHeaders = new Headers();
+    response.headers.forEach((value, key) => outHeaders.set(key, value));
+    outHeaders.delete('content-encoding');
+    outHeaders.delete('content-length');
+    outHeaders.set('x-router-tier', 'passthrough');
+    return new Response(response.body, { status: response.status, headers: outHeaders });
+  } catch (err) {
+    return c.json(
+      { error: { type: 'proxy_error', message: `Failed to reach Anthropic API: ${String(err)}` } },
+      502,
+    );
+  }
 }
 
 async function proxyPassthrough(

@@ -26,6 +26,7 @@ import {
   readDaemonState,
   startDaemon,
   stopDaemon,
+  writeDaemonState,
 } from './daemon.js';
 import { readLifetimeStats } from './history.js';
 import {
@@ -37,6 +38,7 @@ import {
   platformName,
   removeStatusline,
   setEnvVar,
+  supervisorPid,
   uninstallAutostart,
   unsetEnvVar,
   type StepResult,
@@ -330,21 +332,48 @@ async function cmdInstall(args: string[]): Promise<void> {
   console.log(`\nInstalling claude-router ${term.dim(`(${platformName()})`)}\n`);
   let failures = 0;
 
-  // 1. Start the daemon (✓ only after /health passes)
-  const running = await checkHealth(options.port);
-  if (running) {
-    printStep({ ok: true, detail: `Proxy already running on port ${options.port}` });
-  } else {
-    const start = await startDaemon(serveArgs, options.port, paths);
-    printStep({ ok: start.ok, detail: start.detail });
-    if (!start.ok) failures++;
-  }
-
-  // 2. Autostart on login
+  // 1. Autostart on login. On macOS/Linux the supervisor (launchd RunAtLoad /
+  //    systemd --now) ALSO starts the proxy immediately, so this must run before
+  //    we consider starting our own daemon — otherwise both bind the port and the
+  //    supervisor's instance loops forever on EADDRINUSE.
   if (!found.has('--no-autostart')) {
     const result = installAutostart(serveArgs, paths);
     printStep(result);
     if (!result.ok && !result.skipped) failures++;
+  }
+
+  // 2. Ensure the proxy is running — but don't start a second one if the
+  //    autostart supervisor already brought it up (that's the port race).
+  let running = await checkHealth(options.port);
+  // Only macOS/Linux supervisors start the proxy at install time; the Windows Run
+  // key fires at next login, so there's nothing to wait for there.
+  if (!running && !found.has('--no-autostart') && platformName() !== 'windows') {
+    // Give the just-loaded supervisor a moment to bind the port before deciding.
+    for (let i = 0; i < 15 && !running; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      running = await checkHealth(options.port);
+    }
+  }
+  if (running) {
+    // Record the supervised process so status/stop/restart keep working without
+    // a redundant daemon of our own.
+    const pid = supervisorPid(paths);
+    if (pid) {
+      writeDaemonState(
+        { pid, port: options.port, startedAt: new Date().toISOString(), args: serveArgs },
+        paths,
+      );
+    }
+    printStep({
+      ok: true,
+      detail: pid
+        ? `Proxy running on port ${options.port} (pid ${pid}, autostart-supervised)`
+        : `Proxy already running on port ${options.port}`,
+    });
+  } else {
+    const start = await startDaemon(serveArgs, options.port, paths);
+    printStep({ ok: start.ok, detail: start.detail });
+    if (!start.ok) failures++;
   }
 
   // 3. Environment variable

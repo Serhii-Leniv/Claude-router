@@ -28,6 +28,8 @@ export interface RouteResult {
 export interface ExecuteRouteOptions {
   /** Walk up `TIER_ORDER` on a `RateLimitError` instead of throwing. */
   fallbackOnRateLimit: boolean;
+  /** Per-request SDK options forwarded to every create call (e.g. the anthropic-beta header). */
+  requestOptions?: { headers: Record<string, string> };
 }
 
 export async function executeRoute(
@@ -48,6 +50,7 @@ export async function executeRoute(
     try {
       const response = await client.messages.create(
         normalizeParamsForTier({ ...apiParams, model }, tier) as Anthropic.MessageCreateParamsNonStreaming,
+        opts.requestOptions,
       );
 
       // Escalate only on the originally-classified tier's first response — never
@@ -62,6 +65,7 @@ export async function executeRoute(
               { ...apiParams, model: escalatedModel },
               escalated,
             ) as Anthropic.MessageCreateParamsNonStreaming,
+            opts.requestOptions,
           );
           return {
             response: retryResponse,

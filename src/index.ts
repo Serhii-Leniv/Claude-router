@@ -127,14 +127,14 @@ export class ClaudeRouter {
     retried: boolean = false,
     retryReason: string | null = null,
   ): RouteMeta {
-    const { costCents, savedCents, cacheReadTokens, cacheCreationTokens } =
+    const { costCents, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
       computeRouteCost(model, usage, this.config.defaultModel, this.config.pricing);
 
     return {
       tier,
       model,
-      inputTokens: usage.input_tokens,
-      outputTokens: usage.output_tokens,
+      inputTokens,
+      outputTokens,
       cacheReadTokens,
       cacheCreationTokens,
       costCents,

@@ -322,10 +322,26 @@ const macosIntegration: PlatformIntegration = {
     return fs.existsSync(paths.plistFile);
   },
   setEnvVar(port, paths = routerPaths()) {
-    return setEnvVarViaRc(paths.zshrcFile, port);
+    const result = setEnvVarViaRc(paths.zshrcFile, port);
+    if (!result.ok || result.skipped) return result;
+    // GUI apps launched from Dock/Finder (VS Code, the Claude Code extension) don't
+    // read shell rc, so the rc export alone never reaches them. launchctl setenv
+    // injects it into the running GUI session — no relaunch-from-terminal needed.
+    try {
+      execFileSync('launchctl', ['setenv', 'ANTHROPIC_BASE_URL', `http://localhost:${port}`], { stdio: 'pipe' });
+      return { ok: true, detail: `${result.detail} + GUI session (launchctl)` };
+    } catch {
+      return { ok: true, detail: `${result.detail} (launchctl setenv failed — restart GUI apps from a terminal)` };
+    }
   },
   unsetEnvVar(paths = routerPaths()) {
-    return unsetEnvVarViaRc(paths);
+    const result = unsetEnvVarViaRc(paths);
+    try {
+      execFileSync('launchctl', ['unsetenv', 'ANTHROPIC_BASE_URL'], { stdio: 'pipe' });
+    } catch {
+      // not set / launchctl absent — nothing to undo
+    }
+    return result;
   },
   isEnvVarSet(port) {
     return envMatchesProcess(port);
@@ -431,6 +447,44 @@ export function isEnvVarSet(port: number): boolean {
 /** macOS unloads its KeepAlive LaunchAgent before a stop; a no-op elsewhere. */
 export function unloadLaunchAgent(paths: RouterPaths = routerPaths()): void {
   platformIntegration().onStop(paths);
+}
+
+/**
+ * PID of the proxy if the OS autostart supervisor (launchd / systemd) is
+ * currently running it. Lets `install` record the supervised process in the
+ * daemon state file instead of starting a redundant daemon that would race it
+ * on the port. Returns null when no supervisor owns the process (e.g. Windows,
+ * or a manually started daemon).
+ */
+export function supervisorPid(paths: RouterPaths = routerPaths()): number | null {
+  void paths;
+  const platform = platformName();
+  try {
+    if (platform === 'macos') {
+      const out = execFileSync('launchctl', ['list'], { encoding: 'utf8', stdio: 'pipe' });
+      for (const line of out.split('\n')) {
+        // columns: "<pid>\t<last exit>\t<label>"; pid is '-' when not running
+        const [pid, , label] = line.split('\t');
+        if (label === PLIST_LABEL && pid && pid !== '-') {
+          const n = parseInt(pid, 10);
+          return Number.isNaN(n) ? null : n;
+        }
+      }
+      return null;
+    }
+    if (platform === 'linux') {
+      const out = execFileSync(
+        'systemctl',
+        ['--user', 'show', SYSTEMD_UNIT, '--property=MainPID', '--value'],
+        { encoding: 'utf8', stdio: 'pipe' },
+      );
+      const n = parseInt(out.trim(), 10);
+      return n > 0 ? n : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 // ── Claude Code statusline ─────────────────────────────────────────────────

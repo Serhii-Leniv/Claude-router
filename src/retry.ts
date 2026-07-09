@@ -26,6 +26,10 @@ export interface RetryDecision {
 }
 
 function extractResponseText(response: Anthropic.Message): string {
+  // A routing proxy must never crash on an unexpected response shape: if `content`
+  // is missing (some upstreams/edge responses omit it), skip retry inspection rather
+  // than throwing — an uncaught TypeError here surfaces as a 500 to the client.
+  if (!Array.isArray(response.content)) return '';
   return response.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
     .map((b) => b.text)
@@ -43,7 +47,7 @@ export function shouldRetry(response: Anthropic.Message, tier: Tier): RetryDecis
   // Truncation: hit max_tokens with substantive output (not empty)
   if (
     response.stop_reason === 'max_tokens' &&
-    response.usage.output_tokens > 20
+    (response.usage?.output_tokens ?? 0) > 20
   ) {
     return { retry: true, reason: 'truncation' };
   }

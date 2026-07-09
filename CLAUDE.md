@@ -13,7 +13,7 @@ node --test dist/__tests__/classifier.test.js  # Run single test file (build fir
 
 ## Architecture
 
-**claude-router** is a drop-in wrapper around `@anthropic-ai/sdk` that auto-routes Claude API calls to Haiku/Sonnet/Opus by prompt complexity.
+**claude-router** is a routing layer that auto-routes Claude API calls to Haiku/Sonnet/Opus by prompt complexity. The routing engine (classifier, cost model, tier fallback, retry/escalation) is the project's own; it builds on `@anthropic-ai/sdk` as the transport to Anthropic (and its Bedrock/Vertex siblings) and stays drop-in compatible with it.
 
 ```
 ClaudeRouter.send(params)

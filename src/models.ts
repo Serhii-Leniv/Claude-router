@@ -133,29 +133,39 @@ export interface RouteCost {
   savedCents: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  inputTokens: number;
+  outputTokens: number;
 }
 
 /**
  * Cost + savings for a completed response, including prompt-cache tokens. Shared
  * by the library (`RouteMeta`) and the proxy (`RouteEvent`) so both price a call
  * the same way. `savedCents` is `baseline − actual` and can be negative.
+ *
+ * `usage` may be missing/partial on an unexpected response shape — guard every
+ * field so a routing proxy never crashes on cost math. The resolved token counts
+ * are returned so callers record the same guarded values they priced.
  */
 export function computeRouteCost(
   model: string,
-  usage: Anthropic.Usage,
+  usage: Anthropic.Usage | undefined,
   defaultModel: string,
   pricing: Record<string, ModelPricing>,
 ): RouteCost {
+  const inputTokens = usage?.input_tokens ?? 0;
+  const outputTokens = usage?.output_tokens ?? 0;
   const cache = {
-    readTokens: usage.cache_read_input_tokens ?? 0,
-    creationTokens: usage.cache_creation_input_tokens ?? 0,
+    readTokens: usage?.cache_read_input_tokens ?? 0,
+    creationTokens: usage?.cache_creation_input_tokens ?? 0,
   };
-  const cost = computeCostCents(model, usage.input_tokens, usage.output_tokens, pricing, cache);
-  const baseline = computeCostCents(defaultModel, usage.input_tokens, usage.output_tokens, pricing, cache);
+  const cost = computeCostCents(model, inputTokens, outputTokens, pricing, cache);
+  const baseline = computeCostCents(defaultModel, inputTokens, outputTokens, pricing, cache);
   return {
     costCents: Math.round(cost * 1000) / 1000,
     savedCents: Math.round((baseline - cost) * 1000) / 1000,
     cacheReadTokens: cache.readTokens,
     cacheCreationTokens: cache.creationTokens,
+    inputTokens,
+    outputTokens,
   };
 }

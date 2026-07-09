@@ -1,0 +1,66 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug! A minimal repro is the single most helpful thing you can include.
+        For security-sensitive reports, **do not** open a public issue — see `SECURITY.md`.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you see, and what did you expect instead?
+      placeholder: The proxy returned a 500 when ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps or a code snippet. The smaller, the better.
+      placeholder: |
+        1. `claude-router install --force-route`
+        2. Run `claude ...`
+        3. See error
+    validations:
+      required: true
+  - type: dropdown
+    id: usage
+    attributes:
+      label: How are you using claude-router?
+      options:
+        - Proxy (claude-router CLI / ANTHROPIC_BASE_URL)
+        - Library (import into my own code)
+        - Both
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider
+      description: anthropic (default), bedrock, or vertex?
+      placeholder: anthropic
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`claude-router doctor` output (if using the proxy)"
+      description: This is auto-formatted as code — no backticks needed.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "Output of `claude-router -V` (or the npm package version), plus Node version."
+      placeholder: "claude-router 0.2.0, Node 22.3.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: "macOS 14.5 / Windows 11 / Ubuntu 24.04"
+    validations:
+      required: true
