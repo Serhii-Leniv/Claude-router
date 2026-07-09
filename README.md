@@ -349,6 +349,12 @@ interface RouteMeta {
 
 ---
 
+## Contributing
+
+Contributions are welcome! See **[CONTRIBUTING.md](CONTRIBUTING.md)** to get from clone to merged PR — the short version is `npm install && npm test`, branch, add a test, open a PR. `master` is protected: changes merge by squash after review and green CI. For security reports, see **[SECURITY.md](SECURITY.md)**.
+
+---
+
 ## License
 
 MIT
