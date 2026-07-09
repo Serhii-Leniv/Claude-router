@@ -488,6 +488,11 @@ async function proxyPassthrough(
     const authHeader = c.req.header('authorization');
     if (apiKey) passthroughHeaders['x-api-key'] = apiKey;
     if (authHeader) passthroughHeaders['authorization'] = authHeader;
+    // Relay anthropic-beta — a beta-dependent request (e.g. context-management)
+    // 400s upstream without it. The routed path and handlePassthrough both
+    // forward it; this path must too.
+    const anthropicBeta = c.req.header('anthropic-beta');
+    if (anthropicBeta) passthroughHeaders['anthropic-beta'] = anthropicBeta;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',

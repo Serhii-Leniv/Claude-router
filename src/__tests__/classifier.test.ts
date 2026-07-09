@@ -526,3 +526,187 @@ describe('classify — unified entry with cache', () => {
     assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 0);
   });
 });
+
+describe('classifier — custom thresholds honored in AI paths (G2/G3)', () => {
+  it('AI verdict respects a custom haikuMax (G2)', async () => {
+    // AI "1" → synthetic score 15. With haikuMax=10, 15 is above the haiku
+    // cutoff, so the tier must be sonnet — the old hardcoded level→tier map
+    // ignored the threshold and always returned haiku.
+    const result = await classify(
+      mockClient('1'),
+      makeInput('test'),
+      'ai',
+      'claude-haiku-4-5-20251001',
+      { haikuMax: 10 },
+    );
+    assert.equal(result.method, 'ai');
+    assert.equal(result.tier, 'sonnet');
+  });
+
+  it('AI verdict respects a custom opusMin (G2)', async () => {
+    // AI "3" → synthetic score 85. With opusMin=90, 85 is below the opus
+    // cutoff → sonnet.
+    const result = await classify(
+      mockClient('3'),
+      makeInput('test'),
+      'ai',
+      'claude-haiku-4-5-20251001',
+      { opusMin: 90 },
+    );
+    assert.equal(result.tier, 'sonnet');
+  });
+
+  it('default thresholds keep the original level→tier mapping', async () => {
+    assert.equal((await classify(mockClient('1'), makeInput('t'), 'ai', 'h')).tier, 'haiku');
+    assert.equal((await classify(mockClient('2'), makeInput('t'), 'ai', 'h')).tier, 'sonnet');
+    assert.equal((await classify(mockClient('3'), makeInput('t'), 'ai', 'h')).tier, 'opus');
+  });
+
+  it('AI-failure fallback preserves custom thresholds (G3)', async () => {
+    const client = { messages: { create: mock.fn(async () => { throw new Error('down'); }) } } as unknown as Anthropic;
+    // An input scoring in (38, 70]: default → sonnet, but opusMin=38 → opus.
+    const input = makeInput('please explain this concept clearly to everyone');
+    const score = heuristicScoreDetailed(input).score;
+    assert.ok(score > 38 && score <= 70, `guard: score ${score} must be in (38,70]`);
+
+    const dflt = await classify(client, input, 'ai', 'claude-haiku-4-5-20251001', {});
+    assert.equal(dflt.tier, 'sonnet');
+    assert.equal(dflt.method, 'heuristic'); // fell back
+
+    const tuned = await classify(client, input, 'ai', 'claude-haiku-4-5-20251001', { opusMin: 38 });
+    assert.equal(tuned.tier, 'opus', 'fallback must honor the custom opusMin');
+  });
+});
+
+describe('classifier — cache key uses full text, not a prefix (G4)', () => {
+  it('prompts sharing a >500-char prefix but differing later do NOT collide', async () => {
+    // Two distinct tasks share a long identical preamble (common in agentic /
+    // Claude Code traffic). Hashing only the first 500 chars collided them, so
+    // the second served a stale cheap-tier verdict. With full-text hashing the
+    // second must be classified on its own merits.
+    const prefix = 'context: '.repeat(80); // ~720 chars, identical for both
+    const cache = new LruCache<string, ClassifyResult>(10);
+
+    const a = await classify(
+      mockClient('1'),
+      makeInput(prefix + ' just say hi'),
+      'ai',
+      'claude-haiku-4-5-20251001',
+      { cache },
+    );
+    const b = await classify(
+      mockClient('3'),
+      makeInput(prefix + ' architect a fault-tolerant distributed database'),
+      'ai',
+      'claude-haiku-4-5-20251001',
+      { cache },
+    );
+
+    assert.equal(a.tier, 'haiku');
+    assert.ok(!a.cached);
+    assert.equal(b.tier, 'opus', 'second prompt must not be served the first prompt’s cached tier');
+    assert.ok(!b.cached, 'second prompt must be a cache miss, not a collision hit');
+  });
+
+  it('genuinely identical inputs still hit the cache', async () => {
+    const cache = new LruCache<string, ClassifyResult>(10);
+    const input = makeInput('x'.repeat(700) + ' analyze this');
+    const client = mockClient('2');
+    const first = await classify(client, input, 'ai', 'claude-haiku-4-5-20251001', { cache });
+    const second = await classify(client, input, 'ai', 'claude-haiku-4-5-20251001', { cache });
+    assert.ok(!first.cached);
+    assert.equal(second.cached, true);
+    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 1);
+  });
+});
+
+describe('Strategy 1 — task-scored routing + capped harness + agentic floor', () => {
+  // A Claude-Code-style harness: long system prompt with expert keywords + many tools.
+  const bigSystem = 'You are an expert engineer. Be comprehensive, thorough, and detailed. '.repeat(20);
+  const tools = Array.from({ length: 15 }, (_, i) => ({ name: 'tool' + i }));
+
+  it('harness alone (big system + many tools) cannot push a trivial task to opus', () => {
+    // This is the money bug: the harness used to add ~+40 → opus on "2+2".
+    const score = heuristicScore({
+      messages: [{ role: 'user', content: 'what is 2+2?' }],
+      system: bigSystem,
+      tools,
+    });
+    assert.notEqual(scoreToTier(score), 'opus', `trivial task must not reach opus, score=${score}`);
+  });
+
+  it('scores the LATEST user turn — an earlier hard turn does not inflate a trivial one', () => {
+    const score = heuristicScore({
+      messages: [
+        { role: 'user', content: 'architect a distributed system and prove correctness' },
+        { role: 'assistant', content: 'Here is a design ...' },
+        { role: 'user', content: 'thanks, now what is 2+2?' },
+      ],
+    });
+    assert.notEqual(scoreToTier(score), 'opus', `latest trivial turn must not inherit earlier complexity, score=${score}`);
+  });
+
+  it('floors an agentic trivial turn at sonnet (never haiku by default)', async () => {
+    const r = await classify(
+      null,
+      { messages: [{ role: 'user', content: 'list the files' }], system: bigSystem, tools },
+      'heuristic',
+      'claude-haiku-4-5',
+    );
+    assert.equal(r.tier, 'sonnet');
+    assert.equal(r.floored, true);
+  });
+
+  it('an in-flight tool_result (no request-level tools) marks the session agentic and floors haiku→sonnet', async () => {
+    const r = await classify(
+      null,
+      {
+        messages: [
+          { role: 'user', content: 'summarize this' }, // trivial → haiku on its own
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'done' }] },
+        ],
+      },
+      'heuristic',
+      'claude-haiku-4-5',
+    );
+    assert.equal(r.tier, 'sonnet');
+    assert.equal(r.floored, true);
+  });
+
+  it('allowHaikuInAgentic opts out of the floor', async () => {
+    const r = await classify(
+      null,
+      { messages: [{ role: 'user', content: 'list the files' }], tools },
+      'heuristic',
+      'claude-haiku-4-5',
+      { allowHaikuInAgentic: true },
+    );
+    assert.equal(r.tier, 'haiku');
+    assert.ok(!r.floored);
+  });
+
+  it('a genuinely hard task still reaches opus despite the harness', async () => {
+    const r = await classify(
+      null,
+      {
+        messages: [{ role: 'user', content: 'architect a distributed system and prove correctness under partition' }],
+        system: bigSystem,
+        tools,
+      },
+      'heuristic',
+      'claude-haiku-4-5',
+    );
+    assert.equal(r.tier, 'opus');
+  });
+
+  it('no tools → no floor; a plain trivial prompt still routes to haiku (API savings intact)', async () => {
+    const r = await classify(
+      null,
+      { messages: [{ role: 'user', content: 'translate hello to French' }] },
+      'heuristic',
+      'claude-haiku-4-5',
+    );
+    assert.equal(r.tier, 'haiku');
+    assert.ok(!r.floored);
+  });
+});

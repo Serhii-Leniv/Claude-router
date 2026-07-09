@@ -2,17 +2,40 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { Tier } from './types.js';
 import { TIER_ORDER } from './models.js';
 
+// Each pattern pairs the refusal modal with a refusal object/verb. Bare "i can't"
+// / "i cannot" / "as an ai" over-matched benign openers ("I can't wait to help",
+// "As an AI enthusiast, …") and caused needless, costly escalations, so the modals
+// are anchored to what a refusal actually says next.
 const REFUSAL_PATTERNS = [
-  "i can't",
-  "i'm unable",
-  "i cannot",
-  "i apologize but i'm not able",
+  "i can't help",
+  "i can't assist",
+  "i can't provide",
+  "i can't create",
+  "i can't generate",
+  "i can't write",
+  "i can't do that",
+  "i can't comply",
+  "i can't fulfill",
+  "i cannot help",
+  "i cannot assist",
+  "i cannot provide",
+  "i cannot create",
+  "i cannot generate",
+  "i cannot write",
+  "i cannot do that",
+  "i cannot comply",
+  "i cannot fulfill",
+  "i'm unable to",
+  "i am unable to",
+  "i'm not able to",
+  "i am not able to",
   "i don't have the ability",
   "i don't have access",
-  "as an ai",
-  "i'm not able to",
-  "i am unable",
-  "i am not able",
+  "i apologize, but i can't",
+  "i apologize but i'm not able",
+  "as an ai language model",
+  "as an ai, i can't",
+  "as an ai, i cannot",
 ];
 
 // Refusals lead with the refusal — only scan the opening of the response,
@@ -52,10 +75,17 @@ export function shouldRetry(response: Anthropic.Message, tier: Tier): RetryDecis
     return { retry: true, reason: 'truncation' };
   }
 
-  // Refusal: very short output opening with a refusal pattern
+  // Refusal: very short output opening with a refusal pattern. Normalize
+  // typographic apostrophes (Claude output routinely uses U+2019, which the
+  // straight-quote patterns would otherwise miss) and the spaced "can not"
+  // form before scanning the opening.
   const text = extractResponseText(response);
   if (text.length < 200) {
-    const lower = text.toLowerCase().slice(0, REFUSAL_SCAN_CHARS);
+    const lower = text
+      .toLowerCase()
+      .replace(/[‘’]/g, "'")
+      .replace(/\bcan\s+not\b/g, 'cannot')
+      .slice(0, REFUSAL_SCAN_CHARS);
     for (const pattern of REFUSAL_PATTERNS) {
       if (lower.includes(pattern)) {
         return { retry: true, reason: 'refusal' };

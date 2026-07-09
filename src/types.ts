@@ -20,6 +20,14 @@ export interface RoutingTuning {
   aiTimeoutMs?: number;
   /** LRU size for the AI classification cache; 0 disables (default 500) */
   classifyCacheSize?: number;
+  /**
+   * Allow routing to haiku inside an agentic/tool-using session. Default false:
+   * when tools (or tool_use/tool_result blocks) are present the tier is floored
+   * at sonnet, because a trivial-LOOKING turn in a coding loop can be hard to
+   * execute and a wrong cheap step can cascade into more work. Set true to let a
+   * clearly-trivial turn drop to haiku for maximum savings.
+   */
+  allowHaikuInAgentic?: boolean;
 }
 
 export interface RouterConfig {
@@ -96,4 +104,6 @@ export interface ClassifyResult {
   confidence: number;
   /** True when the result was served from the classification cache */
   cached?: boolean;
+  /** True when an agentic session floored the tier up from haiku to sonnet */
+  floored?: boolean;
 }
