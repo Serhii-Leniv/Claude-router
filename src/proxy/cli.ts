@@ -10,6 +10,7 @@ import { term } from './term.js';
 import {
   CliUsageError,
   applyRegionEnv,
+  configFromOptions,
   getVersion,
   loadFileConfig,
   parseServeArgs,
@@ -399,15 +400,7 @@ function cmdInit(args: string[]): void {
   }
 
   const options = parseServeArgs(rest, {});
-  const config: FileConfig = {
-    port: options.port,
-    classifier: options.classifier,
-    provider: options.provider,
-    forceRoute: options.forceRoute,
-    verbose: options.verbose,
-  };
-  if (options.region) config.region = options.region;
-  if (options.host !== '127.0.0.1') config.host = options.host;
+  const config = configFromOptions(options);
 
   fs.mkdirSync(paths.configDir, { recursive: true });
   fs.writeFileSync(paths.configFile, JSON.stringify(config, null, 2) + '\n', 'utf8');

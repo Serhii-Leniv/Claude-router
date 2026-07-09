@@ -1,3 +1,4 @@
+import { emptyTotals, foldOutcome, tierBreakdown } from '../totals.js';
 import type { RouteEvent } from './handler.js';
 import type { LifetimeStats } from './history.js';
 
@@ -10,15 +11,15 @@ function esc(s: string): string {
 }
 
 export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats): string {
-  const totalRequests = history.length;
-  const totalCost = history.reduce((s, e) => s + e.costCents, 0);
-  const totalSaved = history.reduce((s, e) => s + e.savedCents, 0);
-  const retried = history.filter((e) => e.retried).length;
+  const totals = emptyTotals();
+  for (const e of history) foldOutcome(totals, e);
 
-  const tierCounts = { haiku: 0, sonnet: 0, opus: 0, passthrough: 0 };
-  for (const e of history) {
-    if (e.tier in tierCounts) tierCounts[e.tier as keyof typeof tierCounts]++;
-  }
+  const totalRequests = totals.requests;
+  const totalCost = totals.costCents;
+  const totalSaved = totals.savedCents;
+  const retried = totals.retried;
+
+  const tierCounts = tierBreakdown(totals, ['haiku', 'sonnet', 'opus', 'passthrough'] as const);
 
   const total = tierCounts.haiku + tierCounts.sonnet + tierCounts.opus + tierCounts.passthrough || 1;
   const haikuPct = ((tierCounts.haiku / total) * 100).toFixed(1);

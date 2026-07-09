@@ -1,3 +1,4 @@
+import type Anthropic from '@anthropic-ai/sdk';
 import type { ModelPricing, Tier } from './types.js';
 
 export const DEFAULT_MODELS: Record<Tier, string> = {
@@ -124,4 +125,37 @@ export function tierForModel(
     if (modelId === model) return tier as Tier;
   }
   return undefined;
+}
+
+/** Cost of a routed call plus its savings vs a baseline model, rounded and cache-aware. */
+export interface RouteCost {
+  costCents: number;
+  savedCents: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+/**
+ * Cost + savings for a completed response, including prompt-cache tokens. Shared
+ * by the library (`RouteMeta`) and the proxy (`RouteEvent`) so both price a call
+ * the same way. `savedCents` is `baseline − actual` and can be negative.
+ */
+export function computeRouteCost(
+  model: string,
+  usage: Anthropic.Usage,
+  defaultModel: string,
+  pricing: Record<string, ModelPricing>,
+): RouteCost {
+  const cache = {
+    readTokens: usage.cache_read_input_tokens ?? 0,
+    creationTokens: usage.cache_creation_input_tokens ?? 0,
+  };
+  const cost = computeCostCents(model, usage.input_tokens, usage.output_tokens, pricing, cache);
+  const baseline = computeCostCents(defaultModel, usage.input_tokens, usage.output_tokens, pricing, cache);
+  return {
+    costCents: Math.round(cost * 1000) / 1000,
+    savedCents: Math.round((baseline - cost) * 1000) / 1000,
+    cacheReadTokens: cache.readTokens,
+    cacheCreationTokens: cache.creationTokens,
+  };
 }

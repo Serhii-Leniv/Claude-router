@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { emptyTotals, foldOutcome, type RouteTotals } from '../totals.js';
 import type { RouteEvent } from './handler.js';
 
 /**
@@ -16,21 +17,12 @@ export function appendEvent(file: string, event: RouteEvent): void {
   }
 }
 
-export interface LifetimeStats {
-  requests: number;
-  costCents: number;
-  savedCents: number;
-  retried: number;
-  tiers: Record<string, number>;
-  /** Per-day aggregates keyed by YYYY-MM-DD */
-  byDay: Record<string, { requests: number; costCents: number; savedCents: number }>;
-}
+/** Lifetime figures are just accumulated {@link RouteTotals}. */
+export type LifetimeStats = RouteTotals;
 
-function emptyStats(): LifetimeStats {
-  return { requests: 0, costCents: 0, savedCents: 0, retried: 0, tiers: {}, byDay: {} };
-}
-
-function fold(stats: LifetimeStats, line: string): void {
+// Parsing and corrupt-line rejection are this module's concern (they belong to
+// the file seam); the numeric folding is shared via foldOutcome.
+function foldLine(stats: LifetimeStats, line: string): void {
   let event: RouteEvent;
   try {
     event = JSON.parse(line) as RouteEvent;
@@ -38,18 +30,7 @@ function fold(stats: LifetimeStats, line: string): void {
     return; // skip corrupt lines rather than losing the whole history
   }
   if (typeof event?.costCents !== 'number') return;
-  stats.requests++;
-  stats.costCents += event.costCents;
-  stats.savedCents += event.savedCents;
-  if (event.retried) stats.retried++;
-  stats.tiers[event.tier] = (stats.tiers[event.tier] ?? 0) + 1;
-  const day = String(event.timestamp ?? '').slice(0, 10);
-  if (day) {
-    const d = (stats.byDay[day] ??= { requests: 0, costCents: 0, savedCents: 0 });
-    d.requests++;
-    d.costCents += event.costCents;
-    d.savedCents += event.savedCents;
-  }
+  foldOutcome(stats, event);
 }
 
 // Incremental cache: the file is append-only, so once a prefix is folded we
@@ -66,11 +47,11 @@ export function readLifetimeStats(file: string): LifetimeStats {
   try {
     size = fs.statSync(file).size;
   } catch {
-    return emptyStats();
+    return emptyTotals();
   }
 
   if (!cached || cached.file !== file || size < cached.offset) {
-    cached = { file, offset: 0, stats: emptyStats() };
+    cached = { file, offset: 0, stats: emptyTotals() };
   }
   if (size === cached.offset) return cached.stats;
 
@@ -85,7 +66,7 @@ export function readLifetimeStats(file: string): LifetimeStats {
       const lastNewline = text.lastIndexOf('\n');
       if (lastNewline >= 0) {
         for (const line of text.slice(0, lastNewline).split('\n')) {
-          if (line.trim()) fold(cached.stats, line);
+          if (line.trim()) foldLine(cached.stats, line);
         }
         cached.offset += lastNewline + 1;
       }

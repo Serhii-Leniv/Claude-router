@@ -88,64 +88,91 @@ export interface ServeOptions {
 /** Thrown for user-facing argument errors; the CLI prints it red and exits 1. */
 export class CliUsageError extends Error {}
 
+const DEFAULT_HOST = '127.0.0.1';
+
+type OptionKind =
+  | { type: 'number'; min: number; max: number }
+  | { type: 'string' }
+  | { type: 'enum'; values: readonly string[] }
+  | { type: 'boolean' };
+
+/**
+ * One row per serve option. This single table drives parsing, re-serialization
+ * (`serveArgsFrom`), and config scaffolding (`configFromOptions`) — so a new flag
+ * is one row, not five parallel hand-written lists. `emit`/`config` predicates
+ * key off `default`, so a value and "when to omit it" can never disagree.
+ */
+interface OptionSpec {
+  /** Corresponding key on ServeOptions / FileConfig. */
+  key: 'port' | 'host' | 'verbose' | 'classifier' | 'provider' | 'region' | 'forceRoute';
+  flags: string[];
+  kind: OptionKind;
+  default: string | number | boolean;
+  /** Always emit as a spawn arg (else only when non-default). */
+  argAlways?: boolean;
+  /** Always include in the scaffolded config.json (else only when non-default). */
+  configAlways?: boolean;
+}
+
+const OPTIONS: OptionSpec[] = [
+  { key: 'port',       flags: ['--port', '-p'],    kind: { type: 'number', min: 1, max: 65535 }, default: 4000, argAlways: true, configAlways: true },
+  { key: 'host',       flags: ['--host'],          kind: { type: 'string' },                     default: DEFAULT_HOST },
+  { key: 'forceRoute', flags: ['--force-route'],   kind: { type: 'boolean' },                    default: false, configAlways: true },
+  { key: 'verbose',    flags: ['--verbose', '-v'], kind: { type: 'boolean' },                    default: false, configAlways: true },
+  { key: 'classifier', flags: ['--classifier'],    kind: { type: 'enum', values: ['heuristic', 'ai', 'hybrid'] }, default: 'hybrid', configAlways: true },
+  { key: 'provider',   flags: ['--provider'],      kind: { type: 'enum', values: ['anthropic', 'bedrock', 'vertex'] }, default: 'anthropic', configAlways: true },
+  { key: 'region',     flags: ['--region'],        kind: { type: 'string' },                     default: '' },
+];
+
+/** Validate and convert a flag's raw argument per its declared kind. */
+function coerce(spec: OptionSpec, raw: string | undefined): string | number | boolean {
+  const k = spec.kind;
+  if (k.type === 'number') {
+    const parsed = raw !== undefined ? parseInt(raw, 10) : NaN;
+    if (isNaN(parsed) || parsed < k.min || parsed > k.max) {
+      throw new CliUsageError(`Invalid ${spec.key}: ${raw ?? '(missing)'}. Must be ${k.min}-${k.max}.`);
+    }
+    return parsed;
+  }
+  if (k.type === 'enum') {
+    if (raw !== undefined && k.values.includes(raw)) return raw;
+    throw new CliUsageError(`Invalid ${spec.key}: ${raw ?? '(missing)'}. Must be ${k.values.join(' | ')}.`);
+  }
+  // string
+  if (!raw) throw new CliUsageError(`Missing value for ${spec.flags[0]}.`);
+  return raw;
+}
+
 /**
  * Parse start/install flags. File config supplies defaults; flags override.
  * Throws CliUsageError on invalid or unknown flags.
  */
 export function parseServeArgs(args: string[], file: FileConfig = {}): ServeOptions {
-  let port = file.port ?? 4000;
-  let host = file.host ?? '127.0.0.1';
-  let verbose = file.verbose ?? false;
-  let classifier: 'heuristic' | 'ai' | 'hybrid' = file.classifier ?? 'hybrid';
-  let provider: Provider = file.provider ?? 'anthropic';
-  let region = file.region ?? '';
-  let forceRoute = file.forceRoute ?? false;
+  const values: Record<string, string | number | boolean> = {};
+  for (const spec of OPTIONS) {
+    const fromFile = (file as Record<string, unknown>)[spec.key];
+    values[spec.key] = (fromFile ?? spec.default) as string | number | boolean;
+  }
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
-    if (arg === '--port' || arg === '-p') {
-      const raw = args[++i];
-      const parsed = raw !== undefined ? parseInt(raw, 10) : NaN;
-      if (isNaN(parsed) || parsed < 1 || parsed > 65535) {
-        throw new CliUsageError(`Invalid port: ${raw ?? '(missing)'}. Must be 1-65535.`);
-      }
-      port = parsed;
-    } else if (arg === '--host') {
-      const val = args[++i];
-      if (!val) throw new CliUsageError('Missing value for --host.');
-      host = val;
-    } else if (arg === '--verbose' || arg === '-v') {
-      verbose = true;
-    } else if (arg === '--classifier') {
-      const val = args[++i];
-      if (val === 'heuristic' || val === 'ai' || val === 'hybrid') {
-        classifier = val;
-      } else {
-        throw new CliUsageError(
-          `Invalid classifier: ${val ?? '(missing)'}. Must be heuristic | ai | hybrid.`,
-        );
-      }
-    } else if (arg === '--provider') {
-      const val = args[++i];
-      if (val === 'anthropic' || val === 'bedrock' || val === 'vertex') {
-        provider = val;
-      } else {
-        throw new CliUsageError(
-          `Invalid provider: ${val ?? '(missing)'}. Must be anthropic | bedrock | vertex.`,
-        );
-      }
-    } else if (arg === '--region') {
-      const val = args[++i];
-      if (!val) throw new CliUsageError('Missing value for --region.');
-      region = val;
-    } else if (arg === '--force-route') {
-      forceRoute = true;
-    } else {
+    const spec = OPTIONS.find((o) => o.flags.includes(arg));
+    if (!spec) {
       throw new CliUsageError(`Unknown option '${arg}'. Run 'claude-router help' for usage.`);
+    }
+    if (spec.kind.type === 'boolean') {
+      values[spec.key] = true;
+    } else {
+      values[spec.key] = coerce(spec, args[++i]);
     }
   }
 
-  return { port, host, verbose, classifier, provider, region, forceRoute, tiers: file.tiers, pricing: file.pricing, routing: file.routing };
+  return {
+    ...(values as unknown as Omit<ServeOptions, 'tiers' | 'pricing' | 'routing'>),
+    tiers: file.tiers,
+    pricing: file.pricing,
+    routing: file.routing,
+  };
 }
 
 /** Region flags map onto the provider SDK env vars unless already set. */
@@ -160,14 +187,24 @@ export function applyRegionEnv(options: Pick<ServeOptions, 'provider' | 'region'
 
 /** Serve flags to re-create these options in a spawned/registered process. */
 export function serveArgsFrom(options: ServeOptions): string[] {
-  const args = ['--port', String(options.port)];
-  if (options.host !== '127.0.0.1') args.push('--host', options.host);
-  if (options.forceRoute) args.push('--force-route');
-  if (options.verbose) args.push('--verbose');
-  if (options.classifier !== 'hybrid') args.push('--classifier', options.classifier);
-  if (options.provider !== 'anthropic') args.push('--provider', options.provider);
-  if (options.region) args.push('--region', options.region);
+  const args: string[] = [];
+  for (const spec of OPTIONS) {
+    const value = (options as unknown as Record<string, unknown>)[spec.key];
+    if (!(spec.argAlways || value !== spec.default)) continue;
+    if (spec.kind.type === 'boolean') args.push(spec.flags[0]!);
+    else args.push(spec.flags[0]!, String(value));
+  }
   return args;
+}
+
+/** Build a scaffolded config.json from resolved options (drives `init`). */
+export function configFromOptions(options: ServeOptions): FileConfig {
+  const config: Record<string, unknown> = {};
+  for (const spec of OPTIONS) {
+    const value = (options as unknown as Record<string, unknown>)[spec.key];
+    if (spec.configAlways || value !== spec.default) config[spec.key] = value;
+  }
+  return config as FileConfig;
 }
 
 // ── Version ────────────────────────────────────────────────────────────────
