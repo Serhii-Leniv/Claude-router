@@ -116,6 +116,48 @@ describe('shouldRetry', () => {
     );
     assert.equal(result.retry, false);
   });
+
+  // ── G7 regressions: apostrophe normalization + tightened patterns ──────────
+
+  it('retry on refusal written with a curly apostrophe (U+2019)', () => {
+    // Claude output routinely uses the typographic apostrophe; straight-quote
+    // patterns missed it, so genuine refusals evaded escalation.
+    const result = shouldRetry(
+      fakeResponse({ content: [{ type: 'text', text: 'I can’t help with that.' }] }),
+      'haiku',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
+  it('retry on the spaced "I can not" refusal form', () => {
+    const result = shouldRetry(
+      fakeResponse({ content: [{ type: 'text', text: 'I can not do that.' }] }),
+      'haiku',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
+  it('no retry on the benign opener "I can\'t wait to help"', () => {
+    // Bare "i can't" over-matched this; it must not trigger a costly escalation.
+    const result = shouldRetry(
+      fakeResponse({ content: [{ type: 'text', text: "I can't wait to help — here's the answer: 42" }] }),
+      'haiku',
+    );
+    assert.equal(result.retry, false);
+    assert.equal(result.reason, null);
+  });
+
+  it('no retry on the benign opener "As an AI enthusiast"', () => {
+    // Bare "as an ai" over-matched this benign self-description.
+    const result = shouldRetry(
+      fakeResponse({ content: [{ type: 'text', text: "As an AI enthusiast, here's my take: 42" }] }),
+      'haiku',
+    );
+    assert.equal(result.retry, false);
+    assert.equal(result.reason, null);
+  });
 });
 
 describe('nextTier', () => {

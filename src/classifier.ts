@@ -71,6 +71,14 @@ export const DEFAULT_AI_TIMEOUT_MS = 1500;
 export const DEFAULT_CLASSIFY_CACHE_SIZE = 500;
 export const DEFAULT_HYBRID_BAND: [number, number] = [40, 60];
 
+// Ceiling on the combined contribution of harness/scaffolding signals (long
+// system prompt + tool definitions + in-flight tool blocks). These are constant
+// and large for agentic clients like Claude Code, so uncapped they add ~+40 and
+// force Opus on every request regardless of the task. Capped, they can nudge a
+// borderline call toward Sonnet but never dominate. BASE (35) + this stays well
+// inside the Sonnet band, so the harness alone can never reach Opus.
+export const HARNESS_SIGNAL_CAP = 15;
+
 const AI_SNIPPET_HEAD = 700;
 const AI_SNIPPET_TAIL = 300;
 const AI_SYSTEM_SNIPPET = 200;
@@ -148,6 +156,51 @@ function extractSignals(messages: Anthropic.MessageParam[]): ExtractedSignals {
   return { text: parts.join(' '), toolBlockCount, imageCount, extraChars };
 }
 
+/**
+ * Text of the LATEST user turn — the actual task. Routing on the whole payload
+ * lets a big constant harness (system prompt + prior turns + tool output, as in
+ * Claude Code) dominate the score; the discriminating task signal lives in the
+ * newest user message. Falls back to the full joined text when there is no user
+ * turn with text (e.g. a turn carrying only a tool_result block).
+ */
+function extractLatestUserText(messages: Anthropic.MessageParam[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]!;
+    if (msg.role !== 'user') continue;
+    if (typeof msg.content === 'string') {
+      if (msg.content.trim()) return msg.content;
+      continue;
+    }
+    if (Array.isArray(msg.content)) {
+      const parts: string[] = [];
+      for (const block of msg.content) {
+        if (
+          (block as { type?: string }).type === 'text' &&
+          'text' in block &&
+          typeof block.text === 'string'
+        ) {
+          parts.push(block.text);
+        }
+      }
+      if (parts.join(' ').trim()) return parts.join(' ');
+    }
+  }
+  return '';
+}
+
+/** Any tool definitions or in-flight tool_use/tool_result blocks → agentic session. */
+function isAgentic(input: ClassifyInput): boolean {
+  if ((input.tools?.length ?? 0) > 0) return true;
+  for (const msg of input.messages) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      const t = (block as { type?: string }).type;
+      if (t === 'tool_use' || t === 'tool_result') return true;
+    }
+  }
+  return false;
+}
+
 function extractSystemText(
   system: string | Anthropic.TextBlockParam[] | undefined,
 ): string {
@@ -168,23 +221,24 @@ export interface HeuristicDetail {
 
 export function heuristicScoreDetailed(input: ClassifyInput): HeuristicDetail {
   const W = HEURISTIC_WEIGHTS;
-  const { text, toolBlockCount, imageCount, extraChars } = extractSignals(input.messages);
+  const { toolBlockCount, imageCount, extraChars } = extractSignals(input.messages);
   const systemText = extractSystemText(input.system);
-  const combined = text + ' ' + systemText;
+  // Score the TASK — the latest user turn — not the whole harness payload.
+  const taskText = extractLatestUserText(input.messages);
 
   let score = W.BASE;
 
-  // --- Cognitive verb signals ---
-  const simpleHits = countMatches(combined, SIMPLE_RE);
-  const mediumHits = countMatches(combined, MEDIUM_RE);
-  const complexHits = countMatches(combined, COMPLEX_RE);
+  // --- Cognitive verb signals (task text only) ---
+  const simpleHits = countMatches(taskText, SIMPLE_RE);
+  const mediumHits = countMatches(taskText, MEDIUM_RE);
+  const complexHits = countMatches(taskText, COMPLEX_RE);
 
   score += simpleHits * W.SIMPLE_VERB;
   score += mediumHits * W.MEDIUM_VERB;
   score += complexHits * W.COMPLEX_VERB;
 
   // --- Token estimate (chars / 4, including tool_result volume) ---
-  const estimatedTokens = (text.length + extraChars) / 4;
+  const estimatedTokens = (taskText.length + extraChars) / 4;
   // Only penalize truly empty/trivial prompts (< 5 tokens ≈ "hi", "ok", "2+2")
   // Short but substantive questions like "Prove Fermat's Last Theorem" must not be penalized
   if (estimatedTokens < 5) score += W.TINY_PROMPT;
@@ -192,7 +246,7 @@ export function heuristicScoreDetailed(input: ClassifyInput): HeuristicDetail {
   else if (estimatedTokens > 500) score += W.LONG_PROMPT;
 
   // --- Sentence complexity ---
-  const sentences = text.split(/[.!?]+/).filter((s) => s.trim().length > 0);
+  const sentences = taskText.split(/[.!?]+/).filter((s) => s.trim().length > 0);
   const avgSentenceLen =
     sentences.length > 0
       ? sentences.reduce((sum, s) => sum + s.trim().split(/\s+/).length, 0) /
@@ -201,17 +255,17 @@ export function heuristicScoreDetailed(input: ClassifyInput): HeuristicDetail {
   if (avgSentenceLen > 25) score += W.LONG_SENTENCE;
 
   // --- Code block presence ---
-  if (text.includes('```')) score += W.CODE_BLOCK;
+  if (taskText.includes('```')) score += W.CODE_BLOCK;
 
   // --- Non-alphanumeric density (code-like content) ---
-  const nonAlpha = (text.match(/[^a-zA-Z0-9\s]/g) || []).length;
-  const density = text.length > 0 ? nonAlpha / text.length : 0;
+  const nonAlpha = (taskText.match(/[^a-zA-Z0-9\s]/g) || []).length;
+  const density = taskText.length > 0 ? nonAlpha / taskText.length : 0;
   if (density > 0.15) score += W.SYMBOL_DENSITY;
 
   // --- Math/science domain signals ---
   // These are complexity signals independent of prompt length.
   // "P=NP?" is 4 chars but inherently Opus-level.
-  const mathHits = countMatches(combined, MATH_RE);
+  const mathHits = countMatches(taskText, MATH_RE);
   if (mathHits > 0) {
     score += mathHits * W.MATH_KEYWORD;
     // Cancel short-prompt penalty + small bonus: "P=NP?" must not be penalized for brevity.
@@ -219,22 +273,26 @@ export function heuristicScoreDetailed(input: ClassifyInput): HeuristicDetail {
   }
 
   // Math notation: Greek letters, equation symbols, LaTeX-style operators
-  const hasMathNotation = /[∫∑∂∇∈∉⊂⊃∪∩≤≥≠≈∞√∏∧∨∀∃α-ωΑ-Ω]/.test(text) ||
-    /d[²³]?[xyz]\/d[xyz]|\\frac|\\int|\\sum|\\nabla|\^\{|\^2|\^3/.test(text);
+  const hasMathNotation = /[∫∑∂∇∈∉⊂⊃∪∩≤≥≠≈∞√∏∧∨∀∃α-ωΑ-Ω]/.test(taskText) ||
+    /d[²³]?[xyz]\/d[xyz]|\\frac|\\int|\\sum|\\nabla|\^\{|\^2|\^3/.test(taskText);
   if (hasMathNotation) score += W.MATH_NOTATION;
 
-  // --- Tool and image signals ---
-  // An in-flight agentic loop (tool_use/tool_result blocks) is at least Sonnet territory.
-  if (toolBlockCount > 0) score += W.TOOL_BLOCKS_PRESENT;
-  const toolCount = input.tools?.length ?? 0;
-  if (toolCount > 0) score += W.TOOLS_DEFINED;
-  if (toolCount > 8) score += W.MANY_TOOLS;
+  // --- Image signal (a genuine task signal — vision — so it is NOT capped) ---
   if (imageCount > 0) score += W.IMAGE_BLOCK;
 
-  // --- System prompt signals ---
+  // --- Harness / scaffolding signals (CAPPED) ---
+  // Tool definitions, in-flight tool blocks, and a long/expert system prompt are
+  // constant scaffolding for agentic clients. Summed and capped so they nudge but
+  // never dominate — this is the fix for Claude Code routing everything to Opus.
   const expertHits = countMatches(systemText, EXPERT_RE);
-  if (systemText.length > 500) score += W.LONG_SYSTEM;
-  if (expertHits > 0) score += W.EXPERT_SYSTEM;
+  const toolCount = input.tools?.length ?? 0;
+  let harness = 0;
+  if (toolBlockCount > 0) harness += W.TOOL_BLOCKS_PRESENT;
+  if (toolCount > 0) harness += W.TOOLS_DEFINED;
+  if (toolCount > 8) harness += W.MANY_TOOLS;
+  if (systemText.length > 500) harness += W.LONG_SYSTEM;
+  if (expertHits > 0) harness += W.EXPERT_SYSTEM;
+  score += Math.min(harness, HARNESS_SIGNAL_CAP);
 
   // --- Multi-turn signals ---
   const messageCount = input.messages.length;
@@ -295,6 +353,32 @@ export interface ClassifyOptions {
   aiTimeoutMs?: number;
   /** Caller-owned cache for AI classification results; undefined = no caching */
   cache?: LruCache<string, ClassifyResult>;
+  /** Allow haiku inside a tool-using session; default false floors it at sonnet */
+  allowHaikuInAgentic?: boolean;
+}
+
+/**
+ * Floor an agentic (tool-using) session at sonnet: a trivial-LOOKING turn in a
+ * coding loop can be hard to execute, and a wrong cheap step cascades into more
+ * work (and cost). Opt out with allowHaikuInAgentic to let clearly-trivial turns
+ * reach haiku. No-op when tools are absent or the tier is already ≥ sonnet.
+ */
+function applyAgenticFloor(
+  result: ClassifyResult,
+  input: ClassifyInput,
+  opts?: ClassifyOptions,
+): ClassifyResult {
+  if (result.tier !== 'haiku' || opts?.allowHaikuInAgentic || !isAgentic(input)) {
+    return result;
+  }
+  const score = Math.max(result.score, opts?.haikuMax ?? 30);
+  return {
+    ...result,
+    tier: 'sonnet',
+    score,
+    confidence: Math.round(scoreToConfidence(score) * 100) / 100,
+    floored: true,
+  };
 }
 
 function buildAISnippet(input: ClassifyInput): string {
@@ -310,10 +394,14 @@ function buildAISnippet(input: ClassifyInput): string {
 function cacheKey(input: ClassifyInput): string {
   const { text } = extractSignals(input.messages);
   const sys = extractSystemText(input.system);
+  // Hash the FULL normalized text/system — a prefix slice (formerly 500/200
+  // chars) collides for prompts that share a long preamble but diverge later
+  // (common in agentic/Claude Code traffic), serving a stale tier for a
+  // genuinely different task. SHA1 over a few KB is negligible next to an API call.
   return createHash('sha1')
-    .update(text.trim().toLowerCase().slice(0, 500))
+    .update(text.trim().toLowerCase())
     .update('\0')
-    .update(sys.trim().toLowerCase().slice(0, 200))
+    .update(sys.trim().toLowerCase())
     .update('\0')
     .update(String(input.messages.length))
     .update('\0')
@@ -325,9 +413,10 @@ export async function classifyAI(
   client: Anthropic,
   input: ClassifyInput,
   haikuModel: string,
-  opts?: { timeoutMs?: number },
+  opts?: { timeoutMs?: number; haikuMax?: number; opusMin?: number },
 ): Promise<ClassifyResult> {
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_AI_TIMEOUT_MS;
+  const thresholds: TierThresholds = { haikuMax: opts?.haikuMax, opusMin: opts?.opusMin };
   const start = performance.now();
 
   let response: Anthropic.Message;
@@ -346,8 +435,10 @@ export async function classifyAI(
       { signal: AbortSignal.timeout(timeoutMs) },
     );
   } catch {
-    // Haiku timeout/outage must never break routing — fall back to heuristic.
-    return classifyHeuristic(input);
+    // Haiku timeout/outage must never break routing — fall back to heuristic,
+    // preserving any custom thresholds so a transient outage doesn't silently
+    // change routing for tuned deployments.
+    return classifyHeuristic(input, thresholds);
   }
   const ms = performance.now() - start;
 
@@ -363,11 +454,13 @@ export async function classifyAI(
     cleanParse = true;
   }
 
-  const tierMap: Record<number, Tier> = { 1: 'haiku', 2: 'sonnet', 3: 'opus' };
   const score = level === 1 ? 15 : level === 2 ? 50 : 85;
 
   return {
-    tier: tierMap[level]!,
+    // Map the synthetic score through scoreToTier so custom haikuMax/opusMin
+    // apply here too — a hardcoded level→tier map silently ignored them (with
+    // default thresholds this is identical to {1:haiku,2:sonnet,3:opus}).
+    tier: scoreToTier(score, thresholds),
     score,
     method: 'ai',
     ms: Math.round(ms * 100) / 100,
@@ -388,6 +481,8 @@ async function classifyAICached(
   }
   const result = await classifyAI(client, input, haikuModel, {
     timeoutMs: opts?.aiTimeoutMs,
+    haikuMax: opts?.haikuMax,
+    opusMin: opts?.opusMin,
   });
   // Only genuine AI verdicts are worth caching — heuristic fallbacks are free to recompute
   if (key && result.method === 'ai') {
@@ -437,11 +532,11 @@ export async function classify(
   haikuModel: string,
   opts?: ClassifyOptions,
 ): Promise<ClassifyResult> {
-  if (mode === 'heuristic' || !client) {
-    return classifyHeuristic(input, opts);
-  }
-  if (mode === 'ai') {
-    return classifyAICached(client, input, haikuModel, opts);
-  }
-  return classifyHybrid(client, input, haikuModel, opts);
+  const result = await (mode === 'heuristic' || !client
+    ? classifyHeuristic(input, opts)
+    : mode === 'ai'
+      ? classifyAICached(client, input, haikuModel, opts)
+      : classifyHybrid(client, input, haikuModel, opts));
+  // Floor agentic sessions at sonnet (unless opted out) regardless of method.
+  return applyAgenticFloor(result, input, opts);
 }

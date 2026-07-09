@@ -398,6 +398,34 @@ describe('proxy passthrough (hermetic — stubbed upstream)', () => {
     assert.equal(res.headers.get('x-router-tier'), 'passthrough');
     assert.match(captured()!.url, /\/v1\/messages$/, 'forwards to the messages endpoint');
   });
+
+  it('explicit-model passthrough relays the anthropic-beta header (regression: G1)', async () => {
+    // proxyPassthrough previously built its own header set and dropped
+    // anthropic-beta, so a beta-dependent request (context-management) 400s
+    // upstream on the non-force-route path. It must forward it like the routed
+    // path and handlePassthrough do.
+    let seenHeaders: Record<string, string> = {};
+    globalThis.fetch = (async (_input: unknown, init?: { headers?: Record<string, string> }) => {
+      seenHeaders = (init?.headers ?? {}) as Record<string, string>;
+      return new Response(JSON.stringify({ id: 'msg', type: 'message' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': 'sk-test-fake',
+        'anthropic-beta': 'context-management-2025-06-27',
+      },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'passthrough');
+    assert.equal(seenHeaders['anthropic-beta'], 'context-management-2025-06-27');
+  });
 });
 
 describe('proxy parameter normalization', () => {
