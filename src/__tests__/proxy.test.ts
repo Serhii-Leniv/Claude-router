@@ -8,6 +8,13 @@ import type { RouteEvent } from '../proxy/handler.js';
 
 import { DEFAULT_MODELS } from '../models.js';
 
+// A couple of passthrough tests make real outbound calls to api.anthropic.com.
+// They're skipped by default (flaky/offline-hostile in CI) and opt-in via
+// RUN_NETWORK_TESTS=1. `skip` takes a reason string when the flag is unset.
+const NETWORK_SKIP: string | false = process.env['RUN_NETWORK_TESTS'] === '1'
+  ? false
+  : 'network test — set RUN_NETWORK_TESTS=1 to run (reaches api.anthropic.com)';
+
 describe('getAnthropicClient — per-credential cache', () => {
   it('returns the same instance for the same api key', () => {
     clearClientCache();
@@ -296,7 +303,7 @@ describe('proxy passthrough', () => {
     assert.equal(res.status, 401);
   });
 
-  it('POST /v1/messages/count_tokens forwards to Anthropic instead of 404', async () => {
+  it('POST /v1/messages/count_tokens forwards to Anthropic instead of 404', { skip: NETWORK_SKIP }, async () => {
     // Claude Code / the VS Code extension call count_tokens; a 404 breaks them.
     const res = await app.request('/v1/messages/count_tokens', {
       method: 'POST',
@@ -326,7 +333,7 @@ describe('proxy passthrough', () => {
     assert.equal(body.error.type, 'not_found_error');
   });
 
-  it('POST /v1/messages with explicit model and key passes through to Anthropic', async () => {
+  it('POST /v1/messages with explicit model and key passes through to Anthropic', { skip: NETWORK_SKIP }, async () => {
     // With explicit model + key, passthrough forwards to real Anthropic API
     // Fake key → Anthropic returns 401 with its own error format (not ours)
     const res = await app.request('/v1/messages', {
