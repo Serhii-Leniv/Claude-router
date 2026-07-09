@@ -245,6 +245,43 @@ export function isAutostartRegistered(paths: RouterPaths = routerPaths()): boole
   return fs.existsSync(systemdUnitPath());
 }
 
+/**
+ * PID of the proxy if the OS autostart supervisor (launchd / systemd) is
+ * currently running it. Lets `install` record the supervised process in the
+ * daemon state file instead of starting a redundant daemon that would race it
+ * on the port. Returns null when no supervisor owns the process (e.g. Windows,
+ * or a manually started daemon).
+ */
+export function supervisorPid(paths: RouterPaths = routerPaths()): number | null {
+  const platform = platformName();
+  try {
+    if (platform === 'macos') {
+      const out = execFileSync('launchctl', ['list'], { encoding: 'utf8', stdio: 'pipe' });
+      for (const line of out.split('\n')) {
+        // columns: "<pid>\t<last exit>\t<label>"; pid is '-' when not running
+        const [pid, , label] = line.split('\t');
+        if (label === PLIST_LABEL && pid && pid !== '-') {
+          const n = parseInt(pid, 10);
+          return Number.isNaN(n) ? null : n;
+        }
+      }
+      return null;
+    }
+    if (platform === 'linux') {
+      const out = execFileSync(
+        'systemctl',
+        ['--user', 'show', SYSTEMD_UNIT, '--property=MainPID', '--value'],
+        { encoding: 'utf8', stdio: 'pipe' },
+      );
+      const n = parseInt(out.trim(), 10);
+      return n > 0 ? n : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 export function unloadLaunchAgent(paths: RouterPaths = routerPaths()): void {
   if (platformName() !== 'macos' || !fs.existsSync(paths.plistFile)) return;
   try {
@@ -306,6 +343,19 @@ export function setEnvVar(port: number, paths: RouterPaths = routerPaths()): Ste
       };
     }
     fs.writeFileSync(rcFile, `${content.replace(/\n*$/, '\n')}${buildRcBlock(port)}\n`, 'utf8');
+
+    // GUI apps launched from Dock/Finder (VS Code, the Claude Code extension) don't
+    // read shell rc files, so the rc export alone never reaches them. launchctl setenv
+    // injects it into the running GUI session — no relaunch-from-terminal needed.
+    if (platform === 'macos') {
+      try {
+        execFileSync('launchctl', ['setenv', 'ANTHROPIC_BASE_URL', target], { stdio: 'pipe' });
+        return { ok: true, detail: `ANTHROPIC_BASE_URL added to ${rcFile} + GUI session (launchctl)` };
+      } catch {
+        // ponytail: launchctl absent/denied — rc export still covers terminal use.
+        return { ok: true, detail: `ANTHROPIC_BASE_URL added to ${rcFile} (launchctl setenv failed — restart GUI apps from a terminal)` };
+      }
+    }
     return { ok: true, detail: `ANTHROPIC_BASE_URL added to ${rcFile}` };
   } catch (err) {
     return { ok: false, detail: `Could not update ${rcFile}: ${String(err)}` };
@@ -337,6 +387,13 @@ export function unsetEnvVar(paths: RouterPaths = routerPaths()): StepResult {
     if (cleaned !== content) {
       fs.writeFileSync(rcFile, cleaned, 'utf8');
       removedAny = true;
+    }
+  }
+  if (platform === 'macos') {
+    try {
+      execFileSync('launchctl', ['unsetenv', 'ANTHROPIC_BASE_URL'], { stdio: 'pipe' });
+    } catch {
+      // not set / launchctl absent — nothing to undo
     }
   }
   return removedAny

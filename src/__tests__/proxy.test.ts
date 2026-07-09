@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import Anthropic from '@anthropic-ai/sdk';
 import { createProxyApp } from '../proxy/server.js';
 import { routeHistory, getAnthropicClient, clearClientCache } from '../proxy/handler.js';
 import { renderDashboard } from '../proxy/dashboard.js';
@@ -33,6 +34,19 @@ describe('getAnthropicClient — per-credential cache', () => {
     const firstAgain = getAnthropicClient('sk-evict-0', null);
     assert.notEqual(first, firstAgain, 'first client should have been evicted');
     clearClientCache();
+  });
+
+  it('pins the upstream to api.anthropic.com even when ANTHROPIC_BASE_URL points at the proxy', () => {
+    // Otherwise the SDK inherits ANTHROPIC_BASE_URL (the proxy's own address) and
+    // the proxy calls itself in an infinite loop.
+    const prev = process.env['ANTHROPIC_BASE_URL'];
+    process.env['ANTHROPIC_BASE_URL'] = 'http://localhost:4000';
+    clearClientCache();
+    const client = getAnthropicClient('sk-loop-test', null) as unknown as { baseURL: string };
+    assert.equal(client.baseURL.replace(/\/$/, ''), 'https://api.anthropic.com');
+    clearClientCache();
+    if (prev === undefined) delete process.env['ANTHROPIC_BASE_URL'];
+    else process.env['ANTHROPIC_BASE_URL'] = prev;
   });
 });
 
@@ -282,6 +296,36 @@ describe('proxy passthrough', () => {
     assert.equal(res.status, 401);
   });
 
+  it('POST /v1/messages/count_tokens forwards to Anthropic instead of 404', async () => {
+    // Claude Code / the VS Code extension call count_tokens; a 404 breaks them.
+    const res = await app.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': 'sk-test-fake' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    assert.notEqual(res.status, 404, 'count_tokens must reach the origin, not 404 locally');
+    assert.equal(res.headers.get('x-router-tier'), 'passthrough');
+  });
+
+  it('count_tokens on a non-anthropic provider 404s with a clear message', async () => {
+    const bedrockApp = createProxyApp({
+      classifier: 'heuristic',
+      defaultModel: 'claude-sonnet-4-6',
+      verbose: false,
+      provider: 'bedrock',
+      models: DEFAULT_MODELS,
+      forceRoute: false,
+    });
+    const res = await bedrockApp.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'x', messages: [] }),
+    });
+    assert.equal(res.status, 404);
+    const body = await res.json() as { error: { type: string } };
+    assert.equal(body.error.type, 'not_found_error');
+  });
+
   it('POST /v1/messages with explicit model and key passes through to Anthropic', async () => {
     // With explicit model + key, passthrough forwards to real Anthropic API
     // Fake key → Anthropic returns 401 with its own error format (not ours)
@@ -353,5 +397,66 @@ describe('proxy parameter normalization', () => {
     assert.ok(!('thinking' in captured!), 'adaptive thinking must be stripped for Haiku');
     assert.ok(!('output_config' in captured!), 'effort must be stripped for Haiku');
     assert.deepEqual(captured!.messages, [{ role: 'user', content: 'hi' }]);
+  });
+});
+
+describe('proxy resilience to responses missing usage', () => {
+  it('returns 200 (does not crash) when the response has no usage field', async () => {
+    const app = createProxyApp(
+      { classifier: 'heuristic', defaultModel: DEFAULT_MODELS.sonnet, verbose: false, provider: 'bedrock', models: DEFAULT_MODELS, forceRoute: true },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { messages: { create: async () => ({ id: 'm', type: 'message', role: 'assistant', model: 'x', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', stop_sequence: null }) } } as any,
+    );
+    const res = await app.request('/v1/messages', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+    assert.equal(res.status, 200);
+  });
+});
+
+describe('proxy non-streaming timeout guard', () => {
+  function appWithCreate(create: (p: Record<string, unknown>, o?: Record<string, unknown>) => unknown) {
+    return createProxyApp(
+      { classifier: 'heuristic', defaultModel: DEFAULT_MODELS.sonnet, verbose: false, provider: 'bedrock', models: DEFAULT_MODELS, forceRoute: true },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { messages: { create } } as any,
+    );
+  }
+
+  it('gives the per-credential client a timeout above the SDK 10-min non-streaming ceiling', () => {
+    clearClientCache();
+    const client = getAnthropicClient('sk-timeout-test', null) as unknown as { timeout: number };
+    assert.equal(typeof client.timeout, 'number');
+    assert.ok(client.timeout > 10 * 60 * 1000, 'client timeout must exceed the 10-min guard ceiling');
+    clearClientCache();
+  });
+
+  it('returns a clean error (not an uncaught 500) when the SDK throws a non-API AnthropicError', async () => {
+    const app = appWithCreate(() => { throw new Anthropic.AnthropicError('Streaming is strongly recommended \u2026'); });
+    const res = await app.request('/v1/messages', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+    assert.equal(res.status, 500);
+    const body = await res.json() as { error?: { type?: string } };
+    assert.ok(body.error?.type, 'error body must be structured JSON');
+  });
+});
+
+describe('proxy forwards anthropic-beta on routed calls', () => {
+  it('relays the anthropic-beta header to messages.create', async () => {
+    let opts: { headers?: Record<string, string> } | undefined;
+    const app = createProxyApp(
+      { classifier: 'heuristic', defaultModel: DEFAULT_MODELS.sonnet, verbose: false, provider: 'bedrock', models: DEFAULT_MODELS, forceRoute: true },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { messages: { create: async (_p: Record<string, unknown>, o: { headers?: Record<string, string> }) => { opts = o; return { id: 'm', type: 'message', role: 'assistant', model: 'x', content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } }; } } } as any,
+    );
+    const res = await app.request('/v1/messages', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'anthropic-beta': 'context-management-2025-06-27' },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(opts?.headers?.['anthropic-beta'], 'context-management-2025-06-27');
   });
 });
