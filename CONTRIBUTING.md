@@ -2,7 +2,7 @@
 
 Thanks for taking the time to contribute! 🎉 This guide gets you from a fresh clone to a merged pull request with as little friction as possible.
 
-`claude-router` is a drop-in wrapper around `@anthropic-ai/sdk` that auto-routes Claude API calls to the cheapest capable model (Haiku / Sonnet / Opus). It ships both as a library and as an HTTP proxy.
+`claude-router` is a routing layer for the Claude API: it classifies each request by complexity and routes it to the cheapest model that can handle it (Haiku / Sonnet / Opus), reporting exact cost and savings on every call. The routing engine — classifier, cost model, tier fallback, and retry/escalation — is the project's own; it builds on the official `@anthropic-ai/sdk` purely as the transport to Anthropic (and its Bedrock/Vertex siblings), staying drop-in compatible so any Anthropic-SDK app can adopt it with zero code changes. It ships both as a library and as an HTTP proxy.
 
 ## TL;DR
 
