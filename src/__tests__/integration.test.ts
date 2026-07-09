@@ -6,6 +6,13 @@
 // `fetch` over loopback — so the full path
 //     fetch → proxy → classify → SDK → fake upstream → response
 // (headers, SSE, retry) is exercised for real, with zero calls to the real API.
+//
+// The routed cases use the injected-client seam (provider:'bedrock'), because
+// handleMessages only honors an injected providerClient for bedrock/vertex — the
+// anthropic provider builds a per-request client pinned to api.anthropic.com that
+// can't be redirected to a fake upstream. That anthropic-specific branch (missing
+// x-api-key ⇒ 401 before any upstream call) is covered by its own real-socket test
+// below so the auth path Claude Code actually hits isn't left untested.
 
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -269,5 +276,31 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
     assert.equal(upstream.calls.length, 1);
     assert.equal(upstream.calls[0]!.model, DEFAULT_MODELS.haiku);
     assert.equal(upstream.calls[0]!.stream, true);
+  });
+
+  it('anthropic provider without credentials returns 401 over the socket', async () => {
+    // The anthropic provider builds a per-request client from x-api-key/Bearer —
+    // the auth path Claude Code actually uses. With no injected client and no
+    // credentials, handleMessages must 401 before touching any upstream. Driven
+    // over a real socket so the whole request pipeline (not just app.request) runs.
+    const app = createProxyApp(
+      { classifier: 'heuristic', defaultModel: DEFAULT_MODELS.sonnet, verbose: false, provider: 'anthropic', models: DEFAULT_MODELS, forceRoute: false },
+      null,
+    );
+    const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
+      const s = serve({ fetch: app.fetch, port: 0, hostname: '127.0.0.1' }, () => resolve(s));
+    });
+    after(() => server.close());
+    const port = (server.address() as AddressInfo).port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'auto', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+
+    assert.equal(res.status, 401);
+    const body = (await res.json()) as { error: { type: string } };
+    assert.equal(body.error.type, 'authentication_error');
   });
 });
