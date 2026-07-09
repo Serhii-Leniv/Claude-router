@@ -27,10 +27,12 @@ ClaudeRouter.send(params)
 ### Key files
 
 - `src/types.ts` — All interfaces (Tier, RouterConfig, RoutingTuning, RouteMeta, RoutedMessage, RouterStats, ClassifyInput/Result)
-- `src/models.ts` — Pricing constants, `computeCostCents()`, tier→model mapping
+- `src/models.ts` — Pricing constants, `computeCostCents()`, `computeRouteCost()` (cost + savings for a completed response), tier→model mapping
 - `src/classifier.ts` — Heuristic scoring (0–100 → haiku/sonnet/opus), AI classification via Haiku, hybrid mode, unified `classify()` entry point with LRU cache
 - `src/cache.ts` — Generic bounded `LruCache` (classification results, per-credential SDK clients)
-- `src/tracker.ts` — CostTracker keeps running aggregates (O(1) memory; no per-call array)
+- `src/route.ts` — `executeRoute()`: the shared routing-execution kernel (normalize → create → rate-limit walk-up → escalation retry), returns a `RouteResult` (see Retry / escalation)
+- `src/totals.ts` — Shared route-event aggregation: `RouteTotals`, `emptyTotals()`, pure `foldOutcome(acc, e)` over the minimal `RouteOutcomeLike` shape (see Route aggregation)
+- `src/tracker.ts` — CostTracker folds each `RouteMeta` via `foldOutcome` into a `RouteTotals`, maps to `RouterStats` (O(1) memory; no per-call array)
 - `src/params.ts` — `normalizeParamsForTier()`: strips/adapts model-specific params to the routed tier (see Parameter normalization)
 - `src/index.ts` — ClaudeRouter class, `createRouter()` factory, re-exports
 
@@ -48,6 +50,10 @@ Hybrid mode confirms with AI when score is in the band (default 40–60) **or** 
 
 **AI classifier never throws**: 1.5s `AbortSignal.timeout` + try/catch fall back to `classifyHeuristic()`. Only genuine `method: 'ai'` results are cached (sha1 key over normalized snippet/system/message count/tool count); heuristic fallbacks are recomputed so a transient Haiku outage isn't cached. Tuning knobs (`RouterConfig.routing` / `FileConfig.routing`): `haikuMax`, `opusMin`, `hybridBand`, `aiTimeoutMs`, `classifyCacheSize` — all optional, defaults preserve behavior.
 
+### Route aggregation
+
+`src/totals.ts` owns the one fold that turns route events into running figures — "sum cost/saved, count per tier, bucket by day". Three call sites reuse it, each keeping its own execution model: `CostTracker.record` folds one `RouteMeta` at a time (O(1)), `history.foldLine` folds newly-appended JSONL lines behind an offset cache, and `dashboard` reduces the live `routeHistory` array. `foldOutcome(acc, e)` reads only `RouteOutcomeLike` (`tier`, `costCents`, `savedCents`, optional `retried`/`timestamp`), so both `RouteMeta` and `RouteEvent` satisfy it structurally without a unified record. `RouteTotals.tiers` is string-keyed (holds `passthrough` too) and carries only tiers actually seen; the shared `tierBreakdown(totals, labels)` helper zero-fills a fixed label set (used by both `RouterStats.tierBreakdown` and the dashboard bars — add/rename a tier in one place). Do not reintroduce a second copy of the aggregation — extend `foldOutcome`. Line-parsing/corrupt-line rejection stays in `history` (its file seam), not in the shared fold.
+
 ### Retry / escalation
 
 `src/retry.ts` — `shouldRetry()` checks two conditions on a completed response:
@@ -55,6 +61,8 @@ Hybrid mode confirms with AI when score is in the band (default 40–60) **or** 
 - **Refusal**: output <200 chars whose first 80 chars match `REFUSAL_PATTERNS` → escalate tier (anchored to the opening so quoted refusal phrases mid-answer don't false-positive)
 
 `nextTier()` walks `TIER_ORDER` (haiku→sonnet→opus). Opus never retries — no higher tier.
+
+`src/route.ts` `executeRoute(client, apiParams, startTier, models, { fallbackOnRateLimit })` is the one place this loop lives — shared by `ClaudeRouter.send` and the proxy `handleNonStreaming`. It normalizes for the tier's model, calls the API, optionally walks up `TIER_ORDER` on a `RateLimitError`, and escalates **once** on truncation/refusal — but only on the originally-classified tier's first response (`!fallbackUsed`), never after a rate-limit walk-up. The library passes `fallbackOnRateLimit: true` (config `fallback`), the proxy `false` (a 429 surfaces to the client). Both then price via `computeRouteCost` and record through their own sink (CostTracker / RouteEvent). Do not re-inline this loop at a caller — the two copies had already drifted on the escalation condition before this was unified. Streaming paths don't use `executeRoute` (no retry once bytes flow).
 
 ### Parameter normalization
 
@@ -70,16 +78,21 @@ HTTP proxy that sits in front of the Anthropic API — zero code changes needed 
 
 ```
 src/proxy/
-  server.ts     — Hono app, routes: GET /health, GET /dashboard, POST /v1/messages
+  server.ts     — Hono app, routes: GET /health (via buildHealth), GET /dashboard, POST /v1/messages
   handler.ts    — classify → call API → retry if needed → set x-router-* headers
-  dashboard.ts  — HTML dashboard rendering routeHistory
+  health.ts     — single source of truth for the /health contract: SERVICE_ID, HealthInfo type, buildHealth(). server.ts produces it; daemon.checkHealth and cli status consume it (see Health contract)
+  dashboard.ts  — HTML dashboard; aggregates routeHistory via foldOutcome (src/totals.ts)
   cli.ts        — CLI dispatcher + commands; bin name `claude-router` (package.json `bin`)
-  cli-config.ts — paths (routerPaths), FileConfig loading, parseServeArgs (throws CliUsageError), getVersion, suggestCommand
+  cli-config.ts — paths (routerPaths), FileConfig loading; one `OPTIONS` table drives parseServeArgs / serveArgsFrom / configFromOptions (see Serve options); getVersion, suggestCommand
   daemon.ts     — detached-spawn daemon, ~/.claude-router/daemon.json state, health polling, stopDaemon
-  platform.ts   — per-OS autostart/env-var/statusline (pure builders + execFileSync executors)
+  platform.ts   — per-OS autostart/env-var behind PlatformIntegration adapters (windows/macos/linux) + platformIntegration() selector; pure builders + cross-platform statusline stay outside the adapters; exported functions are thin delegators (see Platform integration)
   term.ts       — zero-dep ANSI styling (Claude Code aesthetic), tier colors, box(), NO_COLOR/TTY detection
-  history.ts    — persistent route history (~/.claude-router/history.jsonl, append-only JSONL) with an incremental-read aggregate cache; powers `stats` and the dashboard's lifetime cards. Only active when HandlerConfig.historyFile is set (the CLI sets it; tests/library don't).
+  history.ts    — persistent route history (~/.claude-router/history.jsonl, append-only JSONL) with an incremental-read aggregate cache (folds via src/totals.ts); powers `stats` and the dashboard's lifetime cards. Only active when HandlerConfig.historyFile is set (the CLI sets it; tests/library don't).
 ```
+
+**Health contract** (`src/proxy/health.ts`): the `/health` shape and the `'claude-router-proxy'` identity string live here once. `server.ts` builds the payload with `buildHealth(config, routeHistory)`; `daemon.checkHealth` imports `HealthInfo`/`SERVICE_ID` to verify the port is actually ours; `cli status` types its display off the same `HealthInfo`. Don't re-declare the shape or re-inline the identity string at a consumer.
+
+**Platform integration** (`src/proxy/platform.ts`): OS-specific autostart + `ANTHROPIC_BASE_URL` env work lives in one `PlatformIntegration` adapter per OS (`windows`/`macos`/`linux`), selected once by `platformIntegration()`. macOS's `onStop` unloads the KeepAlive LaunchAgent (called by `daemon.stopDaemon` via the `unloadLaunchAgent` delegator). The exported `installAutostart`/`setEnvVar`/… functions are thin delegators to the current adapter, so call sites and tests are unchanged. Pure string builders (`buildPlist`/`buildSystemdUnit`/`buildRcBlock`/…) and the cross-platform statusline functions are shared and stay outside the adapters. Add per-OS behaviour to the adapter, not as a new `platformName()` switch.
 
 Providers: `anthropic` (per-credential client from `x-api-key` or `Authorization: Bearer`, cached in an LRU of 100 via `getAnthropicClient()` to preserve keep-alive), `bedrock` (singleton `@anthropic-ai/bedrock-sdk`), `vertex` (singleton `@anthropic-ai/vertex-sdk`).
 
@@ -96,6 +109,8 @@ Subcommands: `start` (foreground; `-d`/`--daemon` for background), `stop`, `rest
 The proxy binds `127.0.0.1` by default (`--host` / `FileConfig.host` to override). This is a security boundary, not a convenience: with `bedrock`/`vertex` the proxy uses the operator's cloud credentials and does not authenticate incoming requests — do not change the default bind.
 
 Config file: `~/.claude-router/config.json` (`FileConfig`) supplies defaults for every flag plus `tiers` (per-tier model ID overrides), `pricing` (per-ID `$/1M` overrides), and `routing` (classifier tuning). **CLI flags always override the file.** Precedence for tier→model: provider defaults (`DEFAULT_MODELS`/`BEDROCK_MODELS`/`VERTEX_MODELS`) ← spread ← config `tiers`.
+
+**Serve options** (`cli-config.ts`): the CLI flag set is one declarative `OPTIONS` table (key, flags, kind, default, emit rules). `parseServeArgs` (file defaults ← flags, throws `CliUsageError` on bad/unknown flags), `serveArgsFrom` (rebuild spawn args), and `configFromOptions` (scaffold `init`'s config.json) all fold over it — a new flag is one row, not five parallel edits. Emit predicates key off each option's `default`, so a value and "when to omit it" can't disagree. `tiers`/`pricing`/`routing` are file-only (no flag) and pass through untouched.
 
 ### Testing
 

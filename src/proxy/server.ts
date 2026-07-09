@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { handleMessages, handlePassthrough, routeHistory, type HandlerConfig } from './handler.js';
 import { renderDashboard } from './dashboard.js';
 import { readLifetimeStats } from './history.js';
+import { buildHealth } from './health.js';
 
 export function createProxyApp(
   config: HandlerConfig,
@@ -13,19 +14,7 @@ export function createProxyApp(
 
   app.use('*', cors());
 
-  app.get('/health', (c) => {
-    const last = routeHistory[routeHistory.length - 1] ?? null;
-    return c.json({
-      status: 'ok',
-      service: 'claude-router-proxy',
-      classifier: config.classifier,
-      provider: config.provider,
-      forceRoute: config.forceRoute,
-      requests: routeHistory.length,
-      lastTier: last?.tier ?? null,
-      lastModel: last?.model ?? null,
-    });
-  });
+  app.get('/health', (c) => c.json(buildHealth(config, routeHistory)));
 
   app.get('/api/last-route', (c) => {
     const last = routeHistory[routeHistory.length - 1] ?? null;

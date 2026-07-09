@@ -135,29 +135,162 @@ export function isOurStatusline(command: string): boolean {
   return command.includes('[auto:');
 }
 
-// ── Autostart ──────────────────────────────────────────────────────────────
+// ── Platform integration adapters ───────────────────────────────────────────
+//
+// Autostart and the ANTHROPIC_BASE_URL env var are the OS-specific work. Rather
+// than repeat a three-way `platformName()` switch inside every verb, each OS
+// gets one adapter that owns all of its behaviour — so "how Windows autostart
+// works" lives in one place. The pure builders above and the cross-platform
+// statusline below are shared and stay outside the adapters.
 
-export function installAutostart(serveArgs: string[], paths: RouterPaths = routerPaths()): StepResult {
-  const nodePath = process.execPath;
-  const cliPath = process.argv[1]!;
-  const platform = platformName();
+export interface PlatformIntegration {
+  readonly name: PlatformName;
+  installAutostart(serveArgs: string[], paths?: RouterPaths): StepResult;
+  uninstallAutostart(paths?: RouterPaths): StepResult;
+  isAutostartRegistered(paths?: RouterPaths): boolean;
+  setEnvVar(port: number, paths?: RouterPaths): StepResult;
+  unsetEnvVar(paths?: RouterPaths): StepResult;
+  isEnvVarSet(port: number): boolean;
+  /** Run before stopping the daemon — macOS must unload its KeepAlive agent. */
+  onStop(paths?: RouterPaths): void;
+}
 
-  if (platform === 'windows') {
+// ── Shared helpers ───────────────────────────────────────────────────────────
+
+function readWindowsUserEnv(name: string): string | null {
+  try {
+    const out = execFileSync('reg', ['query', 'HKCU\\Environment', '/v', name], {
+      stdio: 'pipe',
+      encoding: 'utf8',
+    });
+    const match = out.match(/REG_(?:EXPAND_)?SZ\s+(.+)/);
+    return match ? match[1]!.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Write the marker-delimited ANTHROPIC_BASE_URL block into a shell rc file (macOS/Linux). */
+function setEnvVarViaRc(rcFile: string, port: number): StepResult {
+  try {
+    let content = fs.existsSync(rcFile) ? fs.readFileSync(rcFile, 'utf8') : '';
+    if (content.includes(RC_BLOCK_START)) {
+      content = removeRcBlock(content);
+    } else if (/^export ANTHROPIC_BASE_URL=/m.test(content)) {
+      return {
+        ok: false,
+        skipped: true,
+        detail: `${rcFile} already exports ANTHROPIC_BASE_URL — not overwriting`,
+      };
+    }
+    fs.writeFileSync(rcFile, `${content.replace(/\n*$/, '\n')}${buildRcBlock(port)}\n`, 'utf8');
+    return { ok: true, detail: `ANTHROPIC_BASE_URL added to ${rcFile}` };
+  } catch (err) {
+    return { ok: false, detail: `Could not update ${rcFile}: ${String(err)}` };
+  }
+}
+
+/** Strip our block from both candidate rc files (macOS/Linux share this). */
+function unsetEnvVarViaRc(paths: RouterPaths): StepResult {
+  let removedAny = false;
+  for (const rcFile of [paths.zshrcFile, paths.bashrcFile]) {
+    if (!fs.existsSync(rcFile)) continue;
+    const content = fs.readFileSync(rcFile, 'utf8');
+    const cleaned = removeRcBlock(content);
+    if (cleaned !== content) {
+      fs.writeFileSync(rcFile, cleaned, 'utf8');
+      removedAny = true;
+    }
+  }
+  return removedAny
+    ? { ok: true, detail: 'ANTHROPIC_BASE_URL block removed from shell rc' }
+    : { ok: true, detail: 'No claude-router block found in shell rc', skipped: true };
+}
+
+function envMatchesProcess(port: number): boolean {
+  const current = process.env['ANTHROPIC_BASE_URL'];
+  return current === `http://localhost:${port}` || current === `http://127.0.0.1:${port}`;
+}
+
+// ── Windows ──────────────────────────────────────────────────────────────────
+
+const windowsIntegration: PlatformIntegration = {
+  name: 'windows',
+  installAutostart(serveArgs) {
     try {
       execFileSync('reg', [
         'add', WIN_RUN_KEY, '/v', WIN_RUN_VALUE, '/t', 'REG_SZ',
-        '/d', buildRunKeyCommand(nodePath, cliPath, serveArgs), '/f',
+        '/d', buildRunKeyCommand(process.execPath, process.argv[1]!, serveArgs), '/f',
       ], { stdio: 'pipe' });
       return { ok: true, detail: `Run key registered (${WIN_RUN_KEY}\\${WIN_RUN_VALUE})` };
     } catch (err) {
       return { ok: false, detail: `Could not write Run key: ${String(err)}` };
     }
-  }
+  },
+  uninstallAutostart() {
+    try {
+      execFileSync('reg', ['delete', WIN_RUN_KEY, '/v', WIN_RUN_VALUE, '/f'], { stdio: 'pipe' });
+      return { ok: true, detail: 'Run key removed' };
+    } catch {
+      return { ok: true, detail: 'Run key was not present', skipped: true };
+    }
+  },
+  isAutostartRegistered() {
+    try {
+      execFileSync('reg', ['query', WIN_RUN_KEY, '/v', WIN_RUN_VALUE], { stdio: 'pipe' });
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  setEnvVar(port) {
+    const target = `http://localhost:${port}`;
+    const existing = readWindowsUserEnv('ANTHROPIC_BASE_URL');
+    if (existing && existing !== target) {
+      return {
+        ok: false,
+        skipped: true,
+        detail: `ANTHROPIC_BASE_URL is already set to ${existing} — not overwriting. Set it manually: setx ANTHROPIC_BASE_URL ${target}`,
+      };
+    }
+    try {
+      execFileSync('setx', ['ANTHROPIC_BASE_URL', target], { stdio: 'pipe' });
+      return { ok: true, detail: `ANTHROPIC_BASE_URL=${target} (new terminals only)` };
+    } catch (err) {
+      return { ok: false, detail: `setx failed: ${String(err)}` };
+    }
+  },
+  unsetEnvVar() {
+    const existing = readWindowsUserEnv('ANTHROPIC_BASE_URL');
+    if (!existing) return { ok: true, detail: 'ANTHROPIC_BASE_URL was not set', skipped: true };
+    if (!/https?:\/\/(localhost|127\.0\.0\.1):/.test(existing)) {
+      return { ok: true, skipped: true, detail: `ANTHROPIC_BASE_URL points elsewhere (${existing}) — left in place` };
+    }
+    try {
+      execFileSync('reg', ['delete', 'HKCU\\Environment', '/v', 'ANTHROPIC_BASE_URL', '/f'], { stdio: 'pipe' });
+      return { ok: true, detail: 'ANTHROPIC_BASE_URL removed' };
+    } catch (err) {
+      return { ok: false, detail: `Could not remove env var: ${String(err)}` };
+    }
+  },
+  isEnvVarSet(port) {
+    const persisted = readWindowsUserEnv('ANTHROPIC_BASE_URL');
+    if (persisted === `http://localhost:${port}` || persisted === `http://127.0.0.1:${port}`) return true;
+    return envMatchesProcess(port);
+  },
+  onStop() {
+    // No KeepAlive supervisor on Windows.
+  },
+};
 
-  if (platform === 'macos') {
+// ── macOS ────────────────────────────────────────────────────────────────────
+
+const macosIntegration: PlatformIntegration = {
+  name: 'macos',
+  installAutostart(serveArgs, paths = routerPaths()) {
     try {
       fs.mkdirSync(path.dirname(paths.plistFile), { recursive: true });
-      fs.writeFileSync(paths.plistFile, buildPlist(nodePath, cliPath, serveArgs, paths.logFile), 'utf8');
+      fs.writeFileSync(paths.plistFile, buildPlist(process.execPath, process.argv[1]!, serveArgs, paths.logFile), 'utf8');
     } catch (err) {
       return { ok: false, detail: `Could not write LaunchAgent: ${String(err)}` };
     }
@@ -172,38 +305,9 @@ export function installAutostart(serveArgs: string[], paths: RouterPaths = route
     } catch (err) {
       return { ok: false, detail: `LaunchAgent written but launchctl load failed: ${String(err)}` };
     }
-  }
-
-  // linux
-  try {
-    const unitPath = systemdUnitPath();
-    fs.mkdirSync(path.dirname(unitPath), { recursive: true });
-    fs.writeFileSync(unitPath, buildSystemdUnit(nodePath, cliPath, serveArgs), 'utf8');
-    execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'pipe' });
-    execFileSync('systemctl', ['--user', 'enable', '--now', SYSTEMD_UNIT], { stdio: 'pipe' });
-    return { ok: true, detail: `systemd user unit enabled (${unitPath})` };
-  } catch (err) {
-    return {
-      ok: false,
-      detail: `systemd setup failed (${String(err)}). The daemon still runs; re-run 'claude-router start -d' after reboot.`,
-    };
-  }
-}
-
-export function uninstallAutostart(paths: RouterPaths = routerPaths()): StepResult {
-  const platform = platformName();
-
-  if (platform === 'windows') {
-    try {
-      execFileSync('reg', ['delete', WIN_RUN_KEY, '/v', WIN_RUN_VALUE, '/f'], { stdio: 'pipe' });
-      return { ok: true, detail: 'Run key removed' };
-    } catch {
-      return { ok: true, detail: 'Run key was not present', skipped: true };
-    }
-  }
-
-  if (platform === 'macos') {
-    unloadLaunchAgent(paths);
+  },
+  uninstallAutostart(paths = routerPaths()) {
+    this.onStop(paths);
     if (fs.existsSync(paths.plistFile)) {
       try {
         fs.unlinkSync(paths.plistFile);
@@ -213,36 +317,136 @@ export function uninstallAutostart(paths: RouterPaths = routerPaths()): StepResu
       }
     }
     return { ok: true, detail: 'LaunchAgent was not present', skipped: true };
-  }
+  },
+  isAutostartRegistered(paths = routerPaths()) {
+    return fs.existsSync(paths.plistFile);
+  },
+  setEnvVar(port, paths = routerPaths()) {
+    const result = setEnvVarViaRc(paths.zshrcFile, port);
+    if (!result.ok || result.skipped) return result;
+    // GUI apps launched from Dock/Finder (VS Code, the Claude Code extension) don't
+    // read shell rc, so the rc export alone never reaches them. launchctl setenv
+    // injects it into the running GUI session — no relaunch-from-terminal needed.
+    try {
+      execFileSync('launchctl', ['setenv', 'ANTHROPIC_BASE_URL', `http://localhost:${port}`], { stdio: 'pipe' });
+      return { ok: true, detail: `${result.detail} + GUI session (launchctl)` };
+    } catch {
+      return { ok: true, detail: `${result.detail} (launchctl setenv failed — restart GUI apps from a terminal)` };
+    }
+  },
+  unsetEnvVar(paths = routerPaths()) {
+    const result = unsetEnvVarViaRc(paths);
+    try {
+      execFileSync('launchctl', ['unsetenv', 'ANTHROPIC_BASE_URL'], { stdio: 'pipe' });
+    } catch {
+      // not set / launchctl absent — nothing to undo
+    }
+    return result;
+  },
+  isEnvVarSet(port) {
+    return envMatchesProcess(port);
+  },
+  onStop(paths = routerPaths()) {
+    if (!fs.existsSync(paths.plistFile)) return;
+    try {
+      execFileSync('launchctl', ['unload', paths.plistFile], { stdio: 'pipe' });
+    } catch {
+      // not loaded — fine
+    }
+  },
+};
 
-  // linux
-  const unitPath = systemdUnitPath();
-  if (!fs.existsSync(unitPath)) return { ok: true, detail: 'systemd unit was not present', skipped: true };
-  try {
-    execFileSync('systemctl', ['--user', 'disable', '--now', SYSTEMD_UNIT], { stdio: 'pipe' });
-  } catch {
-    // systemctl absent or unit not enabled — still remove the file
-  }
-  try {
-    fs.unlinkSync(unitPath);
-    return { ok: true, detail: 'systemd unit removed' };
-  } catch (err) {
-    return { ok: false, detail: `Could not remove systemd unit: ${String(err)}` };
-  }
+// ── Linux ────────────────────────────────────────────────────────────────────
+
+const linuxIntegration: PlatformIntegration = {
+  name: 'linux',
+  installAutostart(serveArgs) {
+    try {
+      const unitPath = systemdUnitPath();
+      fs.mkdirSync(path.dirname(unitPath), { recursive: true });
+      fs.writeFileSync(unitPath, buildSystemdUnit(process.execPath, process.argv[1]!, serveArgs), 'utf8');
+      execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'pipe' });
+      execFileSync('systemctl', ['--user', 'enable', '--now', SYSTEMD_UNIT], { stdio: 'pipe' });
+      return { ok: true, detail: `systemd user unit enabled (${unitPath})` };
+    } catch (err) {
+      return {
+        ok: false,
+        detail: `systemd setup failed (${String(err)}). The daemon still runs; re-run 'claude-router start -d' after reboot.`,
+      };
+    }
+  },
+  uninstallAutostart() {
+    const unitPath = systemdUnitPath();
+    if (!fs.existsSync(unitPath)) return { ok: true, detail: 'systemd unit was not present', skipped: true };
+    try {
+      execFileSync('systemctl', ['--user', 'disable', '--now', SYSTEMD_UNIT], { stdio: 'pipe' });
+    } catch {
+      // systemctl absent or unit not enabled — still remove the file
+    }
+    try {
+      fs.unlinkSync(unitPath);
+      return { ok: true, detail: 'systemd unit removed' };
+    } catch (err) {
+      return { ok: false, detail: `Could not remove systemd unit: ${String(err)}` };
+    }
+  },
+  isAutostartRegistered() {
+    return fs.existsSync(systemdUnitPath());
+  },
+  setEnvVar(port, paths = routerPaths()) {
+    const rcFile = process.env['SHELL']?.includes('zsh') ? paths.zshrcFile : paths.bashrcFile;
+    return setEnvVarViaRc(rcFile, port);
+  },
+  unsetEnvVar(paths = routerPaths()) {
+    return unsetEnvVarViaRc(paths);
+  },
+  isEnvVarSet(port) {
+    return envMatchesProcess(port);
+  },
+  onStop() {
+    // systemd Restart=on-failure does not resurrect a clean stop.
+  },
+};
+
+/** Select the adapter for the current OS. */
+export function platformIntegration(): PlatformIntegration {
+  const p = platformName();
+  if (p === 'windows') return windowsIntegration;
+  if (p === 'macos') return macosIntegration;
+  return linuxIntegration;
+}
+
+// ── Public delegators ────────────────────────────────────────────────────────
+// The interface stays a flat set of functions for callers; each one routes to
+// the current OS's adapter.
+
+export function installAutostart(serveArgs: string[], paths: RouterPaths = routerPaths()): StepResult {
+  return platformIntegration().installAutostart(serveArgs, paths);
+}
+
+export function uninstallAutostart(paths: RouterPaths = routerPaths()): StepResult {
+  return platformIntegration().uninstallAutostart(paths);
 }
 
 export function isAutostartRegistered(paths: RouterPaths = routerPaths()): boolean {
-  const platform = platformName();
-  if (platform === 'windows') {
-    try {
-      execFileSync('reg', ['query', WIN_RUN_KEY, '/v', WIN_RUN_VALUE], { stdio: 'pipe' });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  if (platform === 'macos') return fs.existsSync(paths.plistFile);
-  return fs.existsSync(systemdUnitPath());
+  return platformIntegration().isAutostartRegistered(paths);
+}
+
+export function setEnvVar(port: number, paths: RouterPaths = routerPaths()): StepResult {
+  return platformIntegration().setEnvVar(port, paths);
+}
+
+export function unsetEnvVar(paths: RouterPaths = routerPaths()): StepResult {
+  return platformIntegration().unsetEnvVar(paths);
+}
+
+export function isEnvVarSet(port: number): boolean {
+  return platformIntegration().isEnvVarSet(port);
+}
+
+/** macOS unloads its KeepAlive LaunchAgent before a stop; a no-op elsewhere. */
+export function unloadLaunchAgent(paths: RouterPaths = routerPaths()): void {
+  platformIntegration().onStop(paths);
 }
 
 /**
@@ -253,6 +457,7 @@ export function isAutostartRegistered(paths: RouterPaths = routerPaths()): boole
  * or a manually started daemon).
  */
 export function supervisorPid(paths: RouterPaths = routerPaths()): number | null {
+  void paths;
   const platform = platformName();
   try {
     if (platform === 'macos') {
@@ -280,136 +485,6 @@ export function supervisorPid(paths: RouterPaths = routerPaths()): number | null
     return null;
   }
   return null;
-}
-
-export function unloadLaunchAgent(paths: RouterPaths = routerPaths()): void {
-  if (platformName() !== 'macos' || !fs.existsSync(paths.plistFile)) return;
-  try {
-    execFileSync('launchctl', ['unload', paths.plistFile], { stdio: 'pipe' });
-  } catch {
-    // not loaded — fine
-  }
-}
-
-// ── Environment variable ───────────────────────────────────────────────────
-
-function readWindowsUserEnv(name: string): string | null {
-  try {
-    const out = execFileSync('reg', ['query', 'HKCU\\Environment', '/v', name], {
-      stdio: 'pipe',
-      encoding: 'utf8',
-    });
-    const match = out.match(/REG_(?:EXPAND_)?SZ\s+(.+)/);
-    return match ? match[1]!.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
-export function setEnvVar(port: number, paths: RouterPaths = routerPaths()): StepResult {
-  const target = `http://localhost:${port}`;
-  const platform = platformName();
-
-  if (platform === 'windows') {
-    const existing = readWindowsUserEnv('ANTHROPIC_BASE_URL');
-    if (existing && existing !== target) {
-      return {
-        ok: false,
-        skipped: true,
-        detail: `ANTHROPIC_BASE_URL is already set to ${existing} — not overwriting. Set it manually: setx ANTHROPIC_BASE_URL ${target}`,
-      };
-    }
-    try {
-      execFileSync('setx', ['ANTHROPIC_BASE_URL', target], { stdio: 'pipe' });
-      return { ok: true, detail: `ANTHROPIC_BASE_URL=${target} (new terminals only)` };
-    } catch (err) {
-      return { ok: false, detail: `setx failed: ${String(err)}` };
-    }
-  }
-
-  // macOS/Linux: marker-delimited block in the shell rc file
-  const rcFile = platform === 'macos' || process.env['SHELL']?.includes('zsh')
-    ? paths.zshrcFile
-    : paths.bashrcFile;
-  try {
-    let content = fs.existsSync(rcFile) ? fs.readFileSync(rcFile, 'utf8') : '';
-    if (content.includes(RC_BLOCK_START)) {
-      content = removeRcBlock(content);
-    } else if (/^export ANTHROPIC_BASE_URL=/m.test(content)) {
-      return {
-        ok: false,
-        skipped: true,
-        detail: `${rcFile} already exports ANTHROPIC_BASE_URL — not overwriting`,
-      };
-    }
-    fs.writeFileSync(rcFile, `${content.replace(/\n*$/, '\n')}${buildRcBlock(port)}\n`, 'utf8');
-
-    // GUI apps launched from Dock/Finder (VS Code, the Claude Code extension) don't
-    // read shell rc files, so the rc export alone never reaches them. launchctl setenv
-    // injects it into the running GUI session — no relaunch-from-terminal needed.
-    if (platform === 'macos') {
-      try {
-        execFileSync('launchctl', ['setenv', 'ANTHROPIC_BASE_URL', target], { stdio: 'pipe' });
-        return { ok: true, detail: `ANTHROPIC_BASE_URL added to ${rcFile} + GUI session (launchctl)` };
-      } catch {
-        // ponytail: launchctl absent/denied — rc export still covers terminal use.
-        return { ok: true, detail: `ANTHROPIC_BASE_URL added to ${rcFile} (launchctl setenv failed — restart GUI apps from a terminal)` };
-      }
-    }
-    return { ok: true, detail: `ANTHROPIC_BASE_URL added to ${rcFile}` };
-  } catch (err) {
-    return { ok: false, detail: `Could not update ${rcFile}: ${String(err)}` };
-  }
-}
-
-export function unsetEnvVar(paths: RouterPaths = routerPaths()): StepResult {
-  const platform = platformName();
-
-  if (platform === 'windows') {
-    const existing = readWindowsUserEnv('ANTHROPIC_BASE_URL');
-    if (!existing) return { ok: true, detail: 'ANTHROPIC_BASE_URL was not set', skipped: true };
-    if (!/https?:\/\/(localhost|127\.0\.0\.1):/.test(existing)) {
-      return { ok: true, skipped: true, detail: `ANTHROPIC_BASE_URL points elsewhere (${existing}) — left in place` };
-    }
-    try {
-      execFileSync('reg', ['delete', 'HKCU\\Environment', '/v', 'ANTHROPIC_BASE_URL', '/f'], { stdio: 'pipe' });
-      return { ok: true, detail: 'ANTHROPIC_BASE_URL removed' };
-    } catch (err) {
-      return { ok: false, detail: `Could not remove env var: ${String(err)}` };
-    }
-  }
-
-  let removedAny = false;
-  for (const rcFile of [paths.zshrcFile, paths.bashrcFile]) {
-    if (!fs.existsSync(rcFile)) continue;
-    const content = fs.readFileSync(rcFile, 'utf8');
-    const cleaned = removeRcBlock(content);
-    if (cleaned !== content) {
-      fs.writeFileSync(rcFile, cleaned, 'utf8');
-      removedAny = true;
-    }
-  }
-  if (platform === 'macos') {
-    try {
-      execFileSync('launchctl', ['unsetenv', 'ANTHROPIC_BASE_URL'], { stdio: 'pipe' });
-    } catch {
-      // not set / launchctl absent — nothing to undo
-    }
-  }
-  return removedAny
-    ? { ok: true, detail: 'ANTHROPIC_BASE_URL block removed from shell rc' }
-    : { ok: true, detail: 'No claude-router block found in shell rc', skipped: true };
-}
-
-export function isEnvVarSet(port: number): boolean {
-  const target = `http://localhost:${port}`;
-  const altTarget = `http://127.0.0.1:${port}`;
-  if (platformName() === 'windows') {
-    const persisted = readWindowsUserEnv('ANTHROPIC_BASE_URL');
-    if (persisted === target || persisted === altTarget) return true;
-  }
-  const current = process.env['ANTHROPIC_BASE_URL'];
-  return current === target || current === altTarget;
 }
 
 // ── Claude Code statusline ─────────────────────────────────────────────────

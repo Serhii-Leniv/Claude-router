@@ -7,9 +7,9 @@ import {
 import { LruCache } from '../cache.js';
 import {
   DEFAULT_PRICING,
-  computeCostCents,
+  computeRouteCost,
 } from '../models.js';
-import { shouldRetry, nextTier } from '../retry.js';
+import { executeRoute } from '../route.js';
 import { normalizeParamsForTier } from '../params.js';
 import { term } from './term.js';
 import { appendEvent } from './history.js';
@@ -62,26 +62,10 @@ function recordEvent(event: RouteEvent, config?: HandlerConfig): void {
 }
 
 /** Cost + savings for a completed response, including prompt-cache tokens.
- * `usage` may be missing/partial on an unexpected response shape — guard every
- * field so cost math (and the event record built from it) can't crash the request. */
+ * `usage` may be missing/partial on an unexpected response shape — computeRouteCost
+ * guards every field so cost math (and the event record built from it) can't crash. */
 function computeCosts(model: string, usage: Anthropic.Usage | undefined, config: HandlerConfig) {
-  const pricing = config.pricing ?? DEFAULT_PRICING;
-  const inputTokens = usage?.input_tokens ?? 0;
-  const outputTokens = usage?.output_tokens ?? 0;
-  const cache = {
-    readTokens: usage?.cache_read_input_tokens ?? 0,
-    creationTokens: usage?.cache_creation_input_tokens ?? 0,
-  };
-  const cost = computeCostCents(model, inputTokens, outputTokens, pricing, cache);
-  const baseline = computeCostCents(config.defaultModel, inputTokens, outputTokens, pricing, cache);
-  return {
-    costCents: Math.round(cost * 1000) / 1000,
-    savedCents: Math.round((baseline - cost) * 1000) / 1000,
-    cacheReadTokens: cache.readTokens,
-    cacheCreationTokens: cache.creationTokens,
-    inputTokens,
-    outputTokens,
-  };
+  return computeRouteCost(model, usage, config.defaultModel, config.pricing ?? DEFAULT_PRICING);
 }
 
 function buildClassifyInput(body: Record<string, unknown>): ClassifyInput {
@@ -317,72 +301,31 @@ async function handleNonStreaming(
 ): Promise<Response> {
   const reqOpts = betaRequestOptions(anthropicBeta);
   try {
-    const response = await client.messages.create(
-      normalizeParamsForTier({ ...apiParams, model }, tier) as Anthropic.MessageCreateParamsNonStreaming,
-      reqOpts,
-    );
-
-    // Auto-retry on bad output
-    const retryDecision = shouldRetry(response, tier);
-    if (retryDecision.retry) {
-      const escalatedTier = nextTier(tier);
-      if (escalatedTier) {
-        const escalatedModel = config.models[escalatedTier];
-        const retryResponse = await client.messages.create(
-          normalizeParamsForTier(
-            { ...apiParams, model: escalatedModel },
-            escalatedTier,
-          ) as Anthropic.MessageCreateParamsNonStreaming,
-          reqOpts,
-        );
-
-        const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
-          computeCosts(escalatedModel, retryResponse.usage, config);
-
-        if (config.verbose) {
-          log(escalatedTier, escalatedModel, classifyResult, roundedCost, savedCents, config.defaultModel, true, retryDecision.reason);
-        }
-
-        recordEvent({
-          timestamp: new Date().toISOString(),
-          tier: escalatedTier,
-          model: escalatedModel,
-          costCents: roundedCost,
-          savedCents,
-          confidence: classifyResult.confidence,
-          classifier: classifyResult.method,
-          retried: true,
-          retryReason: retryDecision.reason,
-          inputTokens,
-          outputTokens,
-          cacheReadTokens,
-          cacheCreationTokens,
-        }, config);
-
-        const headers = new Headers({ 'content-type': 'application/json' });
-        setRouterHeaders(headers, escalatedTier, escalatedModel, roundedCost, savedCents, classifyResult, true, retryDecision.reason);
-
-        return new Response(JSON.stringify(retryResponse), { status: 200, headers });
-      }
-    }
+    // Proxy does not walk up on rate limits (a 429 surfaces to the client);
+    // executeRoute still handles the truncation/refusal escalation and forwards
+    // the anthropic-beta header on both the initial and any escalated call.
+    const result = await executeRoute(client, apiParams, tier, config.models, {
+      fallbackOnRateLimit: false,
+      requestOptions: reqOpts,
+    });
 
     const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
-      computeCosts(model, response.usage, config);
+      computeCosts(result.model, result.response.usage, config);
 
     if (config.verbose) {
-      log(tier, model, classifyResult, roundedCost, savedCents, config.defaultModel);
+      log(result.tier, result.model, classifyResult, roundedCost, savedCents, config.defaultModel, result.retried, result.retryReason);
     }
 
     recordEvent({
       timestamp: new Date().toISOString(),
-      tier,
-      model,
+      tier: result.tier,
+      model: result.model,
       costCents: roundedCost,
       savedCents,
       confidence: classifyResult.confidence,
       classifier: classifyResult.method,
-      retried: false,
-      retryReason: null,
+      retried: result.retried,
+      retryReason: result.retryReason,
       inputTokens,
       outputTokens,
       cacheReadTokens,
@@ -390,9 +333,9 @@ async function handleNonStreaming(
     }, config);
 
     const headers = new Headers({ 'content-type': 'application/json' });
-    setRouterHeaders(headers, tier, model, roundedCost, savedCents, classifyResult);
+    setRouterHeaders(headers, result.tier, result.model, roundedCost, savedCents, classifyResult, result.retried, result.retryReason);
 
-    return new Response(JSON.stringify(response), { status: 200, headers });
+    return new Response(JSON.stringify(result.response), { status: 200, headers });
   } catch (err) {
     // Catch Anthropic API errors from any provider SDK (instanceof fails cross-bundle)
     if (err instanceof Anthropic.APIError || (err instanceof Error && 'status' in err && typeof (err as { status: unknown }).status === 'number')) {

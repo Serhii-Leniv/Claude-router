@@ -8,11 +8,10 @@ import { LruCache } from './cache.js';
 import {
   DEFAULT_MODELS,
   DEFAULT_PRICING,
-  TIER_ORDER,
-  computeCostCents,
+  computeRouteCost,
 } from './models.js';
 import { CostTracker } from './tracker.js';
-import { shouldRetry, nextTier } from './retry.js';
+import { executeRoute } from './route.js';
 import { normalizeParamsForTier } from './params.js';
 import type {
   ClassifyInput,
@@ -128,36 +127,18 @@ export class ClaudeRouter {
     retried: boolean = false,
     retryReason: string | null = null,
   ): RouteMeta {
-    const inputTokens = usage.input_tokens;
-    const outputTokens = usage.output_tokens;
-    const cache = {
-      readTokens: usage.cache_read_input_tokens ?? 0,
-      creationTokens: usage.cache_creation_input_tokens ?? 0,
-    };
-    const costCents = computeCostCents(
-      model,
-      inputTokens,
-      outputTokens,
-      this.config.pricing,
-      cache,
-    );
-    const baselineCost = computeCostCents(
-      this.config.defaultModel,
-      inputTokens,
-      outputTokens,
-      this.config.pricing,
-      cache,
-    );
+    const { costCents, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
+      computeRouteCost(model, usage, this.config.defaultModel, this.config.pricing);
 
     return {
       tier,
       model,
       inputTokens,
       outputTokens,
-      cacheReadTokens: cache.readTokens,
-      cacheCreationTokens: cache.creationTokens,
-      costCents: Math.round(costCents * 1000) / 1000,
-      savedCents: Math.round((baselineCost - costCents) * 1000) / 1000,
+      cacheReadTokens,
+      cacheCreationTokens,
+      costCents,
+      savedCents,
       classifierMethod: classifyResult.method,
       classifierMs: classifyResult.ms,
       fallbackUsed,
@@ -191,79 +172,30 @@ export class ClaudeRouter {
       ? { tier: forcedTier, score: -1, method: 'heuristic' as const, ms: 0, confidence: 1.0 }
       : await this.classify(input);
 
-    const startIndex = TIER_ORDER.indexOf(classifyResult.tier);
-    let lastError: unknown;
+    const result = await executeRoute(
+      this._client,
+      apiParams as Record<string, unknown>,
+      classifyResult.tier,
+      this.config.tiers,
+      { fallbackOnRateLimit: this.config.fallback },
+    );
 
-    for (let i = startIndex; i < TIER_ORDER.length; i++) {
-      const tier = TIER_ORDER[i]!;
-      const model = this.config.tiers[tier];
-      const fallbackUsed = i !== startIndex;
+    const meta = this.buildMeta(
+      result.tier,
+      result.model,
+      result.response.usage,
+      classifyResult,
+      result.fallbackUsed,
+      result.retried,
+      result.retryReason,
+    );
 
-      try {
-        const response = await this._client.messages.create(
-          normalizeParamsForTier({ ...apiParams, model }, tier),
-        );
+    this.tracker.record(meta);
+    this.log(meta, classifyResult);
 
-        // Auto-retry on bad output (truncation/refusal)
-        const retryDecision = shouldRetry(response, tier);
-        if (retryDecision.retry && !fallbackUsed) {
-          const escalatedTier = nextTier(tier);
-          if (escalatedTier) {
-            const escalatedModel = this.config.tiers[escalatedTier];
-            const retryResponse = await this._client.messages.create(
-              normalizeParamsForTier(
-                { ...apiParams, model: escalatedModel },
-                escalatedTier,
-              ),
-            );
-
-            const meta = this.buildMeta(
-              escalatedTier,
-              escalatedModel,
-              retryResponse.usage,
-              classifyResult,
-              true,
-              true,
-              retryDecision.reason,
-            );
-
-            this.tracker.record(meta);
-            this.log(meta, classifyResult);
-
-            const routed = retryResponse as RoutedMessage;
-            routed.meta = meta;
-            return routed;
-          }
-        }
-
-        const meta = this.buildMeta(
-          tier,
-          model,
-          response.usage,
-          classifyResult,
-          fallbackUsed,
-        );
-
-        this.tracker.record(meta);
-        this.log(meta, classifyResult);
-
-        const routed = response as RoutedMessage;
-        routed.meta = meta;
-        return routed;
-      } catch (err) {
-        lastError = err;
-        if (
-          this.config.fallback &&
-          err instanceof Anthropic.RateLimitError &&
-          i < TIER_ORDER.length - 1
-        ) {
-          continue;
-        }
-        throw err;
-      }
-    }
-
-    throw lastError;
+    const routed = result.response as RoutedMessage;
+    routed.meta = meta;
+    return routed;
   }
 
   stream(params: StreamParams): StreamResult {

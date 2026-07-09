@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { routerPaths, type RouterPaths } from './cli-config.js';
 import { unloadLaunchAgent } from './platform.js';
+import { SERVICE_ID, type HealthInfo } from './health.js';
 
 export interface DaemonState {
   pid: number;
@@ -42,17 +43,6 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-export interface HealthInfo {
-  status: string;
-  service: string;
-  classifier: string;
-  provider: string;
-  forceRoute: boolean;
-  requests: number;
-  lastTier: string | null;
-  lastModel: string | null;
-}
-
 /**
  * Fetch /health and verify it is actually our proxy (not some other service
  * on the port). Uses 127.0.0.1 — localhost can resolve to ::1 on Windows.
@@ -64,7 +54,7 @@ export async function checkHealth(port: number, timeoutMs = 1000): Promise<Healt
     });
     if (!res.ok) return null;
     const data = (await res.json()) as HealthInfo;
-    return data.service === 'claude-router-proxy' ? data : null;
+    return data.service === SERVICE_ID ? data : null;
   } catch {
     return null;
   }
