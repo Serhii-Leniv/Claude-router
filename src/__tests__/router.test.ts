@@ -2,7 +2,7 @@ import { describe, it, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { ClaudeRouter } from '../index.js';
 import { DEFAULT_MODELS } from '../models.js';
-import type Anthropic from '@anthropic-ai/sdk';
+import Anthropic from '@anthropic-ai/sdk';
 
 function fakeMessage(
   overrides: Partial<Anthropic.Message> = {},
@@ -139,18 +139,15 @@ describe('ClaudeRouter.send', () => {
   it('fallback on RateLimitError escalates to next tier', async () => {
     const { router } = createMockRouter();
 
+    // A genuine Anthropic.RateLimitError so the `instanceof` guard in
+    // ClaudeRouter.send actually fires. Forcing the prototype is version-proof
+    // against the SDK's APIError constructor signature.
     let callCount = 0;
     const mockCreate = mock.fn(async (params: { model: string }) => {
       callCount++;
       if (callCount === 1) {
-        // Simulate RateLimitError for first call (haiku)
         const err = new Error('rate limited');
-        Object.setPrototypeOf(err, { constructor: { name: 'RateLimitError' } });
-        // We need a real-ish RateLimitError. Use status 429.
-        const rateLimitErr = Object.create(err);
-        rateLimitErr.status = 429;
-        rateLimitErr.message = 'rate limited';
-        // The instanceof check needs the actual class. Let's just throw and catch differently.
+        Object.setPrototypeOf(err, Anthropic.RateLimitError.prototype);
         throw err;
       }
       return fakeMessage({ model: params.model });
@@ -158,8 +155,37 @@ describe('ClaudeRouter.send', () => {
 
     (router as unknown as { _client: { messages: { create: typeof mockCreate } } })._client.messages.create = mockCreate;
 
-    // This won't trigger instanceof Anthropic.RateLimitError since we're using a plain Error.
-    // Instead, let's test the non-fallback path and verify the error propagates.
+    const result = await router.send({
+      messages: [{ role: 'user', content: 'translate hello' }],
+      max_tokens: 100,
+    });
+
+    // haiku rate-limited → escalate to sonnet
+    assert.equal(result.meta.tier, 'sonnet');
+    assert.equal(result.meta.model, DEFAULT_MODELS.sonnet);
+    assert.equal(result.meta.fallbackUsed, true);
+    assert.equal(mockCreate.mock.calls.length, 2);
+    assert.equal((mockCreate.mock.calls[0]!.arguments[0] as { model: string }).model, DEFAULT_MODELS.haiku);
+    assert.equal((mockCreate.mock.calls[1]!.arguments[0] as { model: string }).model, DEFAULT_MODELS.sonnet);
+  });
+
+  it('propagates RateLimitError when fallback is disabled', async () => {
+    const router = new ClaudeRouter({
+      apiKey: 'sk-test',
+      classifier: 'heuristic',
+      verbose: false,
+      fallback: false,
+    });
+
+    const mockCreate = mock.fn(async () => {
+      const err = new Error('rate limited');
+      Object.setPrototypeOf(err, Anthropic.RateLimitError.prototype);
+      throw err;
+    });
+    (router as unknown as { _client: unknown })._client = {
+      messages: { create: mockCreate, stream: mock.fn() },
+    };
+
     await assert.rejects(
       () =>
         router.send({
@@ -168,6 +194,8 @@ describe('ClaudeRouter.send', () => {
         }),
       { message: 'rate limited' },
     );
+    // No escalation — the single haiku attempt throws and propagates.
+    assert.equal(mockCreate.mock.calls.length, 1);
   });
 
   it('verbose mode logs to console', async () => {
@@ -366,5 +394,33 @@ describe('ClaudeRouter — classifier resilience', () => {
     assert.equal(result.meta.classifierMethod, 'heuristic');
     assert.equal(calls, 2, 'classifier attempt + routed request');
     assert.ok(result.meta.tier);
+  });
+});
+
+describe('ClaudeRouter.stream', () => {
+  it('routes a streamed request and resolves meta for the chosen tier', async () => {
+    const { router } = createMockRouter();
+
+    let streamedModel: string | undefined;
+    const streamFn = mock.fn((params: { model: string }) => {
+      streamedModel = params.model;
+      // Minimal MessageStream stand-in: the router only awaits finalMessage().
+      return {
+        finalMessage: async () => fakeMessage({ model: params.model }),
+      };
+    });
+    (router as unknown as { _client: { messages: { stream: typeof streamFn } } })._client.messages.stream = streamFn;
+
+    const { meta } = router.stream({
+      messages: [{ role: 'user', content: 'translate hello to French' }],
+      max_tokens: 100,
+    });
+
+    const resolved = await meta;
+    assert.equal(resolved.tier, 'haiku');
+    assert.equal(resolved.model, DEFAULT_MODELS.haiku);
+    assert.equal(streamedModel, DEFAULT_MODELS.haiku);
+    assert.equal(streamFn.mock.calls.length, 1);
+    assert.equal(router.stats().callCount, 1);
   });
 });

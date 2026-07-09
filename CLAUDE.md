@@ -114,7 +114,7 @@ Config file: `~/.claude-router/config.json` (`FileConfig`) supplies defaults for
 
 ### Testing
 
-Tests use `node:test` (no external test framework). Router tests mock `_client` property directly — no network calls. All tests are pure unit tests.
+Tests use `node:test` (no external test framework). Router tests mock the `_client` property directly — no network calls. Most tests are pure unit tests; a few bind an ephemeral **loopback** TCP port (`serve({ port: 0 })` / `http.createServer().listen(0)`) to exercise the proxy over a real socket — `daemon.test.ts` (health polling) and `integration.test.ts` (full end-to-end against a fake in-process Anthropic upstream). None reach the public internet by default. The two `proxy.test.ts` passthrough cases that *do* call `api.anthropic.com` are skipped unless `RUN_NETWORK_TESTS=1` is set.
 
 ### Module system
 

@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { createProxyApp } from '../proxy/server.js';
@@ -7,6 +7,13 @@ import { renderDashboard } from '../proxy/dashboard.js';
 import type { RouteEvent } from '../proxy/handler.js';
 
 import { DEFAULT_MODELS } from '../models.js';
+
+// A couple of passthrough tests make real outbound calls to api.anthropic.com.
+// They're skipped by default (flaky/offline-hostile in CI) and opt-in via
+// RUN_NETWORK_TESTS=1. `skip` takes a reason string when the flag is unset.
+const NETWORK_SKIP: string | false = process.env['RUN_NETWORK_TESTS'] === '1'
+  ? false
+  : 'network test — set RUN_NETWORK_TESTS=1 to run (reaches api.anthropic.com)';
 
 describe('getAnthropicClient — per-credential cache', () => {
   it('returns the same instance for the same api key', () => {
@@ -296,7 +303,7 @@ describe('proxy passthrough', () => {
     assert.equal(res.status, 401);
   });
 
-  it('POST /v1/messages/count_tokens forwards to Anthropic instead of 404', async () => {
+  it('POST /v1/messages/count_tokens forwards to Anthropic instead of 404', { skip: NETWORK_SKIP }, async () => {
     // Claude Code / the VS Code extension call count_tokens; a 404 breaks them.
     const res = await app.request('/v1/messages/count_tokens', {
       method: 'POST',
@@ -326,7 +333,7 @@ describe('proxy passthrough', () => {
     assert.equal(body.error.type, 'not_found_error');
   });
 
-  it('POST /v1/messages with explicit model and key passes through to Anthropic', async () => {
+  it('POST /v1/messages with explicit model and key passes through to Anthropic', { skip: NETWORK_SKIP }, async () => {
     // With explicit model + key, passthrough forwards to real Anthropic API
     // Fake key → Anthropic returns 401 with its own error format (not ours)
     const res = await app.request('/v1/messages', {
@@ -338,6 +345,58 @@ describe('proxy passthrough', () => {
     assert.equal(res.headers.get('x-router-tier'), 'passthrough');
     // Anthropic rejects invalid key with 401
     assert.equal(res.status, 401);
+  });
+});
+
+describe('proxy passthrough (hermetic — stubbed upstream)', () => {
+  // The RUN_NETWORK_TESTS gate above keeps CI off api.anthropic.com, but the
+  // *routing* guarantees it verified are still worth guarding in CI: count_tokens
+  // must reach the passthrough route (not a local 404), and explicit-model
+  // requests must forward with x-router-tier: passthrough. We assert both without
+  // the network by stubbing the single upstream fetch the handler makes.
+  const app = createProxyApp({
+    classifier: 'heuristic',
+    defaultModel: 'claude-sonnet-4-6',
+    verbose: false,
+    provider: 'anthropic',
+    models: DEFAULT_MODELS,
+    forceRoute: false,
+  });
+
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  function stubUpstream(status = 200, body: unknown = { ok: true }) {
+    let seen: { url: string; method: string } | undefined;
+    globalThis.fetch = (async (input: unknown, init?: { method?: string }) => {
+      seen = { url: String(input), method: init?.method ?? 'GET' };
+      return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    return () => seen;
+  }
+
+  it('count_tokens reaches the passthrough route (not a local 404) and tags the tier', async () => {
+    const captured = stubUpstream(200, { input_tokens: 42 });
+    const res = await app.request('/v1/messages/count_tokens', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': 'sk-test-fake' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    assert.notEqual(res.status, 404, 'count_tokens must reach the origin, not 404 locally');
+    assert.equal(res.headers.get('x-router-tier'), 'passthrough');
+    assert.match(captured()!.url, /\/v1\/messages\/count_tokens$/, 'forwards to the count_tokens endpoint');
+  });
+
+  it('explicit model + key forwards with x-router-tier: passthrough (no routing)', async () => {
+    const captured = stubUpstream(200, { id: 'msg', type: 'message' });
+    const res = await app.request('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': 'sk-test-fake' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'passthrough');
+    assert.match(captured()!.url, /\/v1\/messages$/, 'forwards to the messages endpoint');
   });
 });
 
