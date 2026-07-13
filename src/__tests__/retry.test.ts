@@ -158,6 +158,76 @@ describe('shouldRetry', () => {
     assert.equal(result.retry, false);
     assert.equal(result.reason, null);
   });
+
+  // ── German refusal patterns (issue #3) ─────────────────────────────────────
+
+  it('retry on German refusal "Ich kann dabei nicht helfen"', () => {
+    const result = shouldRetry(
+      fakeResponse({ content: [{ type: 'text', text: 'Ich kann dabei nicht helfen.' }] }),
+      'haiku',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
+  it('retry on German fronted word order "Dabei kann ich nicht helfen"', () => {
+    const result = shouldRetry(
+      fakeResponse({ content: [{ type: 'text', text: 'Dabei kann ich nicht helfen.' }] }),
+      'sonnet',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
+  it('retry on German refusal with leading apology, still inside the 80-char scan window', () => {
+    const result = shouldRetry(
+      fakeResponse({
+        content: [{ type: 'text', text: 'Es tut mir leid, aber ich kann Ihnen dabei nicht helfen.' }],
+      }),
+      'haiku',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
+  it('retry on German "als KI" refusal', () => {
+    const result = shouldRetry(
+      fakeResponse({ content: [{ type: 'text', text: 'Als KI kann ich nicht auf externe Systeme zugreifen.' }] }),
+      'haiku',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
+  it('retry on German "nicht in der Lage" refusal', () => {
+    const result = shouldRetry(
+      fakeResponse({ content: [{ type: 'text', text: 'Ich bin nicht in der Lage, das zu tun.' }] }),
+      'haiku',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
+  it('no retry on benign German "Ich kann keine Fehler finden"', () => {
+    // The broad "ich kann keine" pattern is deliberately excluded — it would
+    // escalate benign answers like this one.
+    const result = shouldRetry(
+      fakeResponse({ content: [{ type: 'text', text: 'Ich kann keine Fehler finden — alles sieht gut aus.' }] }),
+      'haiku',
+    );
+    assert.equal(result.retry, false);
+    assert.equal(result.reason, null);
+  });
+
+  it('no retry on benign German "Das kann ich nicht garantieren"', () => {
+    // Bare "das kann ich nicht" is excluded for the same over-match reason.
+    const result = shouldRetry(
+      fakeResponse({ content: [{ type: 'text', text: 'Das kann ich nicht garantieren, aber es ist sehr wahrscheinlich: 42' }] }),
+      'haiku',
+    );
+    assert.equal(result.retry, false);
+    assert.equal(result.reason, null);
+  });
 });
 
 describe('nextTier', () => {
