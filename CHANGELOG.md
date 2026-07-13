@@ -5,7 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-07-13
+
 ### Fixed
+- **Claude Code no longer over-routes to Opus (negative savings)** — with `--force-route`, the classifier scored Claude Code's constant harness (huge system prompt + ~15 tool definitions), not the user's task, pushing every request — even `"what is 2+2?"` — over the Opus threshold and costing *more* than the Sonnet baseline. The classifier now scores the **latest user turn** and caps the combined harness contribution, so routing follows the task. The `anthropic-beta` header is also forwarded on the **passthrough** path (routed calls already kept it).
 - **count_tokens and other `/v1` endpoints no longer 404** — the proxy only served `POST /v1/messages`, so Claude Code and the VS Code extension 404'd on `/v1/messages/count_tokens` (and model listing). Non-routable `/v1/*` requests now forward verbatim to Anthropic (auth + `anthropic-beta` headers preserved), tagged `x-router-tier: passthrough`. Non-`anthropic` providers return a clear 404 for these.
 - **`ANTHROPIC_BASE_URL` now reaches GUI-launched apps on macOS** — `install` also runs `launchctl setenv` (and `uninstall` runs `launchctl unsetenv`), so VS Code / the Claude Code extension started from Dock/Finder inherit the proxy URL without being relaunched from a terminal. The shell-rc export alone never reached them.
 - **Proxy no longer 500s on an unexpected response shape** — `shouldRetry` read `response.content.filter(...)`; when the upstream response omitted `content`, the resulting `TypeError` was uncaught in the non-streaming handler and surfaced as a 500 (leaking the connection). Retry inspection now guards missing `content`/`usage` and skips retry instead of throwing.
