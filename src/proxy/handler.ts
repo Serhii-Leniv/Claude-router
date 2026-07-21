@@ -30,6 +30,12 @@ export interface HandlerConfig {
   routing?: RoutingTuning;
   /** JSONL file for persistent route history (undefined = in-memory only) */
   historyFile?: string;
+  /**
+   * Where routed and passed-through requests actually go. Defaults to the real
+   * API; override only to point at a stub. See `DEFAULT_UPSTREAM` for why this
+   * is an explicit setting and never read from the environment.
+   */
+  upstream?: string;
 }
 
 export interface RouteEvent {
@@ -199,11 +205,17 @@ export async function createProviderClient(provider: Provider): Promise<Anthropi
 // connection open for an hour under load.
 const CLIENT_TIMEOUT_MS = 15 * 60 * 1000;
 
-// The real Anthropic API. Pinned explicitly so the proxy's own SDK clients never
-// inherit ANTHROPIC_BASE_URL from the environment — which, once the proxy is the
-// thing that variable points at (localhost), makes the proxy call itself in an
-// infinite loop (routing AND the classifier's Haiku call both go through here).
-const ANTHROPIC_UPSTREAM = 'https://api.anthropic.com';
+// The real Anthropic API. Never read from the environment: once ANTHROPIC_BASE_URL
+// points at this proxy (which is the whole point of installing it), inheriting it
+// makes the proxy call itself in an infinite loop — routing AND the classifier's
+// Haiku call both go back through here. That was the 0.2.1 bug.
+//
+// Configurable, but only explicitly (`--upstream`, `FileConfig.upstream`). An
+// opt-in setting someone has to type cannot be inherited by accident, which is
+// what made the env var dangerous. Overriding it is how the proxy gets exercised
+// end to end without live credentials or spend — previously that required editing
+// this line inside node_modules.
+export const DEFAULT_UPSTREAM = 'https://api.anthropic.com';
 
 // Reusing clients per credential preserves HTTP keep-alive connections to the API.
 const MAX_CLIENT_CACHE = 100;
@@ -212,13 +224,16 @@ const clientCache = new LruCache<string, Anthropic>(MAX_CLIENT_CACHE);
 export function getAnthropicClient(
   apiKey: string | undefined,
   bearerToken: string | null,
+  upstream: string = DEFAULT_UPSTREAM,
 ): Anthropic {
-  const key = apiKey ? `k:${apiKey}` : `b:${bearerToken}`;
+  // Upstream is part of the cache key: a cached client carries its baseURL, so
+  // keying on the credential alone would serve a client pointed at the wrong host.
+  const key = `${upstream}\u0000${apiKey ? `k:${apiKey}` : `b:${bearerToken}`}`;
   let client = clientCache.get(key);
   if (!client) {
     client = apiKey
-      ? new Anthropic({ apiKey, timeout: CLIENT_TIMEOUT_MS, baseURL: ANTHROPIC_UPSTREAM })
-      : new Anthropic({ authToken: bearerToken!, timeout: CLIENT_TIMEOUT_MS, baseURL: ANTHROPIC_UPSTREAM });
+      ? new Anthropic({ apiKey, timeout: CLIENT_TIMEOUT_MS, baseURL: upstream })
+      : new Anthropic({ authToken: bearerToken!, timeout: CLIENT_TIMEOUT_MS, baseURL: upstream });
     clientCache.set(key, client);
   }
   return client;
@@ -252,7 +267,7 @@ export async function handleMessages(
       );
     }
 
-    client = getAnthropicClient(apiKey, bearerToken);
+    client = getAnthropicClient(apiKey, bearerToken, config.upstream);
   }
 
   // Read once as text so passthrough can forward the exact client bytes
@@ -271,7 +286,7 @@ export async function handleMessages(
 
   // Passthrough only for Anthropic provider with explicit model (not "auto"), unless --force-route
   if (!config.forceRoute && config.provider === 'anthropic' && requestedModel && requestedModel !== 'auto') {
-    return proxyPassthrough(c, rawBody);
+    return proxyPassthrough(c, rawBody, config.upstream ?? DEFAULT_UPSTREAM);
   }
 
   const input = buildClassifyInput(body);
@@ -468,7 +483,7 @@ export async function handlePassthrough(
   const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text();
 
   try {
-    const response = await fetch('https://api.anthropic.com' + url.pathname + url.search, {
+    const response = await fetch((config.upstream ?? DEFAULT_UPSTREAM) + url.pathname + url.search, {
       method,
       headers,
       body,
@@ -490,6 +505,7 @@ export async function handlePassthrough(
 async function proxyPassthrough(
   c: Context,
   rawBody: string,
+  upstream: string,
 ): Promise<Response> {
   try {
     // Forward original auth headers (x-api-key or Authorization: Bearer)
@@ -507,7 +523,7 @@ async function proxyPassthrough(
     const anthropicBeta = c.req.header('anthropic-beta');
     if (anthropicBeta) passthroughHeaders['anthropic-beta'] = anthropicBeta;
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch(`${upstream}/v1/messages`, {
       method: 'POST',
       headers: passthroughHeaders,
       body: rawBody,

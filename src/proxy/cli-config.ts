@@ -2,7 +2,7 @@ import { warnDeadRoutingKeys } from '../routing.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import type { Provider } from './handler.js';
+import { DEFAULT_UPSTREAM, type Provider } from './handler.js';
 import type { ModelPricing, RoutingTuning, Tier } from '../types.js';
 
 // ── Paths ──────────────────────────────────────────────────────────────────
@@ -48,6 +48,12 @@ export interface FileConfig {
   provider?: Provider;
   region?: string;
   forceRoute?: boolean;
+  /**
+   * Where requests actually go (default `https://api.anthropic.com`). Point it at
+   * a stub to exercise the proxy without credentials or spend. Never inherited
+   * from the environment — see `DEFAULT_UPSTREAM`.
+   */
+  upstream?: string;
   /** Override the model ID used for each tier. */
   tiers?: Partial<Record<Tier, string>>;
   /** Override pricing ($/1M tokens) for savings math, keyed by model ID. */
@@ -81,6 +87,7 @@ export interface ServeOptions {
   provider: Provider;
   region: string;
   forceRoute: boolean;
+  upstream: string;
   tiers?: Partial<Record<Tier, string>>;
   pricing?: Record<string, ModelPricing>;
   routing?: RoutingTuning;
@@ -105,7 +112,7 @@ type OptionKind =
  */
 interface OptionSpec {
   /** Corresponding key on ServeOptions / FileConfig. */
-  key: 'port' | 'host' | 'verbose' | 'classifier' | 'provider' | 'region' | 'forceRoute';
+  key: 'port' | 'host' | 'verbose' | 'classifier' | 'provider' | 'region' | 'forceRoute' | 'upstream';
   flags: string[];
   kind: OptionKind;
   default: string | number | boolean;
@@ -123,6 +130,8 @@ const OPTIONS: OptionSpec[] = [
   { key: 'classifier', flags: ['--classifier'],    kind: { type: 'enum', values: ['heuristic', 'ai', 'hybrid'] }, default: 'hybrid', configAlways: true },
   { key: 'provider',   flags: ['--provider'],      kind: { type: 'enum', values: ['anthropic', 'bedrock', 'vertex'] }, default: 'anthropic', configAlways: true },
   { key: 'region',     flags: ['--region'],        kind: { type: 'string' },                     default: '' },
+  // Explicit only — never inherited from the environment. See DEFAULT_UPSTREAM.
+  { key: 'upstream',   flags: ['--upstream'],      kind: { type: 'string' },                     default: DEFAULT_UPSTREAM },
 ];
 
 /** Validate and convert a flag's raw argument per its declared kind. */

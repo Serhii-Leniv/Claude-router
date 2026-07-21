@@ -67,9 +67,33 @@ describe('parseServeArgs', () => {
       { ...opts, tiers: undefined, pricing: undefined, routing: undefined },
       {
         port: 4100, host: '127.0.0.1', verbose: true, classifier: 'heuristic', provider: 'bedrock',
-        region: 'eu-west-1', forceRoute: true, tiers: undefined, pricing: undefined, routing: undefined,
+        region: 'eu-west-1', forceRoute: true, upstream: 'https://api.anthropic.com',
+        tiers: undefined, pricing: undefined, routing: undefined,
       },
     );
+  });
+
+  it('defaults upstream to the real API and never reads it from the environment', () => {
+    // The 0.2.1 self-recursion bug was an inherited ANTHROPIC_BASE_URL. An
+    // explicit flag is safe precisely because nothing can set it implicitly.
+    const before = process.env['ANTHROPIC_BASE_URL'];
+    process.env['ANTHROPIC_BASE_URL'] = 'http://127.0.0.1:4000';
+    try {
+      assert.equal(parseServeArgs([]).upstream, 'https://api.anthropic.com');
+    } finally {
+      if (before === undefined) delete process.env['ANTHROPIC_BASE_URL'];
+      else process.env['ANTHROPIC_BASE_URL'] = before;
+    }
+  });
+
+  it('accepts an explicit --upstream and round-trips it through spawn args', () => {
+    const opts = parseServeArgs(['--upstream', 'http://127.0.0.1:9999']);
+    assert.equal(opts.upstream, 'http://127.0.0.1:9999');
+    assert.equal(parseServeArgs(serveArgsFrom(opts)).upstream, 'http://127.0.0.1:9999');
+  });
+
+  it('omits --upstream from spawn args when it is the default', () => {
+    assert.ok(!serveArgsFrom(parseServeArgs([])).includes('--upstream'));
   });
 });
 
