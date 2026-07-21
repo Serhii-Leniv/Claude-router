@@ -67,6 +67,8 @@ Hybrid mode defers to the AI classifier exactly when no gate fired and routing f
 
 `ClassifyResult.reason` records which gate decided, so a routing decision is auditable after the fact. `routing.haikuMax` / `opusMin` / `hybridBand` are accepted-but-dead config knobs (marked `@deprecated`); they thresholded a score that no longer exists.
 
+**The AI classifier scores the same text the gates do.** `buildAISnippet` takes `latestUserText(input)` (exported from `routing.ts` — the one extractor) and head/tail-truncates *that*, not the joined message array. Joining every message is what let harness payload (prior turns, `tool_result` content, system-reminder injections) fill the 700/300-char window and hand the meta-classifier something other than the request; the heuristic path was fixed for this in #18 and the AI path was missed until #34. It falls back to the joined text only when no user turn carries text at all (`mode: 'ai'` bypasses the gates, so a pure tool_result history can reach it). Do not reintroduce a second extractor.
+
 **AI classifier never throws**: 1.5s `AbortSignal.timeout` + try/catch fall back to `classifyHeuristic()`. Only genuine `method: 'ai'` results are cached (sha1 key over normalized snippet/system/message count/tool count); heuristic fallbacks are recomputed so a transient Haiku outage isn't cached. Tuning knobs (`RouterConfig.routing` / `FileConfig.routing`): `aiTimeoutMs`, `classifyCacheSize` — optional. `haikuMax`/`opusMin`/`hybridBand` are accepted-but-dead (see Routing).
 
 ### Route aggregation

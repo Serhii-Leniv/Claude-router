@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
 import { LruCache } from './cache.js';
-import { isAgentic, routeByEvidence } from './routing.js';
+import { isAgentic, latestUserText, routeByEvidence } from './routing.js';
 import type { ClassifyInput, ClassifyResult, Tier } from './types.js';
 
 export const DEFAULT_AI_TIMEOUT_MS = 1500;
@@ -157,8 +157,21 @@ function applyAgenticFloor(
   };
 }
 
+/**
+ * What the meta-classifier is asked to score: the newest user turn, same as the
+ * gates use. Scoring the joined message array here was the heuristic path's #18
+ * bug surviving in the AI path — a 700/300-char window over the whole history is
+ * mostly harness (prior turns, tool_result payloads, system-reminder text), so a
+ * one-line request got a complexity verdict on whatever happened to land in the
+ * window that turn.
+ *
+ * Falls back to the joined text only when there is no user text at all (a pure
+ * tool_result history reaching `mode: 'ai'`, which bypasses the gates). Empty
+ * would silently score every such request as the default 2.
+ */
 function buildAISnippet(input: ClassifyInput): string {
-  const { text } = extractSignals(input.messages);
+  const task = latestUserText(input);
+  const text = task || extractSignals(input.messages).text;
   const snippet =
     text.length > AI_SNIPPET_HEAD + AI_SNIPPET_TAIL
       ? `${text.slice(0, AI_SNIPPET_HEAD)} … ${text.slice(-AI_SNIPPET_TAIL)}`

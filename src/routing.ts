@@ -142,8 +142,14 @@ export function isMidLoop(input: ClassifyInput): boolean {
   return blocks.some((b) => b['type'] === 'tool_result');
 }
 
-/** The task text: the newest user turn, not the accumulated harness payload. */
-function taskText(input: ClassifyInput): string {
+/**
+ * The task text: the newest user turn, not the accumulated harness payload.
+ *
+ * Every path that scores request content must go through this. Joining the whole
+ * message array is what let the harness (prior turns, tool_result payloads,
+ * system-reminder injections) outvote the actual request — see #18.
+ */
+export function latestUserText(input: ClassifyInput): string {
   for (let i = input.messages.length - 1; i >= 0; i--) {
     const m = input.messages[i]!;
     if (m.role !== 'user') continue;
@@ -200,7 +206,7 @@ function promoteToFable(task: string, opts?: RoutingOptions): boolean {
 }
 
 export function routeByEvidence(input: ClassifyInput, opts?: RoutingOptions): RouteDecision {
-  const task = taskText(input);
+  const task = latestUserText(input);
 
   if (isAgentic(input)) {
     // Measured: mid-loop tool selection is largely tier-insensitive.

@@ -204,6 +204,58 @@ describe('classifyAI — hardening', () => {
     assert.ok(prompt.includes('ZZZ'), 'tail of prompt missing');
     assert.ok(!prompt.includes('MIDDLE'), 'middle should be elided');
   });
+
+  it('scores the latest user turn, not the accumulated history', async () => {
+    // Regression: buildAISnippet joined every message, so a 700/300-char window
+    // over an agentic history handed the meta-classifier harness text instead of
+    // the request. The trivial turn below must not be judged on the prior turn.
+    const client = mockClient('2');
+    const input: ClassifyInput = {
+      messages: [
+        { role: 'user', content: `HARNESS_NOISE ${'x'.repeat(900)} design a distributed system from scratch` },
+        {
+          role: 'assistant',
+          content: [{ type: 'tool_use', id: 't1', name: 'read', input: {} }],
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: 't1', content: `TOOL_OUTPUT ${'y'.repeat(900)}` },
+            { type: 'text', text: 'yo' },
+          ],
+        },
+      ],
+    };
+
+    await classifyAI(client, input, 'claude-haiku-4-5-20251001');
+    const createMock = client.messages.create as unknown as ReturnType<typeof mock.fn>;
+    const params = createMock.mock.calls[0]!.arguments[0] as Anthropic.MessageCreateParamsNonStreaming;
+    const prompt = params.messages[0]!.content as string;
+
+    assert.ok(prompt.endsWith('Task: yo'), `expected only the latest turn, got: ${prompt.slice(-120)}`);
+    assert.ok(!prompt.includes('HARNESS_NOISE'), 'prior user turn leaked into the snippet');
+    assert.ok(!prompt.includes('TOOL_OUTPUT'), 'tool_result leaked into the snippet');
+  });
+
+  it('falls back to the joined text when no user turn carries text', async () => {
+    const client = mockClient('2');
+    const input: ClassifyInput = {
+      messages: [
+        { role: 'assistant', content: 'ASSISTANT_CONTEXT' },
+        {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 't1', content: 'tool output' }],
+        },
+      ],
+    };
+
+    await classifyAI(client, input, 'claude-haiku-4-5-20251001');
+    const createMock = client.messages.create as unknown as ReturnType<typeof mock.fn>;
+    const params = createMock.mock.calls[0]!.arguments[0] as Anthropic.MessageCreateParamsNonStreaming;
+    const prompt = params.messages[0]!.content as string;
+
+    assert.ok(prompt.includes('ASSISTANT_CONTEXT'), 'expected the joined-text fallback');
+  });
 });
 
 describe('classify — unified entry with cache', () => {
