@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { routeByEvidence, isMidLoop } from '../routing.js';
+import { routeByEvidence, isMidLoop, warnDeadRoutingKeys, resetDeadRoutingWarnings } from '../routing.js';
 import type { ClassifyInput } from '../types.js';
 
 const one = (text: string, extra: Partial<ClassifyInput> = {}): ClassifyInput => ({
@@ -109,5 +109,49 @@ describe('routing — fable is opt-in', () => {
       routeByEvidence(one('prove this algorithm is correct'), { allowFable: true }).tier,
       'opus',
     );
+  });
+});
+
+describe('routing — dead config knobs are loud, not silent', () => {
+  function capture(fn: () => void): string[] {
+    resetDeadRoutingWarnings();
+    const out: string[] = [];
+    const orig = console.warn;
+    console.warn = (m: string) => out.push(String(m));
+    try { fn(); } finally { console.warn = orig; }
+    return out;
+  }
+
+  it('warns for each obsolete key', () => {
+    const w = capture(() => warnDeadRoutingKeys({ haikuMax: 30, opusMin: 70, hybridBand: [40, 60] }));
+    assert.equal(w.length, 3);
+    for (const k of ['haikuMax', 'opusMin', 'hybridBand']) {
+      assert.ok(w.some((m) => m.includes(`routing.${k}`)), k);
+    }
+  });
+
+  it('says the routing may have changed, not just that the key is ignored', () => {
+    // The dangerous case is an upgrade silently routing differently, so the
+    // message has to name that consequence — "ignored" alone understates it.
+    const w = capture(() => warnDeadRoutingKeys({ opusMin: 70 }));
+    assert.ok(w[0]!.includes('Routing may differ'));
+  });
+
+  it('warns once per key, not once per request', () => {
+    const w = capture(() => {
+      warnDeadRoutingKeys({ haikuMax: 30 });
+      warnDeadRoutingKeys({ haikuMax: 30 });
+      warnDeadRoutingKeys({ haikuMax: 30 });
+    });
+    assert.equal(w.length, 1);
+  });
+
+  it('stays quiet for a config that uses only live keys', () => {
+    const w = capture(() => warnDeadRoutingKeys({ aiTimeoutMs: 2000, classifyCacheSize: 100 }));
+    assert.deepEqual(w, []);
+  });
+
+  it('stays quiet when routing is absent', () => {
+    assert.deepEqual(capture(() => warnDeadRoutingKeys(undefined)), []);
   });
 });

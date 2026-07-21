@@ -13,6 +13,7 @@ import {
 import { CostTracker } from './tracker.js';
 import { executeRoute } from './route.js';
 import { normalizeParamsForTier } from './params.js';
+import { warnDeadRoutingKeys } from './routing.js';
 import type {
   ClassifyInput,
   ClassifyResult,
@@ -53,6 +54,7 @@ type StreamParams = Omit<
 };
 
 function resolveConfig(config: RouterConfig): ResolvedConfig {
+  warnDeadRoutingKeys(config.routing as Record<string, unknown> | undefined);
   const tiers: Record<Tier, string> = {
     haiku: config.tiers?.haiku ?? DEFAULT_MODELS.haiku,
     sonnet: config.tiers?.sonnet ?? DEFAULT_MODELS.sonnet,
@@ -71,6 +73,9 @@ function resolveConfig(config: RouterConfig): ResolvedConfig {
     routing: config.routing ?? {},
   };
 }
+
+// Library entry: the caller passed `routing` in code, so warn here too — the
+// proxy has its own call site for the config file.
 
 function buildClassifyInput(
   params: SendParams | StreamParams,
@@ -314,7 +319,7 @@ export { classifyHeuristic, classify } from './classifier.js';
 // scorer's surface and are gone — there is no score to expose. Inspect a
 // decision with `routeByEvidence`, which returns the tier, the gate that chose
 // it, and a confidence.
-export { routeByEvidence, isAgentic, isMidLoop } from './routing.js';
+export { routeByEvidence, isAgentic, isMidLoop, warnDeadRoutingKeys } from './routing.js';
 export type { RouteDecision, RoutingOptions } from './routing.js';
 export { shouldRetry, nextTier } from './retry.js';
 export { normalizeParamsForTier } from './params.js';
