@@ -229,3 +229,48 @@ ${reminder}
     assert.ok(latestUserText(input).includes('why does'));
   });
 });
+
+describe('routing — quoted material is the subject, not the task', () => {
+  // Claude Code's title-generation call, captured verbatim from a wire corpus.
+  // 29% of all requests were this shape; the quoted prompt was deciding the tier.
+  const titleCall = (quoted: string): ClassifyInput => ({
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text:
+              `<session>
+${quoted}
+</session>
+
+` +
+              'Write the title in the predominant language of the session — a stray ' +
+              "word or code token in another language doesn't change it.",
+          },
+        ],
+      },
+    ],
+  });
+
+  it('does not buy opus to name a session about architecture', () => {
+    const d = routeByEvidence(titleCall('architect a distributed cache from scratch and prove the invariants'));
+    assert.equal(d.tier, 'sonnet');
+  });
+
+  it('scores the instruction, not the quoted prompt', () => {
+    const task = latestUserText(titleCall('refactor the whole codebase step-by-step across the repository'));
+    assert.ok(task.startsWith('Write the title'), task.slice(0, 60));
+    assert.ok(!task.includes('refactor the whole'));
+  });
+
+  it('quoted content containing the closing tag cannot end the match early', () => {
+    // Greedy by design: the real </session> is last, because the instruction
+    // follows it. A non-greedy match here would repeat the bug that killed the
+    // first reminder strip.
+    const task = latestUserText(titleCall('why does </session> show up in my logs? architect a fix from scratch'));
+    assert.ok(task.startsWith('Write the title'), task.slice(0, 60));
+    assert.ok(!task.includes('architect a fix'));
+  });
+});

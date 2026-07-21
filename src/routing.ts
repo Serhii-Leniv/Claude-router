@@ -197,18 +197,45 @@ export function latestUserText(input: ClassifyInput): string {
   return '';
 }
 
-/** Text the user supplied, with wholly-injected blocks removed. */
+/**
+ * Claude Code's own meta-calls quote the conversation they are asking about, then
+ * state the actual instruction after it:
+ *
+ *     <session>
+ *     architect a distributed cache from scratch and prove the invariants
+ *     </session>
+ *
+ *     Write the title in the predominant language of the session — …
+ *
+ * The task is "write a title". The quoted prompt is the *subject*, and scoring it
+ * charged opus to name a session. Measured on a 45-request wire corpus: these
+ * meta-calls are 29% of all requests, and every session whose opening prompt
+ * carries a depth word bought opus for a five-word title.
+ *
+ * Unlike the reminder blocks above, this arrives inline in the same text block,
+ * so it has to be matched rather than dropped structurally — and the match is
+ * **greedy on purpose**. The real closing tag is the last one, because the
+ * instruction follows it, so quoted content containing the literal tag cannot
+ * terminate the match early. That is precisely the failure that killed the
+ * non-greedy attempt at the reminder strip; here the delimiter ordering rules it
+ * out, and for reminders we do not rely on matching at all.
+ */
+const QUOTED_SESSION = /<session>[\s\S]*<\/session>/;
+
+/** Text the user supplied, with injected blocks and quoted material removed. */
 function requestText(content: Anthropic.MessageParam['content']): string {
+  const clean = (t: string) => t.replace(QUOTED_SESSION, ' ').trim();
   if (typeof content === 'string') {
-    return isInjectedContext(content) ? '' : content.trim();
+    return isInjectedContext(content) ? '' : clean(content);
   }
   if (!Array.isArray(content)) return '';
-  return content
-    .filter((b) => (b as { type?: string }).type === 'text')
-    .map((b) => (b as { text?: string }).text ?? '')
-    .filter((t) => !isInjectedContext(t))
-    .join(' ')
-    .trim();
+  return clean(
+    content
+      .filter((b) => (b as { type?: string }).type === 'text')
+      .map((b) => (b as { text?: string }).text ?? '')
+      .filter((t) => !isInjectedContext(t))
+      .join(' '),
+  );
 }
 
 /**

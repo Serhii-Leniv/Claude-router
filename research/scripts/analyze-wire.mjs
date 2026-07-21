@@ -24,7 +24,9 @@ const LEAK_MARKERS = [
   ['skill roster', /The following skills are available/i],
   ['agent roster', /Available agent types for the Agent tool/i],
   ['tool result', /<tool_use_error>|<function_results>/i],
-  ['cc internal', /Write the title in the predominant language|<session>/i],
+  // The wrapper, not the instruction that follows it. "Write the title …" IS the
+  // task for a meta-call and must not be flagged, or the detector cries wolf.
+  ['quoted session', /<session>|<\/session>/i],
 ];
 
 const files = readdirSync(DIR).filter((f) => f.endsWith('.json.gz')).sort();
