@@ -5,6 +5,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-07-21
+
+> ⚠️ **Contains breaking changes despite being a patch release.** A `^0.2.1` range picks this up automatically. If you `import` the scoring helpers (`heuristicScore`, `heuristicScoreDetailed`, `scoreToTier`, `scoreToConfidence`, `HEURISTIC_WEIGHTS`), **your build will fail** — they no longer exist. Use `routeByEvidence` instead. If you only run the proxy or use `createRouter()`, nothing you call has changed, but routing decisions will differ: Sonnet is now the default and tier selection no longer runs on a keyword score. Pin `0.2.1` if you need the old behaviour while you migrate.
+
 ### Changed
 - **Routing is evidence-based gates, not a keyword score (breaking).** The additive 0–100 scorer let unrelated weak signals sum into an expensive decision — `matrix` (+25) and `determinant` (+25) reached the Opus threshold on a beginner numpy question, with neither word being evidence of difficulty. Summing was the bug, so no weight tuning could fix it. Replaced by `routeByEvidence()`: **Sonnet is the default** and leaving it requires positive evidence; gates are **conjunctive**, so coincidental matches cannot combine; and the agentic and single-turn profiles are scored separately because they expose different signals. Agentic routing keys on **loop position** — is the last message a `tool_result` — which is the one routing signal with a measurement behind it. Every decision carries a `reason` (e.g. `agentic:mid-loop`), so routing is auditable rather than a number you have to trust. See [`research/`](research/).
 - **Hybrid mode's score band is gone.** It now asks Haiku exactly when no gate fired and routing fell through to the default, instead of when a score landed between two thresholds.
