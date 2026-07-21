@@ -116,12 +116,26 @@ describe('current-generation pricing (guards against drift)', () => {
     assert.deepEqual(FAMILY_PRICING.haiku, { input: 1.0, output: 5.0 });
   });
 
-  it('every DEFAULT_PRICING entry matches its family price', () => {
+  it('every current-generation DEFAULT_PRICING entry matches its family price', () => {
+    // These entries intentionally diverge from (or have no) family price —
+    // they exist precisely because the family fallback would misprice them.
+    const divergent = new Set(['claude-opus-4-1', 'claude-opus-4-1-20250805', 'claude-fable-5']);
     for (const [model, price] of Object.entries(DEFAULT_PRICING)) {
+      if (divergent.has(model)) continue;
       const fam = familyForModel(model);
       assert.ok(fam, `${model} should map to a family`);
       assert.deepEqual(price, FAMILY_PRICING[fam!], `${model} priced off-family`);
     }
+  });
+
+  it('legacy Opus 4.1 keeps its own $15/$75 rate, not the current family price', () => {
+    assert.deepEqual(priceForModel('claude-opus-4-1', DEFAULT_PRICING), { input: 15.0, output: 75.0 });
+    assert.deepEqual(priceForModel('claude-opus-4-1-20250805', DEFAULT_PRICING), { input: 15.0, output: 75.0 });
+  });
+
+  it('Fable 5 prices at $10/$50 despite having no family match', () => {
+    assert.equal(familyForModel('claude-fable-5'), undefined);
+    assert.deepEqual(priceForModel('claude-fable-5', DEFAULT_PRICING), { input: 10.0, output: 50.0 });
   });
 });
 

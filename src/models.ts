@@ -24,7 +24,7 @@ export const VERTEX_MODELS: Record<Tier, string> = {
 
 /**
  * Current-generation Claude pricing ($ per 1M tokens), keyed by tier/family.
- * Verified against platform.claude.com pricing for the current generation:
+ * Verified against platform.claude.com pricing (last checked 2026-07-17):
  *   Haiku 4.5 — $1.00 / $5.00
  *   Sonnet 5  — $3.00 / $15.00 standard (intro $2.00 / $10.00 through 2026-08-31)
  *   Opus 4.6/4.7/4.8 — $5.00 / $25.00  (note: NOT the old $15/$75 of Opus 4.0/4.1)
@@ -55,6 +55,15 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
   'claude-opus-4-8': FAMILY_PRICING.opus,
   'claude-opus-4-7': FAMILY_PRICING.opus,
   'claude-opus-4-6': FAMILY_PRICING.opus,
+  // Models whose price diverges from their family default — an exact entry is
+  // the only thing keeping them from being mispriced by the family fallback:
+  //  - Opus 4.1 (active until 2026-08-05) bills at the old Opus rate, 3x the
+  //    current family price.
+  //  - Fable 5 has no family match at all (familyForModel returns undefined),
+  //    so without this entry a tier override to it would price every call at 0.
+  'claude-opus-4-1': { input: 15.00, output: 75.00 },
+  'claude-opus-4-1-20250805': { input: 15.00, output: 75.00 },
+  'claude-fable-5': { input: 10.00, output: 50.00 },
 };
 
 export const TIER_ORDER: Tier[] = ['haiku', 'sonnet', 'opus'];
