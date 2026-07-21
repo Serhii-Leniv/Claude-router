@@ -36,6 +36,21 @@ const REFUSAL_PATTERNS = [
   "as an ai language model",
   "as an ai, i can't",
   "as an ai, i cannot",
+
+  // German — same anchoring rule: modal + refusal verb/object. "helfen"-anchored
+  // variants cover the common separable word orders; broader forms like
+  // "ich kann keine" or "das kann ich nicht" match benign sentences
+  // ("Ich kann keine Fehler finden") and are deliberately excluded.
+  "ich kann nicht helfen",
+  "ich kann dabei nicht helfen",
+  "ich kann dir dabei nicht helfen",
+  "ich kann ihnen dabei nicht helfen",
+  "ich kann ihnen nicht helfen",
+  "ich kann dir nicht helfen",
+  "dabei kann ich nicht helfen",
+  "als ki kann ich nicht",
+  "als ki-sprachmodell",
+  "ich bin nicht in der lage",
 ];
 
 // Refusals lead with the refusal — only scan the opening of the response,

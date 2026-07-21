@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 
 ## [Unreleased]
 
+### Added
+- **German refusal detection** — `REFUSAL_PATTERNS` now includes German refusal phrases ("Ich kann dabei nicht helfen", "Als KI kann ich nicht", …), so auto-escalation fires for German responses too. Patterns follow the same modal + object/verb anchoring as the English set to avoid over-matching benign sentences ("Ich kann keine Fehler finden"). First step for #3.
+
 ## [0.2.1] — 2026-07-13
 
 ### Fixed
