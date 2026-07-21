@@ -42,12 +42,40 @@ export const FAMILY_PRICING: Record<Tier, ModelPricing> = {
   opus:   { input: 5.00, output: 25.00 },
 };
 
+/** Old-generation Opus (4.0, 4.1) — 3x the current Opus family rate. */
+const LEGACY_OPUS: ModelPricing = { input: 15.00, output: 75.00 };
+/** Fable 5 and its Project Glasswing twin Mythos 5 — above Opus tier. */
+const FABLE_TIER: ModelPricing = { input: 10.00, output: 50.00 };
+
 /**
- * Pricing keyed by exact model ID. Built from FAMILY_PRICING so the two never
- * disagree. Any first-party, Bedrock, or Vertex ID not listed here is resolved
- * by family in `priceForModel` — so a newly-dated snapshot still prices right.
+ * Models whose price does NOT follow their family default. Each exact entry is
+ * the only thing standing between that model and a wrong cost figure — two
+ * distinct failure modes:
+ *
+ *  - **Legacy Opus** (4.0, 4.1) family-matches to the *current* Opus price, so
+ *    the fallback understates every call by 3x.
+ *  - **Fable 5 / Mythos 5** match no family at all (`familyForModel` returns
+ *    undefined), so the fallback prices them at *nothing* — see
+ *    `warnIfUnpriced` for what happens when a model reaches that state.
+ *
+ * Every entry here must genuinely diverge from its family (or have no family);
+ * `models.test.ts` asserts that, so a redundant entry fails the build rather
+ * than quietly rotting. Keeping the divergent set as its own exported table is
+ * also what lets that test derive its exclusions instead of hand-maintaining a
+ * parallel list that silently drifts.
  */
-export const DEFAULT_PRICING: Record<string, ModelPricing> = {
+export const DIVERGENT_PRICING: Record<string, ModelPricing> = {
+  'claude-opus-4-1': LEGACY_OPUS,
+  'claude-opus-4-1-20250805': LEGACY_OPUS,
+  'claude-opus-4-0': LEGACY_OPUS,
+  'claude-opus-4-20250514': LEGACY_OPUS,
+  'claude-fable-5': FABLE_TIER,
+  'claude-mythos-5': FABLE_TIER,
+};
+
+/** IDs that price at their family default. Listed for clarity, not necessity —
+ * `priceForModel`'s family fallback would resolve each of these anyway. */
+const FAMILY_DERIVED_PRICING: Record<string, ModelPricing> = {
   'claude-haiku-4-5': FAMILY_PRICING.haiku,
   'claude-haiku-4-5-20251001': FAMILY_PRICING.haiku,
   'claude-sonnet-5': FAMILY_PRICING.sonnet,
@@ -55,15 +83,16 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
   'claude-opus-4-8': FAMILY_PRICING.opus,
   'claude-opus-4-7': FAMILY_PRICING.opus,
   'claude-opus-4-6': FAMILY_PRICING.opus,
-  // Models whose price diverges from their family default — an exact entry is
-  // the only thing keeping them from being mispriced by the family fallback:
-  //  - Opus 4.1 (active until 2026-08-05) bills at the old Opus rate, 3x the
-  //    current family price.
-  //  - Fable 5 has no family match at all (familyForModel returns undefined),
-  //    so without this entry a tier override to it would price every call at 0.
-  'claude-opus-4-1': { input: 15.00, output: 75.00 },
-  'claude-opus-4-1-20250805': { input: 15.00, output: 75.00 },
-  'claude-fable-5': { input: 10.00, output: 50.00 },
+};
+
+/**
+ * Pricing keyed by exact model ID. Any first-party, Bedrock, or Vertex ID not
+ * listed here is resolved by family in `priceForModel` — so a newly-dated
+ * snapshot still prices right.
+ */
+export const DEFAULT_PRICING: Record<string, ModelPricing> = {
+  ...FAMILY_DERIVED_PRICING,
+  ...DIVERGENT_PRICING,
 };
 
 export const TIER_ORDER: Tier[] = ['haiku', 'sonnet', 'opus'];
@@ -111,6 +140,35 @@ export interface CacheTokens {
   creationTokens?: number;
 }
 
+// Models we've already warned about, so a hot request path warns once, not per call.
+const warnedUnpriced = new Set<string>();
+
+/** @internal Test hook */
+export function resetUnpricedWarnings(): void {
+  warnedUnpriced.clear();
+}
+
+/**
+ * An unpriced model is the router's worst failure mode: the cost is not zero,
+ * we just don't know it, and a product whose whole pitch is "here is what you
+ * saved" reporting $0.00 reads as a slow week rather than a bug. Callers get the
+ * machine-readable signal via `RouteCost.priced`; this is the human one.
+ */
+function warnIfUnpriced(model: string, priced: boolean): void {
+  if (priced || warnedUnpriced.has(model)) return;
+  warnedUnpriced.add(model);
+  console.warn(
+    `[claude-router] No pricing for "${model}" — its cost and savings are reported as 0, ` +
+      `not measured. Add a "pricing" entry for it in ~/.claude-router/config.json.`,
+  );
+}
+
+/**
+ * Cost in cents for a token count. Returns 0 for a model with no resolvable
+ * price — deliberately side-effect-free, so it stays a pure math function. The
+ * "we don't know this model" signal is raised by `computeRouteCost`, which is
+ * the path every routed call takes and the one that knows the baseline too.
+ */
 export function computeCostCents(
   model: string,
   inputTokens: number,
@@ -144,6 +202,15 @@ export interface RouteCost {
   cacheCreationTokens: number;
   inputTokens: number;
   outputTokens: number;
+  /**
+   * False when `costCents`/`savedCents` are placeholder zeros rather than
+   * measured figures — i.e. the routed model, the baseline model, or both
+   * resolved to no price. Both are included because an unpriced baseline makes
+   * `savedCents` just as wrong as an unpriced routed model (it reports the
+   * negative of the cost). Consumers must render these figures as "unknown",
+   * not as $0.00; see `RouteTotals.unpricedModels`.
+   */
+  priced: boolean;
 }
 
 /**
@@ -169,6 +236,12 @@ export function computeRouteCost(
   };
   const cost = computeCostCents(model, inputTokens, outputTokens, pricing, cache);
   const baseline = computeCostCents(defaultModel, inputTokens, outputTokens, pricing, cache);
+
+  const modelPriced = priceForModel(model, pricing) !== undefined;
+  const baselinePriced = priceForModel(defaultModel, pricing) !== undefined;
+  warnIfUnpriced(model, modelPriced);
+  warnIfUnpriced(defaultModel, baselinePriced);
+
   return {
     costCents: Math.round(cost * 1000) / 1000,
     savedCents: Math.round((baseline - cost) * 1000) / 1000,
@@ -176,5 +249,6 @@ export function computeRouteCost(
     cacheCreationTokens: cache.creationTokens,
     inputTokens,
     outputTokens,
+    priced: modelPriced && baselinePriced,
   };
 }

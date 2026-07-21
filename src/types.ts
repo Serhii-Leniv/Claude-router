@@ -65,6 +65,11 @@ export interface RouteMeta {
   costCents: number;
   /** Savings vs defaultModel baseline in cents */
   savedCents: number;
+  /**
+   * Set to false when `costCents`/`savedCents` are placeholder zeros because
+   * this call's model (or the baseline) has no known price. Absent means priced.
+   */
+  priced?: boolean;
   classifierMethod: 'heuristic' | 'ai';
   /** Routing overhead in milliseconds */
   classifierMs: number;
@@ -87,6 +92,12 @@ export interface RouterStats {
   totalSavedCents: number;
   callCount: number;
   tierBreakdown: Record<Tier, number>;
+  /**
+   * Calls per model that had no price, keyed by model ID; `{}` when everything
+   * was priced. Non-empty means the totals above are an undercount — surface it
+   * rather than presenting them as complete.
+   */
+  unpricedModels: Record<string, number>;
 }
 
 export interface ClassifyInput {

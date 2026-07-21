@@ -29,6 +29,29 @@ describe('CostTracker', () => {
     assert.equal(stats.totalCostCents, 0);
     assert.equal(stats.totalSavedCents, 0);
     assert.deepEqual(stats.tierBreakdown, { haiku: 0, sonnet: 0, opus: 0 });
+    assert.deepEqual(stats.unpricedModels, {});
+  });
+
+  it('surfaces unpriced calls by model instead of folding them into the totals', () => {
+    const tracker = new CostTracker();
+    tracker.record(makeMeta({ costCents: 1.5, savedCents: 3.2 }));
+    tracker.record(makeMeta({ model: 'claude-mystery-9', costCents: 0, savedCents: 0, priced: false }));
+    tracker.record(makeMeta({ model: 'claude-mystery-9', costCents: 0, savedCents: 0, priced: false }));
+
+    const stats = tracker.stats();
+    assert.equal(stats.callCount, 3);
+    assert.equal(stats.totalSavedCents, 3.2, 'unpriced calls contribute nothing');
+    assert.deepEqual(
+      stats.unpricedModels,
+      { 'claude-mystery-9': 2 },
+      'and say so, by model and count',
+    );
+  });
+
+  it('treats a meta with no priced field as priced (pre-existing records)', () => {
+    const tracker = new CostTracker();
+    tracker.record(makeMeta());
+    assert.deepEqual(tracker.stats().unpricedModels, {});
   });
 
   it('records single call correctly', () => {
