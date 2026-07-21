@@ -142,15 +142,100 @@ export function isMidLoop(input: ClassifyInput): boolean {
   return blocks.some((b) => b['type'] === 'tool_result');
 }
 
-/** The task text: the newest user turn, not the accumulated harness payload. */
-function taskText(input: ClassifyInput): string {
+/**
+ * Harness context Claude Code injects into the user turn — CLAUDE.md, skill
+ * listings, agent rosters, the date. Picking the newest user turn is not enough
+ * to isolate the request, because the injection travels *inside* that turn.
+ *
+ * Measured, not assumed. Captured from a real session by pointing
+ * ANTHROPIC_BASE_URL at a recording upstream: the opening request of
+ * `claude -p "read package.json then tsconfig.json and tell me the build target"`
+ * carries a 21,558-character injected block ahead of the user's 65 characters.
+ * This project's own CLAUDE.md contains "end-to-end", a `DEPTH_MARKERS` hit, so
+ * the gate promoted a mundane file-reading request to opus on the strength of
+ * the repo's documentation. Any repo whose CLAUDE.md contains a depth word pays
+ * opus rates on every turn.
+ *
+ * The test is **structural, not textual**: an injected block is its own text
+ * block, opening and closing with the tag. We drop whole blocks and never parse
+ * inside them.
+ *
+ * That distinction is the whole point, and it was learned the hard way. The
+ * first attempt stripped `<system-reminder>[\s\S]*?</system-reminder>` with a
+ * regex. It failed on this very repo, because the sentence you are reading
+ * documents the tag — CLAUDE.md gets injected, so the literal closing tag in
+ * this file terminated the non-greedy match 8,039 characters in and left 13,519
+ * characters of documentation behind, still carrying the depth marker. Any
+ * content that so much as mentions the tag defeats a regex; block boundaries
+ * cannot be forged by content.
+ */
+function isInjectedContext(text: string): boolean {
+  const t = text.trim();
+  return t.startsWith('<system-reminder>') && t.endsWith('</system-reminder>');
+}
+
+/**
+ * The task text: what the user actually asked for on the newest turn, with
+ * harness injections dropped.
+ *
+ * Every path that scores request content goes through this — the gates in this
+ * file and the AI classifier's snippet alike. Scoring the joined message array
+ * is what let prior turns and tool_result payloads outvote the request (#18);
+ * keeping the injected blocks is what let the project's own documentation do
+ * the same (#34).
+ *
+ * A turn that is *only* injected context yields nothing, so we keep walking
+ * back to the last turn that carried a real request.
+ */
+export function latestUserText(input: ClassifyInput): string {
   for (let i = input.messages.length - 1; i >= 0; i--) {
     const m = input.messages[i]!;
     if (m.role !== 'user') continue;
-    const t = textOf(m.content);
-    if (t.trim()) return t;
+    const t = requestText(m.content);
+    if (t) return t;
   }
   return '';
+}
+
+/**
+ * Claude Code's own meta-calls quote the conversation they are asking about, then
+ * state the actual instruction after it:
+ *
+ *     <session>
+ *     architect a distributed cache from scratch and prove the invariants
+ *     </session>
+ *
+ *     Write the title in the predominant language of the session — …
+ *
+ * The task is "write a title". The quoted prompt is the *subject*, and scoring it
+ * charged opus to name a session. Measured on a 45-request wire corpus: these
+ * meta-calls are 29% of all requests, and every session whose opening prompt
+ * carries a depth word bought opus for a five-word title.
+ *
+ * Unlike the reminder blocks above, this arrives inline in the same text block,
+ * so it has to be matched rather than dropped structurally — and the match is
+ * **greedy on purpose**. The real closing tag is the last one, because the
+ * instruction follows it, so quoted content containing the literal tag cannot
+ * terminate the match early. That is precisely the failure that killed the
+ * non-greedy attempt at the reminder strip; here the delimiter ordering rules it
+ * out, and for reminders we do not rely on matching at all.
+ */
+const QUOTED_SESSION = /<session>[\s\S]*<\/session>/;
+
+/** Text the user supplied, with injected blocks and quoted material removed. */
+function requestText(content: Anthropic.MessageParam['content']): string {
+  const clean = (t: string) => t.replace(QUOTED_SESSION, ' ').trim();
+  if (typeof content === 'string') {
+    return isInjectedContext(content) ? '' : clean(content);
+  }
+  if (!Array.isArray(content)) return '';
+  return clean(
+    content
+      .filter((b) => (b as { type?: string }).type === 'text')
+      .map((b) => (b as { text?: string }).text ?? '')
+      .filter((t) => !isInjectedContext(t))
+      .join(' '),
+  );
 }
 
 /**
@@ -200,7 +285,7 @@ function promoteToFable(task: string, opts?: RoutingOptions): boolean {
 }
 
 export function routeByEvidence(input: ClassifyInput, opts?: RoutingOptions): RouteDecision {
-  const task = taskText(input);
+  const task = latestUserText(input);
 
   if (isAgentic(input)) {
     // Measured: mid-loop tool selection is largely tier-insensitive.

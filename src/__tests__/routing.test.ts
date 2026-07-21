@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { routeByEvidence, isMidLoop, warnDeadRoutingKeys, resetDeadRoutingWarnings } from '../routing.js';
+import { routeByEvidence, isMidLoop, latestUserText, warnDeadRoutingKeys, resetDeadRoutingWarnings } from '../routing.js';
 import type { ClassifyInput } from '../types.js';
 
 const one = (text: string, extra: Partial<ClassifyInput> = {}): ClassifyInput => ({
@@ -153,5 +153,124 @@ describe('routing — dead config knobs are loud, not silent', () => {
 
   it('stays quiet when routing is absent', () => {
     assert.deepEqual(capture(() => warnDeadRoutingKeys(undefined)), []);
+  });
+});
+
+describe('routing — harness injection must not decide the tier', () => {
+  // Shapes captured from real Claude Code sessions by pointing
+  // ANTHROPIC_BASE_URL at a recording upstream. The injected context is always
+  // its own text block, ahead of the user's actual text.
+  const injected = (userText: string, reminder: string): ClassifyInput => ({
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `<system-reminder>
+${reminder}
+</system-reminder>` },
+          { type: 'text', text: userText },
+        ],
+      },
+    ],
+    tools: [{ name: 'Read', description: 'read a file', input_schema: { type: 'object' } }],
+  });
+
+  const CLAUDE_MD = 'Contents of CLAUDE.md: a few tests bind a port to exercise the proxy end-to-end.';
+
+  it('does not route a greeting to opus because CLAUDE.md says "end-to-end"', () => {
+    const d = routeByEvidence(injected('yo', CLAUDE_MD));
+    assert.equal(d.tier, 'sonnet');
+    assert.equal(d.reason, 'agentic:default');
+  });
+
+  it('drops the injected block out of the task text entirely', () => {
+    assert.equal(latestUserText(injected('yo', CLAUDE_MD)), 'yo');
+  });
+
+  it('survives injected content that itself contains the closing tag', () => {
+    // The regression that killed the first attempt at this fix. A non-greedy
+    // regex ends at the FIRST </system-reminder>, and this project's own
+    // CLAUDE.md documents the tag — so 13,519 characters of documentation
+    // survived the strip and promoted the request to opus. Content cannot be
+    // trusted to not mention the delimiter; block boundaries can.
+    const selfReferential =
+      'CLAUDE.md says: latestUserText strips <system-reminder>...</system-reminder> ' +
+      'blocks. It must handle an end-to-end architecture rewrite from scratch.';
+    const d = routeByEvidence(injected('yo', selfReferential));
+    assert.equal(latestUserText(injected('yo', selfReferential)), 'yo');
+    assert.equal(d.tier, 'sonnet');
+  });
+
+  it('still promotes when the user themselves asks for depth', () => {
+    // The filter must not cost us the real signal: same injected noise, but now
+    // the depth marker is in what the user typed.
+    const d = routeByEvidence(injected('design a caching system end-to-end', CLAUDE_MD));
+    assert.equal(d.tier, 'opus');
+    assert.equal(d.reason, 'agentic:depth-requested');
+  });
+
+  it('falls back to an earlier turn when the newest carries only injected context', () => {
+    const input: ClassifyInput = {
+      messages: [
+        { role: 'user', content: 'translate hello to French' },
+        { role: 'assistant', content: 'Bonjour' },
+        { role: 'user', content: [{ type: 'text', text: '<system-reminder>ignore me</system-reminder>' }] },
+      ],
+    };
+    assert.equal(latestUserText(input), 'translate hello to French');
+  });
+
+  it('keeps a block that merely mentions the tag mid-sentence', () => {
+    // Only a block that IS the injection is dropped. A user asking about the
+    // tag is asking a real question.
+    const input: ClassifyInput = {
+      messages: [{ role: 'user', content: 'why does <system-reminder> appear in my logs?' }],
+    };
+    assert.ok(latestUserText(input).includes('why does'));
+  });
+});
+
+describe('routing — quoted material is the subject, not the task', () => {
+  // Claude Code's title-generation call, captured verbatim from a wire corpus.
+  // 29% of all requests were this shape; the quoted prompt was deciding the tier.
+  const titleCall = (quoted: string): ClassifyInput => ({
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'text',
+            text:
+              `<session>
+${quoted}
+</session>
+
+` +
+              'Write the title in the predominant language of the session — a stray ' +
+              "word or code token in another language doesn't change it.",
+          },
+        ],
+      },
+    ],
+  });
+
+  it('does not buy opus to name a session about architecture', () => {
+    const d = routeByEvidence(titleCall('architect a distributed cache from scratch and prove the invariants'));
+    assert.equal(d.tier, 'sonnet');
+  });
+
+  it('scores the instruction, not the quoted prompt', () => {
+    const task = latestUserText(titleCall('refactor the whole codebase step-by-step across the repository'));
+    assert.ok(task.startsWith('Write the title'), task.slice(0, 60));
+    assert.ok(!task.includes('refactor the whole'));
+  });
+
+  it('quoted content containing the closing tag cannot end the match early', () => {
+    // Greedy by design: the real </session> is last, because the instruction
+    // follows it. A non-greedy match here would repeat the bug that killed the
+    // first reminder strip.
+    const task = latestUserText(titleCall('why does </session> show up in my logs? architect a fix from scratch'));
+    assert.ok(task.startsWith('Write the title'), task.slice(0, 60));
+    assert.ok(!task.includes('architect a fix'));
   });
 });

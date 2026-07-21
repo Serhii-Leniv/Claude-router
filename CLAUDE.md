@@ -67,6 +67,19 @@ Hybrid mode defers to the AI classifier exactly when no gate fired and routing f
 
 `ClassifyResult.reason` records which gate decided, so a routing decision is auditable after the fact. `routing.haikuMax` / `opusMin` / `hybridBand` are accepted-but-dead config knobs (marked `@deprecated`); they thresholded a score that no longer exists.
 
+**`latestUserText()` is the one extractor — gates and AI snippet both use it.** It takes the newest user turn and strips `<system-reminder>…</system-reminder>` blocks, walking further back if a turn is nothing but injected context. Two separate bugs came from not doing this:
+
+- Joining the whole message array let prior turns and `tool_result` payloads outvote the request (#18, fixed for the heuristic path in `5557d2c`; `buildAISnippet` was missed until #34).
+- Keeping the injected context let the *project's own docs* decide the tier (#34). Claude Code injects CLAUDE.md into the user turn as its own text block. Captured from a real session: the opening request carries a 21,558-character injected block ahead of the user's 65 characters, and this CLAUDE.md contains "end-to-end" — a `DEPTH_MARKERS` hit — so `read package.json then tsconfig.json and tell me the build target` routed to **opus** via `agentic:depth-requested`. Any repo whose CLAUDE.md contains a depth word paid opus rates on every turn.
+
+**The filter is structural, not textual.** An injected block is its own text block that opens and closes with the tag; whole blocks are dropped and nothing is parsed inside them. Do not replace this with a regex over the text. The first attempt did exactly that and failed *on this repo*: the paragraph above documents the tag, CLAUDE.md gets injected, and the literal closing tag ended the non-greedy match 8,039 characters in, leaving 13,519 characters of documentation still carrying the depth marker. Content can always mention the delimiter; block boundaries can't be forged by content. A block that merely mentions the tag mid-sentence is a real question and is kept.
+
+**Quoted material is the subject, not the task.** Claude Code's meta-calls quote the conversation and state the instruction after it — `<session>…</session>\n\nWrite the title in the predominant language…`. Scoring the quoted prompt charged opus to name a session. On a 45-request wire corpus these meta-calls were 29% of all requests. The `<session>` region arrives inline in the same text block, so it is matched rather than dropped structurally, and the match is **greedy on purpose**: the real closing tag is last because the instruction follows it, so quoted text containing the literal tag cannot end the match early.
+
+`buildAISnippet` head/tail-truncates the extractor's output, falling back to the joined text only when no user turn carries a request at all (`mode: 'ai'` bypasses the gates, so a pure tool_result history can reach it). Do not reintroduce a second extractor, and do not add a keyword gate that reads raw message content.
+
+**Verified against real traffic** (`isMidLoop` fires correctly on Claude Code — a captured tool loop yields `agentic:mid-loop`; an earlier suspicion that the trailing `role: 'system'` message suppressed it was wrong).
+
 **AI classifier never throws**: 1.5s `AbortSignal.timeout` + try/catch fall back to `classifyHeuristic()`. Only genuine `method: 'ai'` results are cached (sha1 key over normalized snippet/system/message count/tool count); heuristic fallbacks are recomputed so a transient Haiku outage isn't cached. Tuning knobs (`RouterConfig.routing` / `FileConfig.routing`): `aiTimeoutMs`, `classifyCacheSize` — optional. `haikuMax`/`opusMin`/`hybridBand` are accepted-but-dead (see Routing).
 
 ### Route aggregation
