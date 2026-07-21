@@ -13,7 +13,8 @@ this is deliberately outside it.
 |---|---|---|
 | [routing-architecture.md](2026-07-21-routing-architecture.md) | 2026-07-21 | Literature review: what measured comparisons say about heuristic vs semantic vs learned routers, and about routing vs cascading. 23 sources, adversarially verified. |
 | [detector-measurement.md](2026-07-21-detector-measurement.md) | 2026-07-21 | The shipped refusal/truncation detectors fire **zero times** on 35,314 real Claude Code responses. |
-| [tier-ceiling.md](2026-07-21-tier-ceiling.md) | 2026-07-21 | Head-to-head: can haiku/sonnet replace opus on real turns? Blind-judged matched pairs. |
+| [tier-ceiling.md](2026-07-21-tier-ceiling.md) | 2026-07-21 | Head-to-head: can haiku/sonnet replace opus on real turns? Blind-judged matched pairs. **Agentic traffic only.** |
+| [single-turn-failed.md](2026-07-21-single-turn-failed.md) | 2026-07-21 | ❌ Failed attempt to measure the same boundary on single-turn requests. Pairwise judging cannot measure adequacy on open-ended tasks. Read before designing another run. |
 
 ## Reproducing
 
