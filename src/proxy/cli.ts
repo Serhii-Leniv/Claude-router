@@ -7,6 +7,7 @@ import { createProviderClient, type Provider } from './handler.js';
 import { DEFAULT_MODELS, BEDROCK_MODELS, VERTEX_MODELS } from '../models.js';
 import type { Tier } from '../types.js';
 import { term } from './term.js';
+import { formatSavedCents } from './format.js';
 import {
   CliUsageError,
   applyRegionEnv,
@@ -259,9 +260,7 @@ function cmdStats(args: string[]): void {
   const rows: Array<[string, string]> = [
     ['Requests', String(stats.requests)],
     ['Total cost', `$${(stats.costCents / 100).toFixed(2)}`],
-    ['Total saved', stats.savedCents >= 0
-      ? term.green(`$${(stats.savedCents / 100).toFixed(2)}`)
-      : term.red(`-$${(Math.abs(stats.savedCents) / 100).toFixed(2)}`)],
+    ['Total saved', formatSavedCents(stats.savedCents)],
     ['Auto-retried', String(stats.retried)],
     ['Tiers', tierLine || term.dim('none')],
   ];
@@ -288,9 +287,7 @@ function cmdStats(args: string[]): void {
     console.log('\n' + term.bold('Last 7 days'));
     for (const day of days) {
       const d = stats.byDay[day]!;
-      const saved = d.savedCents >= 0
-        ? term.green(`saved $${(d.savedCents / 100).toFixed(2)}`)
-        : term.red(`extra $${(Math.abs(d.savedCents) / 100).toFixed(2)}`);
+      const saved = formatSavedCents(d.savedCents, true);
       console.log(`  ${day}  ${String(d.requests).padStart(5)} req   ${saved}`);
     }
   }
