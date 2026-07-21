@@ -19,6 +19,12 @@ export interface RouteTotals {
   tiers: Record<string, number>;
   /** Per-day aggregates keyed by YYYY-MM-DD; empty when events carry no timestamp. */
   byDay: Record<string, { requests: number; costCents: number; savedCents: number }>;
+  /**
+   * Request count per model that had no price, keyed by model ID; empty when
+   * every event was priced. Non-empty means `costCents`/`savedCents` above are
+   * an undercount, and by how many calls — render it, don't drop it.
+   */
+  unpricedModels: Record<string, number>;
 }
 
 /**
@@ -33,10 +39,26 @@ export interface RouteOutcomeLike {
   retried?: boolean;
   /** ISO timestamp; when absent, the event is not bucketed by day. */
   timestamp?: string;
+  /** Model ID, used to name unpriced models; only read when `priced === false`. */
+  model?: string;
+  /**
+   * False when this event's cost figures are placeholder zeros. Absent means
+   * priced — history lines written before this field existed carry no `priced`,
+   * and treating them as unpriced would retroactively void every past total.
+   */
+  priced?: boolean;
 }
 
 export function emptyTotals(): RouteTotals {
-  return { requests: 0, costCents: 0, savedCents: 0, retried: 0, tiers: {}, byDay: {} };
+  return {
+    requests: 0,
+    costCents: 0,
+    savedCents: 0,
+    retried: 0,
+    tiers: {},
+    byDay: {},
+    unpricedModels: {},
+  };
 }
 
 /**
@@ -61,6 +83,10 @@ export function foldOutcome(acc: RouteTotals, e: RouteOutcomeLike): void {
   acc.savedCents += e.savedCents;
   if (e.retried) acc.retried++;
   acc.tiers[e.tier] = (acc.tiers[e.tier] ?? 0) + 1;
+  if (e.priced === false) {
+    const model = e.model || 'unknown';
+    acc.unpricedModels[model] = (acc.unpricedModels[model] ?? 0) + 1;
+  }
 
   const day = String(e.timestamp ?? '').slice(0, 10);
   if (day) {

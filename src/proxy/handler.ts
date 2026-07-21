@@ -46,6 +46,12 @@ export interface RouteEvent {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  /**
+   * Set to false when `costCents`/`savedCents` are placeholder zeros because the
+   * model has no known price. Absent means priced — history.jsonl lines written
+   * before this field existed must keep counting as measured.
+   */
+  priced?: boolean;
 }
 
 const MAX_HISTORY = 1000;
@@ -104,17 +110,22 @@ async function classify(
   });
 }
 
-function log(tier: Tier, model: string, classifyResult: ClassifyResult, costCents: number, savedCents: number, defaultModel: string, retried: boolean = false, retryReason: string | null = null): void {
-  const saved =
-    savedCents >= 0
-      ? term.green(`saved: $${(savedCents / 100).toFixed(4)}`)
-      : term.red(`extra: $${(Math.abs(savedCents) / 100).toFixed(4)}`);
+function log(tier: Tier, model: string, classifyResult: ClassifyResult, costCents: number, savedCents: number, defaultModel: string, retried: boolean = false, retryReason: string | null = null, priced: boolean = true): void {
+  // Without a price there is no cost figure to print — "$0.0000" would read as
+  // a free call rather than an unmeasured one.
+  const money = !priced
+    ? term.yellow(`cost: unknown (no pricing for ${model})`)
+    : `cost: $${(costCents / 100).toFixed(4)} | ${
+        savedCents >= 0
+          ? term.green(`saved: $${(savedCents / 100).toFixed(4)}`)
+          : term.red(`extra: $${(Math.abs(savedCents) / 100).toFixed(4)}`)
+      } ${term.dim(`vs ${defaultModel}`)}`;
 
   const retryNote = retried ? term.yellow(` [retried: ${retryReason}]`) : '';
   const cachedNote = classifyResult.cached ? ', cached' : '';
 
   console.log(
-    `${term.dim('[claude-router]')} → ${term.tier(tier)} ${term.dim(`(${classifyResult.method}, ${classifyResult.ms}ms, conf:${classifyResult.confidence}${cachedNote})`)}${retryNote} | cost: $${(costCents / 100).toFixed(4)} | ${saved} ${term.dim(`vs ${defaultModel}`)}`,
+    `${term.dim('[claude-router]')} → ${term.tier(tier)} ${term.dim(`(${classifyResult.method}, ${classifyResult.ms}ms, conf:${classifyResult.confidence}${cachedNote})`)}${retryNote} | ${money}`,
   );
 }
 
@@ -309,11 +320,11 @@ async function handleNonStreaming(
       requestOptions: reqOpts,
     });
 
-    const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
+    const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens, priced } =
       computeCosts(result.model, result.response.usage, config);
 
     if (config.verbose) {
-      log(result.tier, result.model, classifyResult, roundedCost, savedCents, config.defaultModel, result.retried, result.retryReason);
+      log(result.tier, result.model, classifyResult, roundedCost, savedCents, config.defaultModel, result.retried, result.retryReason, priced);
     }
 
     recordEvent({
@@ -330,6 +341,7 @@ async function handleNonStreaming(
       outputTokens,
       cacheReadTokens,
       cacheCreationTokens,
+      ...(priced ? {} : { priced: false as const }),
     }, config);
 
     const headers = new Headers({ 'content-type': 'application/json' });
@@ -389,11 +401,11 @@ async function handleStreaming(
         }
 
         const finalMessage = await stream.finalMessage();
-        const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
+        const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens, priced } =
           computeCosts(model, finalMessage.usage, config);
 
         if (config.verbose) {
-          log(tier, model, classifyResult, roundedCost, savedCents, config.defaultModel);
+          log(tier, model, classifyResult, roundedCost, savedCents, config.defaultModel, false, null, priced);
         }
 
         recordEvent({
@@ -410,6 +422,7 @@ async function handleStreaming(
           outputTokens,
           cacheReadTokens,
           cacheCreationTokens,
+          ...(priced ? {} : { priced: false as const }),
         }, config);
 
         controller.close();

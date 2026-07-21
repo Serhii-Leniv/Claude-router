@@ -265,7 +265,23 @@ function cmdStats(args: string[]): void {
     ['Auto-retried', String(stats.retried)],
     ['Tiers', tierLine || term.dim('none')],
   ];
+
+  // The totals above exclude every unpriced call. Saying so is the difference
+  // between "we saved little" and "we can't tell you what we saved".
+  const unpriced = Object.entries(stats.unpricedModels);
+  if (unpriced.length > 0) {
+    const calls = unpriced.reduce((n, [, c]) => n + c, 0);
+    rows.push(['Unpriced', term.yellow(`${calls} call${calls === 1 ? '' : 's'} — ${unpriced.map(([m]) => m).join(', ')}`)]);
+  }
+
   console.log('\n' + term.box('claude-router — lifetime savings', rows));
+
+  if (unpriced.length > 0) {
+    console.log(
+      term.dim('\nUnpriced models are excluded from the cost and savings figures above.\n') +
+      term.dim('Add a "pricing" entry for each in ') + paths.configFile,
+    );
+  }
 
   const days = Object.keys(stats.byDay).sort().slice(-7);
   if (days.length > 0) {

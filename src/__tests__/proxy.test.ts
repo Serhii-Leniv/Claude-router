@@ -118,6 +118,7 @@ describe('renderDashboard', () => {
       retried: 1,
       tiers: { haiku: 40, opus: 2 },
       byDay: {},
+      unpricedModels: {},
     });
     assert.ok(html.includes('Lifetime Saved'));
     assert.ok(html.includes('$47.00'));

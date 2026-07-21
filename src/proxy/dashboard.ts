@@ -27,6 +27,18 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
   const opusPct = ((tierCounts.opus / total) * 100).toFixed(1);
   const passPct = ((tierCounts.passthrough / total) * 100).toFixed(1);
 
+  // A card reading "$0.0000 saved" is indistinguishable from a quiet week, so
+  // any unpriced call gets called out next to the figures it silently deflates.
+  const unpricedNote = (models: Record<string, number>): string => {
+    const entries = Object.entries(models);
+    if (entries.length === 0) return '';
+    const calls = entries.reduce((n, [, c]) => n + c, 0);
+    const names = entries.map(([m]) => m).join(', ');
+    return `<div class="warn">${calls} call${calls === 1 ? '' : 's'} unpriced: ${esc(names)}</div>`;
+  };
+  const sessionUnpriced = unpricedNote(totals.unpricedModels);
+  const lifetimeUnpriced = lifetime ? unpricedNote(lifetime.unpricedModels) : '';
+
   const recent = history.slice(-50).reverse();
 
   const rows = recent
@@ -36,8 +48,8 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
         <td>${esc(e.timestamp.replace('T', ' ').slice(0, 19))}</td>
         <td><span class="badge badge-${esc(String(e.tier))}">${esc(String(e.tier))}</span></td>
         <td>${esc(e.model)}</td>
-        <td>$${(e.costCents / 100).toFixed(4)}</td>
-        <td class="${e.savedCents >= 0 ? 'positive' : 'negative'}">$${(e.savedCents / 100).toFixed(4)}</td>
+        <td>${e.priced === false ? '<span class="unknown" title="no pricing for this model">—</span>' : `$${(e.costCents / 100).toFixed(4)}`}</td>
+        <td class="${e.priced === false ? 'unknown' : e.savedCents >= 0 ? 'positive' : 'negative'}">${e.priced === false ? '—' : `$${(e.savedCents / 100).toFixed(4)}`}</td>
         <td>${e.confidence.toFixed(2)}</td>
         <td>${e.inputTokens}</td>
         <td>${e.outputTokens}</td>
@@ -78,6 +90,8 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
     .badge-opus { background: #8957e5; color: #fff; }
     .badge-passthrough { background: #484f58; color: #c9d1d9; }
     .badge-retry { background: #d29922; color: #0d1117; }
+    .unknown { color: #d29922; }
+    .warn { margin-top: 6px; font-size: 11px; color: #d29922; line-height: 1.4; }
     .positive { color: #3fb950; }
     .negative { color: #f85149; }
     .footer { margin-top: 16px; font-size: 12px; color: #484f58; }
@@ -98,6 +112,7 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
     <div class="stat-card">
       <div class="label">Session Saved</div>
       <div class="value green">$${(totalSaved / 100).toFixed(4)}</div>
+      ${sessionUnpriced}
     </div>
     <div class="stat-card">
       <div class="label">Auto-retried</div>
@@ -107,6 +122,7 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
     <div class="stat-card">
       <div class="label">Lifetime Saved</div>
       <div class="value green">$${(lifetime.savedCents / 100).toFixed(2)}</div>
+      ${lifetimeUnpriced}
     </div>
     <div class="stat-card">
       <div class="label">Lifetime Requests</div>
