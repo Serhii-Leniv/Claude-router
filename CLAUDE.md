@@ -62,7 +62,8 @@ Hybrid mode confirms with AI when score is in the band (default 40–60) **or** 
 
 `src/retry.ts` — `shouldRetry()` checks two conditions on a completed response:
 - **Truncation**: `stop_reason === 'max_tokens'` with >20 output tokens → escalate tier
-- **Refusal**: output <200 chars whose first 80 chars match `REFUSAL_PATTERNS` → escalate tier (anchored to the opening so quoted refusal phrases mid-answer don't false-positive)
+- **Refusal (structural)**: `stop_reason === 'refusal'` → escalate tier. Language-independent, checked first. Branch on `stop_reason` **only** — the companion `stop_details` is informational and can be `null` on a genuine refusal. Escalation is uniform, not per-`stop_details.category`: opus has already returned by this point, so the only refusals reaching the check are on haiku/sonnet. `stop_reason` is widened to `string` before comparison because the pinned SDK's union predates the value.
+- **Refusal (lexical)**: output <200 chars whose first 80 chars match `REFUSAL_PATTERNS` → escalate tier (anchored to the opening so quoted refusal phrases mid-answer don't false-positive). This is a **fallback**, not dead code: only Opus 4.7+/Sonnet 5/Fable 5 set the structural flag (Haiku 4.5, the default entry tier, never does), and soft refusals — the model declining conversationally rather than the classifier firing — arrive as `end_turn`. New languages need only reach the soft-refusal case.
 
 `nextTier()` walks `TIER_ORDER` (haiku→sonnet→opus). Opus never retries — no higher tier.
 

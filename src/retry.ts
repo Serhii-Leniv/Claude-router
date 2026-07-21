@@ -2,6 +2,10 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { Tier } from './types.js';
 import { TIER_ORDER } from './models.js';
 
+// Fallback for what `stop_reason: 'refusal'` doesn't cover: older models that
+// never set it, and soft refusals that arrive as `end_turn`. New languages only
+// need to reach the soft-refusal case — the structural check handles the rest.
+//
 // Each pattern pairs the refusal modal with a refusal object/verb. Bare "i can't"
 // / "i cannot" / "as an ai" over-matched benign openers ("I can't wait to help",
 // "As an AI enthusiast, …") and caused needless, costly escalations, so the modals
@@ -90,7 +94,30 @@ export function shouldRetry(response: Anthropic.Message, tier: Tier): RetryDecis
     return { retry: true, reason: 'truncation' };
   }
 
-  // Refusal: very short output opening with a refusal pattern. Normalize
+  // Refusal (structural): the API reports classifier-fired refusals as
+  // `stop_reason: 'refusal'` (Opus 4.7+, Sonnet 5, Fable 5). This is
+  // language-independent — it covers every language the pattern list below
+  // never will. Branch on `stop_reason` only: the companion `stop_details`
+  // object is informational and can be null even on a genuine refusal.
+  //
+  // Escalation is uniform rather than per-`stop_details.category`. Opus already
+  // returned above (no higher tier), so the only refusals reaching here are on
+  // haiku/sonnet, where a stronger model is a reasonable bet — and `category`
+  // is null for ordinary model refusals, which is exactly the case worth
+  // retrying.
+  //
+  // Widened to string because the pinned SDK's `stop_reason` union predates the
+  // value; a direct comparison is a no-overlap type error until it's added.
+  const stopReason: string | null = response.stop_reason;
+  if (stopReason === 'refusal') {
+    return { retry: true, reason: 'refusal' };
+  }
+
+  // Refusal (lexical): still earns its place. Older models (Haiku 4.5 — our
+  // default entry tier — and Sonnet 4.x) never set the structural flag, and
+  // soft refusals, where the model declines conversationally rather than the
+  // classifier firing, surface as `end_turn`. Very short output opening with a
+  // refusal pattern. Normalize
   // typographic apostrophes (Claude output routinely uses U+2019, which the
   // straight-quote patterns would otherwise miss) and the spaced "can not"
   // form before scanning the opening.

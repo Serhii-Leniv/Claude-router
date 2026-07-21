@@ -117,6 +117,85 @@ describe('shouldRetry', () => {
     assert.equal(result.retry, false);
   });
 
+  // ── Structural refusals: stop_reason 'refusal' (issue #22) ────────────────
+
+  it('retry on stop_reason "refusal" regardless of response language', () => {
+    // The whole point: no pattern list needed. Ukrainian text no pattern matches.
+    const result = shouldRetry(
+      fakeResponse({
+        stop_reason: 'refusal',
+        content: [{ type: 'text', text: 'Вибачте, я не можу допомогти з цим.' }],
+      }),
+      'haiku',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
+  it('retry on stop_reason "refusal" with empty content', () => {
+    // A classifier can fire before any output — content is empty, so the
+    // lexical path has nothing to match on.
+    const result = shouldRetry(
+      fakeResponse({ stop_reason: 'refusal', content: [] }),
+      'sonnet',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
+  it('retry on stop_reason "refusal" when stop_details is null', () => {
+    // stop_details is informational and may be null on a genuine refusal —
+    // the decision must come from stop_reason alone.
+    const result = shouldRetry(
+      fakeResponse({
+        stop_reason: 'refusal',
+        stop_details: null,
+        content: [{ type: 'text', text: 'No.' }],
+      }),
+      'haiku',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
+  it('retry on stop_reason "refusal" for a long response', () => {
+    // The <200-char guard belongs to the lexical path only; a structural
+    // refusal escalates no matter how much text preceded it.
+    const result = shouldRetry(
+      fakeResponse({
+        stop_reason: 'refusal',
+        content: [{ type: 'text', text: 'A'.repeat(500) }],
+      }),
+      'sonnet',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
+  it('no retry on stop_reason "refusal" from opus', () => {
+    // Nowhere to escalate — the tier guard wins over the structural signal.
+    const result = shouldRetry(
+      fakeResponse({ stop_reason: 'refusal', content: [] }),
+      'opus',
+    );
+    assert.equal(result.retry, false);
+    assert.equal(result.reason, null);
+  });
+
+  it('still detects a soft refusal that arrives as end_turn', () => {
+    // Soft refusals aren't flagged structurally — the pattern list is what
+    // catches them, which is why it stays.
+    const result = shouldRetry(
+      fakeResponse({
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: "I'm unable to help with that request." }],
+      }),
+      'haiku',
+    );
+    assert.equal(result.retry, true);
+    assert.equal(result.reason, 'refusal');
+  });
+
   // ── G7 regressions: apostrophe normalization + tightened patterns ──────────
 
   it('retry on refusal written with a curly apostrophe (U+2019)', () => {
