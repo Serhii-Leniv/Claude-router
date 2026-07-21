@@ -5,6 +5,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 
 ## [Unreleased]
 
+### Fixed
+- **`files` no longer sweeps all of `assets/` into the published package.** The entry was the bare directory, so `npm pack` picked up anything sitting there — including files not tracked in git, which meant the tarball could differ between machines. A 147kB promo image was caught on its way into 0.2.2 this way. Narrowed to `assets/claude-router.svg`, the only asset the README actually references.
+
 ## [0.2.2] — 2026-07-21
 
 > ⚠️ **Contains breaking changes despite being a patch release.** A `^0.2.1` range picks this up automatically. If you `import` the scoring helpers (`heuristicScore`, `heuristicScoreDetailed`, `scoreToTier`, `scoreToConfidence`, `HEURISTIC_WEIGHTS`), **your build will fail** — they no longer exist. Use `routeByEvidence` instead. If you only run the proxy or use `createRouter()`, nothing you call has changed, but routing decisions will differ: Sonnet is now the default and tier selection no longer runs on a keyword score. Pin `0.2.1` if you need the old behaviour while you migrate.
