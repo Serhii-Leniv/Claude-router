@@ -26,11 +26,7 @@
 
 ## Is this for you?
 
-**✅ Yes — if you pay per token** (Anthropic API, Amazon Bedrock, or Google Vertex) **and your traffic is a mix of easy and hard requests.** The router skims the easy majority down to Haiku/Sonnet and reserves Opus for what actually needs it — **35% on agentic coding traffic**, [measured](research/2026-07-21-end-to-end-savings.md) by replaying 200 real turns through the published proxy.
-
-**➖ Less of a fit** if every request genuinely needs the top model (nothing to downshift), or you already hand-pick the model per call. On a flat Pro/Max **subscription** there's no per-token cost, so routing changes how fast you hit usage limits — not your bill.
-
-> It's a **cost router, not a load balancer** — it chooses *which model* per request by complexity; it does not pool traffic across keys or accounts.
+**If you pay per token** (Anthropic API, Amazon Bedrock, or Google Vertex) **and your traffic is a mix of easy and hard requests.** The router skims the easy majority down to Haiku/Sonnet and reserves Opus for what actually needs it — **35% on agentic coding traffic**, [measured](research/2026-07-21-end-to-end-savings.md) by replaying 200 real turns through the published proxy.
 
 ## Contents
 
