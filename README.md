@@ -26,7 +26,7 @@
 
 ## Is this for you?
 
-**✅ Yes — if you pay per token** (Anthropic API, Amazon Bedrock, or Google Vertex) **and your traffic is a mix of easy and hard requests.** The router skims the easy majority down to Haiku/Sonnet and reserves Opus for what actually needs it — typically **10–40% off**, biggest when you'd otherwise send everything to one expensive model, and on high-volume, large-context workloads where input/cache-read cost dominates.
+**✅ Yes — if you pay per token** (Anthropic API, Amazon Bedrock, or Google Vertex) **and your traffic is a mix of easy and hard requests.** The router skims the easy majority down to Haiku/Sonnet and reserves Opus for what actually needs it — **35% on agentic coding traffic**, [measured](research/2026-07-21-end-to-end-savings.md) by replaying 200 real turns through the published proxy.
 
 **➖ Less of a fit** if every request genuinely needs the top model (nothing to downshift), or you already hand-pick the model per call. On a flat Pro/Max **subscription** there's no per-token cost, so routing changes how fast you hit usage limits — not your bill.
 
@@ -116,8 +116,8 @@ claude
 For each request the proxy classifies the task, routes to the right tier, calls the API, and returns the response plus `x-router-*` headers:
 
 - **Route** — `model: "auto"` (or omitted) is classified and routed. An explicit model passes through unchanged **unless** `--force-route` is set.
-- **Sonnet by default** — the router leaves Sonnet only on positive evidence, in either direction. Gates are *conjunctive*: every condition must hold, so two coincidental keyword matches can't combine into an expensive verdict. (The old additive score sent a beginner numpy question to Opus because *"matrix"* and *"determinant"* summed past the threshold.)
-- **Loop-position aware** — inside a tool-using session the router asks *where in the loop are we*, not *how hard does this sound*. A turn answering a `tool_result` is a mid-loop step, and those are largely tier-insensitive; a fresh instruction may be synthesis, which is where the top tier earns its cost. This is the one signal with a measurement behind it. Agentic turns never reach Haiku unless `routing.allowHaikuInAgentic: true`.
+- **Sonnet by default** — leaving it needs positive evidence. Gates are *conjunctive*, so coincidental keyword matches can't sum into an expensive verdict.
+- **Loop-position aware** — a turn answering a `tool_result` is a mid-loop step, and those are largely tier-insensitive. Agentic turns never reach Haiku unless `routing.allowHaikuInAgentic: true`.
 - **Auto-retry** — a truncated or refused response escalates one tier and retries.
 - **Auto-fallback** — a rate-limited (429) tier falls back to the next tier up.
 - **Parameter normalization** — the router owns the model, so it adapts model-coupled params to the chosen tier (otherwise a request built for one model 400s on another). Haiku: strips `thinking` and `output_config.effort`. Sonnet/Opus/Fable: strips `temperature`/`top_p`/`top_k` and converts a fixed `thinking.budget_tokens` to adaptive thinking; Fable additionally rejects *disabled* thinking, so that is dropped too. Your `messages`, `system`, `tools`, and `max_tokens` are never touched.
@@ -130,7 +130,7 @@ For each request the proxy classifies the task, routes to the right tier, calls 
 | `ai` | one Haiku call (~$0.00004) | Asks Haiku to rate task complexity 1–3. |
 | `hybrid` *(default)* | 0ms, or one Haiku call | Gates first; asks Haiku only when no gate fired and routing fell through to the default. |
 
-Every decision carries a `reason` (e.g. `agentic:mid-loop`), so routing is auditable rather than a number you have to trust. **Fable** is opt-in (`routing.allowFable`) — at $10/$50 an automatic promotion there is the most expensive mistake the router could make, and nothing measured supports predicting it from request text. AI classification is resilient by design — results are cached (LRU 500), calls time out at 1.5s, and any failure falls back to the heuristic, so a Haiku outage never blocks a request.
+Every decision carries a `reason` (e.g. `agentic:mid-loop`), so routing is auditable. **Fable** is opt-in (`routing.allowFable`). AI classification is resilient by design — results are cached (LRU 500), calls time out at 1.5s, and any failure falls back to the heuristic, so a Haiku outage never blocks a request.
 
 ---
 
