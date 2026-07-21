@@ -157,16 +157,17 @@ describe('routing — dead config knobs are loud, not silent', () => {
 });
 
 describe('routing — harness injection must not decide the tier', () => {
-  // Captured from a real `claude -p "yo"` run inside this repo: Claude Code
-  // injects CLAUDE.md into the user turn as its own text block, and this
-  // project's CLAUDE.md contains "end-to-end" — a DEPTH_MARKERS hit. Before the
-  // strip, a two-character greeting routed to opus on the project's docs.
+  // Shapes captured from real Claude Code sessions by pointing
+  // ANTHROPIC_BASE_URL at a recording upstream. The injected context is always
+  // its own text block, ahead of the user's actual text.
   const injected = (userText: string, reminder: string): ClassifyInput => ({
     messages: [
       {
         role: 'user',
         content: [
-          { type: 'text', text: `<system-reminder>\n${reminder}\n</system-reminder>` },
+          { type: 'text', text: `<system-reminder>
+${reminder}
+</system-reminder>` },
           { type: 'text', text: userText },
         ],
       },
@@ -182,12 +183,26 @@ describe('routing — harness injection must not decide the tier', () => {
     assert.equal(d.reason, 'agentic:default');
   });
 
-  it('strips the injected block out of the task text entirely', () => {
+  it('drops the injected block out of the task text entirely', () => {
     assert.equal(latestUserText(injected('yo', CLAUDE_MD)), 'yo');
   });
 
+  it('survives injected content that itself contains the closing tag', () => {
+    // The regression that killed the first attempt at this fix. A non-greedy
+    // regex ends at the FIRST </system-reminder>, and this project's own
+    // CLAUDE.md documents the tag — so 13,519 characters of documentation
+    // survived the strip and promoted the request to opus. Content cannot be
+    // trusted to not mention the delimiter; block boundaries can.
+    const selfReferential =
+      'CLAUDE.md says: latestUserText strips <system-reminder>...</system-reminder> ' +
+      'blocks. It must handle an end-to-end architecture rewrite from scratch.';
+    const d = routeByEvidence(injected('yo', selfReferential));
+    assert.equal(latestUserText(injected('yo', selfReferential)), 'yo');
+    assert.equal(d.tier, 'sonnet');
+  });
+
   it('still promotes when the user themselves asks for depth', () => {
-    // The strip must not cost us the real signal: same injected noise, but now
+    // The filter must not cost us the real signal: same injected noise, but now
     // the depth marker is in what the user typed.
     const d = routeByEvidence(injected('design a caching system end-to-end', CLAUDE_MD));
     assert.equal(d.tier, 'opus');
@@ -205,10 +220,12 @@ describe('routing — harness injection must not decide the tier', () => {
     assert.equal(latestUserText(input), 'translate hello to French');
   });
 
-  it('leaves an unclosed tag alone rather than swallowing the turn', () => {
+  it('keeps a block that merely mentions the tag mid-sentence', () => {
+    // Only a block that IS the injection is dropped. A user asking about the
+    // tag is asking a real question.
     const input: ClassifyInput = {
-      messages: [{ role: 'user', content: '<system-reminder>truncated... please summarize this' }],
+      messages: [{ role: 'user', content: 'why does <system-reminder> appear in my logs?' }],
     };
-    assert.ok(latestUserText(input).includes('summarize this'));
+    assert.ok(latestUserText(input).includes('why does'));
   });
 });

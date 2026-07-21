@@ -143,33 +143,46 @@ export function isMidLoop(input: ClassifyInput): boolean {
 }
 
 /**
- * Harness context Claude Code injects into the user turn itself — CLAUDE.md,
- * skill listings, agent rosters, the date. It arrives as its own text block
- * inside the user message, so picking the newest user turn is not enough to
- * isolate the request.
+ * Harness context Claude Code injects into the user turn — CLAUDE.md, skill
+ * listings, agent rosters, the date. Picking the newest user turn is not enough
+ * to isolate the request, because the injection travels *inside* that turn.
  *
- * This is not a cosmetic filter. Measured on `claude -p "yo"` run inside this
- * repo: the injected block is 20,857 of the turn's 20,859 characters, and this
- * project's own CLAUDE.md contains the phrase "end-to-end", which `DEPTH_MARKERS`
- * matches. So a two-character greeting routed to opus via
- * `agentic:depth-requested` — the gate fired on the project's documentation, not
- * on anything the user asked for. Every repo whose CLAUDE.md happens to contain
- * a depth word pays opus rates on every turn.
+ * Measured, not assumed. Captured from a real session by pointing
+ * ANTHROPIC_BASE_URL at a recording upstream: the opening request of
+ * `claude -p "read package.json then tsconfig.json and tell me the build target"`
+ * carries a 21,558-character injected block ahead of the user's 65 characters.
+ * This project's own CLAUDE.md contains "end-to-end", a `DEPTH_MARKERS` hit, so
+ * the gate promoted a mundane file-reading request to opus on the strength of
+ * the repo's documentation. Any repo whose CLAUDE.md contains a depth word pays
+ * opus rates on every turn.
  *
- * Only the matched-pair form is stripped; a truncated or unclosed tag is left
- * alone rather than swallowing the rest of the turn.
+ * The test is **structural, not textual**: an injected block is its own text
+ * block, opening and closing with the tag. We drop whole blocks and never parse
+ * inside them.
+ *
+ * That distinction is the whole point, and it was learned the hard way. The
+ * first attempt stripped `<system-reminder>[\s\S]*?</system-reminder>` with a
+ * regex. It failed on this very repo, because the sentence you are reading
+ * documents the tag — CLAUDE.md gets injected, so the literal closing tag in
+ * this file terminated the non-greedy match 8,039 characters in and left 13,519
+ * characters of documentation behind, still carrying the depth marker. Any
+ * content that so much as mentions the tag defeats a regex; block boundaries
+ * cannot be forged by content.
  */
-const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+function isInjectedContext(text: string): boolean {
+  const t = text.trim();
+  return t.startsWith('<system-reminder>') && t.endsWith('</system-reminder>');
+}
 
 /**
  * The task text: what the user actually asked for on the newest turn, with
- * harness injections removed.
+ * harness injections dropped.
  *
- * Every path that scores request content must go through this — the gates in
- * this file and the AI classifier's snippet alike. Scoring the joined message
- * array is what let prior turns and tool_result payloads outvote the request
- * (#18); leaving the injected reminders in is what let the project's own
- * documentation do the same (#34).
+ * Every path that scores request content goes through this — the gates in this
+ * file and the AI classifier's snippet alike. Scoring the joined message array
+ * is what let prior turns and tool_result payloads outvote the request (#18);
+ * keeping the injected blocks is what let the project's own documentation do
+ * the same (#34).
  *
  * A turn that is *only* injected context yields nothing, so we keep walking
  * back to the last turn that carried a real request.
@@ -178,10 +191,24 @@ export function latestUserText(input: ClassifyInput): string {
   for (let i = input.messages.length - 1; i >= 0; i--) {
     const m = input.messages[i]!;
     if (m.role !== 'user') continue;
-    const t = textOf(m.content).replace(SYSTEM_REMINDER, ' ').trim();
+    const t = requestText(m.content);
     if (t) return t;
   }
   return '';
+}
+
+/** Text the user supplied, with wholly-injected blocks removed. */
+function requestText(content: Anthropic.MessageParam['content']): string {
+  if (typeof content === 'string') {
+    return isInjectedContext(content) ? '' : content.trim();
+  }
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((b) => (b as { type?: string }).type === 'text')
+    .map((b) => (b as { text?: string }).text ?? '')
+    .filter((t) => !isInjectedContext(t))
+    .join(' ')
+    .trim();
 }
 
 /**
