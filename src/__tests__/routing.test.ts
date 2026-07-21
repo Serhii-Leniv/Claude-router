@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { routeByEvidence, isMidLoop, warnDeadRoutingKeys, resetDeadRoutingWarnings } from '../routing.js';
+import { routeByEvidence, isMidLoop, latestUserText, warnDeadRoutingKeys, resetDeadRoutingWarnings } from '../routing.js';
 import type { ClassifyInput } from '../types.js';
 
 const one = (text: string, extra: Partial<ClassifyInput> = {}): ClassifyInput => ({
@@ -153,5 +153,62 @@ describe('routing — dead config knobs are loud, not silent', () => {
 
   it('stays quiet when routing is absent', () => {
     assert.deepEqual(capture(() => warnDeadRoutingKeys(undefined)), []);
+  });
+});
+
+describe('routing — harness injection must not decide the tier', () => {
+  // Captured from a real `claude -p "yo"` run inside this repo: Claude Code
+  // injects CLAUDE.md into the user turn as its own text block, and this
+  // project's CLAUDE.md contains "end-to-end" — a DEPTH_MARKERS hit. Before the
+  // strip, a two-character greeting routed to opus on the project's docs.
+  const injected = (userText: string, reminder: string): ClassifyInput => ({
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `<system-reminder>\n${reminder}\n</system-reminder>` },
+          { type: 'text', text: userText },
+        ],
+      },
+    ],
+    tools: [{ name: 'Read', description: 'read a file', input_schema: { type: 'object' } }],
+  });
+
+  const CLAUDE_MD = 'Contents of CLAUDE.md: a few tests bind a port to exercise the proxy end-to-end.';
+
+  it('does not route a greeting to opus because CLAUDE.md says "end-to-end"', () => {
+    const d = routeByEvidence(injected('yo', CLAUDE_MD));
+    assert.equal(d.tier, 'sonnet');
+    assert.equal(d.reason, 'agentic:default');
+  });
+
+  it('strips the injected block out of the task text entirely', () => {
+    assert.equal(latestUserText(injected('yo', CLAUDE_MD)), 'yo');
+  });
+
+  it('still promotes when the user themselves asks for depth', () => {
+    // The strip must not cost us the real signal: same injected noise, but now
+    // the depth marker is in what the user typed.
+    const d = routeByEvidence(injected('design a caching system end-to-end', CLAUDE_MD));
+    assert.equal(d.tier, 'opus');
+    assert.equal(d.reason, 'agentic:depth-requested');
+  });
+
+  it('falls back to an earlier turn when the newest carries only injected context', () => {
+    const input: ClassifyInput = {
+      messages: [
+        { role: 'user', content: 'translate hello to French' },
+        { role: 'assistant', content: 'Bonjour' },
+        { role: 'user', content: [{ type: 'text', text: '<system-reminder>ignore me</system-reminder>' }] },
+      ],
+    };
+    assert.equal(latestUserText(input), 'translate hello to French');
+  });
+
+  it('leaves an unclosed tag alone rather than swallowing the turn', () => {
+    const input: ClassifyInput = {
+      messages: [{ role: 'user', content: '<system-reminder>truncated... please summarize this' }],
+    };
+    assert.ok(latestUserText(input).includes('summarize this'));
   });
 });

@@ -143,18 +143,43 @@ export function isMidLoop(input: ClassifyInput): boolean {
 }
 
 /**
- * The task text: the newest user turn, not the accumulated harness payload.
+ * Harness context Claude Code injects into the user turn itself — CLAUDE.md,
+ * skill listings, agent rosters, the date. It arrives as its own text block
+ * inside the user message, so picking the newest user turn is not enough to
+ * isolate the request.
  *
- * Every path that scores request content must go through this. Joining the whole
- * message array is what let the harness (prior turns, tool_result payloads,
- * system-reminder injections) outvote the actual request — see #18.
+ * This is not a cosmetic filter. Measured on `claude -p "yo"` run inside this
+ * repo: the injected block is 20,857 of the turn's 20,859 characters, and this
+ * project's own CLAUDE.md contains the phrase "end-to-end", which `DEPTH_MARKERS`
+ * matches. So a two-character greeting routed to opus via
+ * `agentic:depth-requested` — the gate fired on the project's documentation, not
+ * on anything the user asked for. Every repo whose CLAUDE.md happens to contain
+ * a depth word pays opus rates on every turn.
+ *
+ * Only the matched-pair form is stripped; a truncated or unclosed tag is left
+ * alone rather than swallowing the rest of the turn.
+ */
+const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+
+/**
+ * The task text: what the user actually asked for on the newest turn, with
+ * harness injections removed.
+ *
+ * Every path that scores request content must go through this — the gates in
+ * this file and the AI classifier's snippet alike. Scoring the joined message
+ * array is what let prior turns and tool_result payloads outvote the request
+ * (#18); leaving the injected reminders in is what let the project's own
+ * documentation do the same (#34).
+ *
+ * A turn that is *only* injected context yields nothing, so we keep walking
+ * back to the last turn that carried a real request.
  */
 export function latestUserText(input: ClassifyInput): string {
   for (let i = input.messages.length - 1; i >= 0; i--) {
     const m = input.messages[i]!;
     if (m.role !== 'user') continue;
-    const t = textOf(m.content);
-    if (t.trim()) return t;
+    const t = textOf(m.content).replace(SYSTEM_REMINDER, ' ').trim();
+    if (t) return t;
   }
   return '';
 }
