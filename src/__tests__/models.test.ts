@@ -151,9 +151,14 @@ describe('current-generation pricing (guards against drift)', () => {
     }
   });
 
-  it('Fable 5 and Mythos 5 price at $10/$50 despite having no family match', () => {
+  it('Fable 5 is a tier and prices by family; Mythos 5 still needs an exact entry', () => {
+    // Fable became a routable tier, so the family fallback now covers it — and
+    // covers future dated snapshots without a code change.
+    assert.equal(familyForModel('claude-fable-5'), 'fable');
+    // Mythos 5 is the same price but shares no substring with any family name,
+    // so it stays in DIVERGENT_PRICING. Dropping that entry prices it at zero.
+    assert.equal(familyForModel('claude-mythos-5'), undefined);
     for (const id of ['claude-fable-5', 'claude-mythos-5']) {
-      assert.equal(familyForModel(id), undefined, id);
       assert.deepEqual(priceForModel(id, DEFAULT_PRICING), { input: 10.0, output: 50.0 }, id);
     }
   });

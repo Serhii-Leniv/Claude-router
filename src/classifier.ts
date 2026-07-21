@@ -1,115 +1,15 @@
 import { createHash } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
 import { LruCache } from './cache.js';
+import { isAgentic, routeByEvidence } from './routing.js';
 import type { ClassifyInput, ClassifyResult, Tier } from './types.js';
-
-const SIMPLE_VERBS = [
-  'translate', 'summarize', 'format', 'convert', 'list',
-  'extract', 'define', 'count', 'repeat', 'spell',
-];
-
-const MEDIUM_VERBS = [
-  'explain', 'compare', 'implement', 'write', 'generate',
-  'analyze', 'debug', 'refactor', 'optimize', 'describe',
-];
-
-const COMPLEX_VERBS = [
-  'architect', 'design', 'evaluate', 'critique', 'reason',
-  'prove', 'strategize', 'synthesize', 'theorize', 'plan',
-];
-
-const EXPERT_KEYWORDS = [
-  'expert', 'senior', 'architect', 'principal', 'staff',
-  'advanced', 'comprehensive', 'thorough', 'detailed analysis',
-];
-
-// Math/science concepts that are inherently complex regardless of prompt length.
-// Short queries like "P=NP?" or "prove Riemann Hypothesis" must not route to Haiku.
-const MATH_SCIENCE_KEYWORDS = [
-  // Proof and theorem concepts
-  'theorem', 'conjecture', 'proof', 'lemma', 'corollary', 'hypothesis',
-  'axiom', 'postulate', 'proposition',
-  // Advanced math domains
-  'eigenvalue', 'eigenvector', 'determinant', 'matrix', 'matrices', 'tensor',
-  'derivative', 'integral', 'differential equation', 'gradient',
-  'topology', 'manifold', 'homomorphism', 'isomorphism',
-  'polynomial', 'prime', 'modular arithmetic', 'number theory',
-  'fourier', 'laplace', 'stochastic', 'markov',
-  // Complexity theory
-  'p=np', 'np-hard', 'np-complete', 'turing', 'halting problem',
-  // Physics concepts
-  'quantum', 'entanglement', 'wave function', 'hamiltonian',
-  'riemann', 'navier-stokes', 'euler equation',
-];
-
-/** Additive score weights. BASE starts in the sonnet band; signals move it. */
-export const HEURISTIC_WEIGHTS = {
-  BASE: 35,
-  SIMPLE_VERB: -12,
-  MEDIUM_VERB: 5,
-  COMPLEX_VERB: 15,
-  TINY_PROMPT: -10,
-  LONG_PROMPT: 10,
-  VERY_LONG_PROMPT: 20,
-  LONG_SENTENCE: 10,
-  CODE_BLOCK: 10,
-  SYMBOL_DENSITY: 8,
-  MATH_KEYWORD: 25,
-  MATH_TINY_OFFSET: 13,
-  MATH_NOTATION: 20,
-  LONG_SYSTEM: 10,
-  EXPERT_SYSTEM: 15,
-  MULTI_TURN: 10,
-  LONG_CONVERSATION: 20,
-  TOOL_BLOCKS_PRESENT: 10,
-  TOOLS_DEFINED: 8,
-  MANY_TOOLS: 7,
-  IMAGE_BLOCK: 10,
-} as const;
 
 export const DEFAULT_AI_TIMEOUT_MS = 1500;
 export const DEFAULT_CLASSIFY_CACHE_SIZE = 500;
-export const DEFAULT_HYBRID_BAND: [number, number] = [40, 60];
-
-// Ceiling on the combined contribution of harness/scaffolding signals (long
-// system prompt + tool definitions + in-flight tool blocks). These are constant
-// and large for agentic clients like Claude Code, so uncapped they add ~+40 and
-// force Opus on every request regardless of the task. Capped, they can nudge a
-// borderline call toward Sonnet but never dominate. BASE (35) + this stays well
-// inside the Sonnet band, so the harness alone can never reach Opus.
-export const HARNESS_SIGNAL_CAP = 15;
 
 const AI_SNIPPET_HEAD = 700;
 const AI_SNIPPET_TAIL = 300;
 const AI_SYSTEM_SNIPPET = 200;
-// Signal-poor prompts at least this long get AI confirmation in hybrid mode
-// (typical for non-English input, which the keyword lists cannot score).
-const SIGNAL_POOR_MIN_TOKENS = 20;
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-// Word-boundary matching with optional plural: "list" must not match "listen",
-// but "eigenvalue" must still match "eigenvalues".
-function compileKeywords(words: string[]): RegExp[] {
-  return words.map((w) => new RegExp(`\\b${escapeRegex(w)}s?\\b`, 'i'));
-}
-
-const SIMPLE_RE = compileKeywords(SIMPLE_VERBS);
-const MEDIUM_RE = compileKeywords(MEDIUM_VERBS);
-const COMPLEX_RE = compileKeywords(COMPLEX_VERBS);
-const EXPERT_RE = compileKeywords(EXPERT_KEYWORDS);
-const MATH_RE = compileKeywords(MATH_SCIENCE_KEYWORDS);
-
-function countMatches(text: string, patterns: RegExp[]): number {
-  let count = 0;
-  for (const re of patterns) {
-    if (re.test(text)) count++;
-  }
-  return count;
-}
-
 interface ExtractedSignals {
   text: string;
   toolBlockCount: number;
@@ -156,51 +56,6 @@ function extractSignals(messages: Anthropic.MessageParam[]): ExtractedSignals {
   return { text: parts.join(' '), toolBlockCount, imageCount, extraChars };
 }
 
-/**
- * Text of the LATEST user turn — the actual task. Routing on the whole payload
- * lets a big constant harness (system prompt + prior turns + tool output, as in
- * Claude Code) dominate the score; the discriminating task signal lives in the
- * newest user message. Falls back to the full joined text when there is no user
- * turn with text (e.g. a turn carrying only a tool_result block).
- */
-function extractLatestUserText(messages: Anthropic.MessageParam[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i]!;
-    if (msg.role !== 'user') continue;
-    if (typeof msg.content === 'string') {
-      if (msg.content.trim()) return msg.content;
-      continue;
-    }
-    if (Array.isArray(msg.content)) {
-      const parts: string[] = [];
-      for (const block of msg.content) {
-        if (
-          (block as { type?: string }).type === 'text' &&
-          'text' in block &&
-          typeof block.text === 'string'
-        ) {
-          parts.push(block.text);
-        }
-      }
-      if (parts.join(' ').trim()) return parts.join(' ');
-    }
-  }
-  return '';
-}
-
-/** Any tool definitions or in-flight tool_use/tool_result blocks → agentic session. */
-function isAgentic(input: ClassifyInput): boolean {
-  if ((input.tools?.length ?? 0) > 0) return true;
-  for (const msg of input.messages) {
-    if (!Array.isArray(msg.content)) continue;
-    for (const block of msg.content) {
-      const t = (block as { type?: string }).type;
-      if (t === 'tool_use' || t === 'tool_result') return true;
-    }
-  }
-  return false;
-}
-
 function extractSystemText(
   system: string | Anthropic.TextBlockParam[] | undefined,
 ): string {
@@ -210,107 +65,6 @@ function extractSystemText(
     .filter((b): b is Anthropic.TextBlockParam => b.type === 'text')
     .map((b) => b.text)
     .join(' ');
-}
-
-export interface HeuristicDetail {
-  score: number;
-  /** Total keyword/notation signals that fired — 0 means the text gave us nothing */
-  keywordHits: number;
-  estimatedTokens: number;
-}
-
-export function heuristicScoreDetailed(input: ClassifyInput): HeuristicDetail {
-  const W = HEURISTIC_WEIGHTS;
-  const { toolBlockCount, imageCount, extraChars } = extractSignals(input.messages);
-  const systemText = extractSystemText(input.system);
-  // Score the TASK — the latest user turn — not the whole harness payload.
-  const taskText = extractLatestUserText(input.messages);
-
-  let score = W.BASE;
-
-  // --- Cognitive verb signals (task text only) ---
-  const simpleHits = countMatches(taskText, SIMPLE_RE);
-  const mediumHits = countMatches(taskText, MEDIUM_RE);
-  const complexHits = countMatches(taskText, COMPLEX_RE);
-
-  score += simpleHits * W.SIMPLE_VERB;
-  score += mediumHits * W.MEDIUM_VERB;
-  score += complexHits * W.COMPLEX_VERB;
-
-  // --- Token estimate (chars / 4, including tool_result volume) ---
-  const estimatedTokens = (taskText.length + extraChars) / 4;
-  // Only penalize truly empty/trivial prompts (< 5 tokens ≈ "hi", "ok", "2+2")
-  // Short but substantive questions like "Prove Fermat's Last Theorem" must not be penalized
-  if (estimatedTokens < 5) score += W.TINY_PROMPT;
-  else if (estimatedTokens > 2000) score += W.VERY_LONG_PROMPT;
-  else if (estimatedTokens > 500) score += W.LONG_PROMPT;
-
-  // --- Sentence complexity ---
-  const sentences = taskText.split(/[.!?]+/).filter((s) => s.trim().length > 0);
-  const avgSentenceLen =
-    sentences.length > 0
-      ? sentences.reduce((sum, s) => sum + s.trim().split(/\s+/).length, 0) /
-        sentences.length
-      : 0;
-  if (avgSentenceLen > 25) score += W.LONG_SENTENCE;
-
-  // --- Code block presence ---
-  if (taskText.includes('```')) score += W.CODE_BLOCK;
-
-  // --- Non-alphanumeric density (code-like content) ---
-  const nonAlpha = (taskText.match(/[^a-zA-Z0-9\s]/g) || []).length;
-  const density = taskText.length > 0 ? nonAlpha / taskText.length : 0;
-  if (density > 0.15) score += W.SYMBOL_DENSITY;
-
-  // --- Math/science domain signals ---
-  // These are complexity signals independent of prompt length.
-  // "P=NP?" is 4 chars but inherently Opus-level.
-  const mathHits = countMatches(taskText, MATH_RE);
-  if (mathHits > 0) {
-    score += mathHits * W.MATH_KEYWORD;
-    // Cancel short-prompt penalty + small bonus: "P=NP?" must not be penalized for brevity.
-    if (estimatedTokens < 5) score += W.MATH_TINY_OFFSET;
-  }
-
-  // Math notation: Greek letters, equation symbols, LaTeX-style operators
-  const hasMathNotation = /[∫∑∂∇∈∉⊂⊃∪∩≤≥≠≈∞√∏∧∨∀∃α-ωΑ-Ω]/.test(taskText) ||
-    /d[²³]?[xyz]\/d[xyz]|\\frac|\\int|\\sum|\\nabla|\^\{|\^2|\^3/.test(taskText);
-  if (hasMathNotation) score += W.MATH_NOTATION;
-
-  // --- Image signal (a genuine task signal — vision — so it is NOT capped) ---
-  if (imageCount > 0) score += W.IMAGE_BLOCK;
-
-  // --- Harness / scaffolding signals (CAPPED) ---
-  // Tool definitions, in-flight tool blocks, and a long/expert system prompt are
-  // constant scaffolding for agentic clients. Summed and capped so they nudge but
-  // never dominate — this is the fix for Claude Code routing everything to Opus.
-  const expertHits = countMatches(systemText, EXPERT_RE);
-  const toolCount = input.tools?.length ?? 0;
-  let harness = 0;
-  if (toolBlockCount > 0) harness += W.TOOL_BLOCKS_PRESENT;
-  if (toolCount > 0) harness += W.TOOLS_DEFINED;
-  if (toolCount > 8) harness += W.MANY_TOOLS;
-  if (systemText.length > 500) harness += W.LONG_SYSTEM;
-  if (expertHits > 0) harness += W.EXPERT_SYSTEM;
-  score += Math.min(harness, HARNESS_SIGNAL_CAP);
-
-  // --- Multi-turn signals ---
-  const messageCount = input.messages.length;
-  if (messageCount > 15) score += W.LONG_CONVERSATION;
-  else if (messageCount > 5) score += W.MULTI_TURN;
-
-  const keywordHits =
-    simpleHits + mediumHits + complexHits + mathHits + expertHits + (hasMathNotation ? 1 : 0);
-
-  return {
-    score: Math.max(0, Math.min(100, score)),
-    keywordHits,
-    estimatedTokens,
-  };
-}
-
-export function heuristicScore(input: ClassifyInput): number {
-  return heuristicScoreDetailed(input).score;
 }
 
 export interface TierThresholds {
@@ -330,25 +84,47 @@ export function scoreToConfidence(score: number): number {
   return Math.min(1, Math.abs(score - 50) / 50 + 0.5);
 }
 
+/**
+ * Nominal score per tier, kept only so `RouteMeta.score`, the dashboard, and the
+ * `x-router-*` headers keep reporting a number. Routing no longer flows through
+ * a score — see `routeByEvidence` for why summing signals was the bug.
+ */
+const NOMINAL_SCORE: Record<Tier, number> = {
+  haiku: 15,
+  sonnet: 50,
+  opus: 80,
+  fable: 95,
+};
+
 export function classifyHeuristic(
   input: ClassifyInput,
-  thresholds?: TierThresholds,
+  opts?: ClassifyOptions,
 ): ClassifyResult {
   const start = performance.now();
-  const score = heuristicScore(input);
+  const decision = routeByEvidence(input, opts);
   const ms = performance.now() - start;
   return {
-    tier: scoreToTier(score, thresholds),
-    score,
+    tier: decision.tier,
+    score: NOMINAL_SCORE[decision.tier],
     method: 'heuristic',
     ms: Math.round(ms * 100) / 100,
-    confidence: Math.round(scoreToConfidence(score) * 100) / 100,
+    confidence: decision.confidence,
+    reason: decision.reason,
   };
 }
 
 export interface ClassifyOptions {
+  /**
+   * @deprecated No-op. These were score thresholds, and gate-based routing has
+   * no score to threshold. Still accepted so existing config files load, but
+   * they no longer influence any decision — see `routeByEvidence`. They are
+   * kept rather than removed so a stale config fails loudly at review time
+   * instead of silently changing behaviour on upgrade.
+   */
   haikuMax?: number;
+  /** @deprecated No-op — see `haikuMax`. */
   opusMin?: number;
+  /** @deprecated No-op. Hybrid now defers to AI when no gate fired. */
   hybridBand?: [number, number];
   aiTimeoutMs?: number;
   /** Caller-owned cache for AI classification results; undefined = no caching */
@@ -491,34 +267,31 @@ async function classifyAICached(
   return result;
 }
 
+/**
+ * Confirm with AI only where the gates produced no verdict.
+ *
+ * The old band test ("score between 40 and 60") no longer exists, because there
+ * is no score to sit between thresholds. Its replacement is more direct: a gate
+ * either fired on positive evidence or it did not. When none fired we fell back
+ * to the default tier, and *that* is the case worth spending a Haiku call on.
+ *
+ * This also drops the old `signalPoor` rule (zero keyword hits + enough tokens),
+ * which existed to catch non-English text the keyword lists could not score.
+ * Gates keyed on request shape rather than vocabulary do not have that blind
+ * spot for the structural decisions; where they abstain, the default path below
+ * already routes to AI confirmation.
+ */
 export async function classifyHybrid(
   client: Anthropic,
   input: ClassifyInput,
   haikuModel: string,
   opts?: ClassifyOptions,
 ): Promise<ClassifyResult> {
-  const start = performance.now();
-  const detail = heuristicScoreDetailed(input);
-  const [bandLow, bandHigh] = opts?.hybridBand ?? DEFAULT_HYBRID_BAND;
-
-  // Confirm with AI when the score is ambiguous, or when the text produced no
-  // keyword signals at all (non-English or otherwise unscorable content).
-  const ambiguous = detail.score >= bandLow && detail.score <= bandHigh;
-  const signalPoor =
-    detail.keywordHits === 0 && detail.estimatedTokens >= SIGNAL_POOR_MIN_TOKENS;
-
-  if (ambiguous || signalPoor) {
+  const decision = routeByEvidence(input, opts);
+  if (decision.reason.endsWith(':default')) {
     return classifyAICached(client, input, haikuModel, opts);
   }
-
-  const ms = performance.now() - start;
-  return {
-    tier: scoreToTier(detail.score, opts),
-    score: detail.score,
-    method: 'heuristic',
-    ms: Math.round(ms * 100) / 100,
-    confidence: Math.round(scoreToConfidence(detail.score) * 100) / 100,
-  };
+  return classifyHeuristic(input, opts);
 }
 
 /**

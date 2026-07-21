@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 
-export type Tier = 'haiku' | 'sonnet' | 'opus';
+export type Tier = 'haiku' | 'sonnet' | 'opus' | 'fable';
 
 export interface ModelPricing {
   /** $ per 1M input tokens */
@@ -39,11 +39,7 @@ export interface RouterConfig {
   /** Tune classifier thresholds, hybrid band, AI timeout, and cache size */
   routing?: RoutingTuning;
   /** Override default model IDs per tier */
-  tiers?: {
-    haiku?: string;
-    sonnet?: string;
-    opus?: string;
-  };
+  tiers?: Partial<Record<Tier, string>>;
   /** Override or extend pricing data */
   pricing?: Record<string, ModelPricing>;
   /** Auto-fallback to next tier on rate limit (default: true) */
@@ -117,4 +113,10 @@ export interface ClassifyResult {
   cached?: boolean;
   /** True when an agentic session floored the tier up from haiku to sonnet */
   floored?: boolean;
+  /**
+   * Which gate produced this tier (e.g. `agentic:mid-loop`, `single-turn:default`).
+   * Makes a routing decision auditable after the fact — with gates rather than a
+   * summed score, "why this tier" has an answer worth recording.
+   */
+  reason?: string;
 }

@@ -5,6 +5,7 @@ export const DEFAULT_MODELS: Record<Tier, string> = {
   haiku: 'claude-haiku-4-5',
   sonnet: 'claude-sonnet-5',
   opus: 'claude-opus-4-8',
+  fable: 'claude-fable-5',
 };
 
 // NOTE: Bedrock inference-profile IDs vary by account/region and Anthropic's
@@ -14,12 +15,18 @@ export const BEDROCK_MODELS: Record<Tier, string> = {
   haiku:  'us.anthropic.claude-haiku-4-5-20251001-v1:0',
   sonnet: 'us.anthropic.claude-sonnet-5-v1:0',
   opus:   'us.anthropic.claude-opus-4-8-v1:0',
+  // Fable's availability and inference-profile ID on Bedrock are unverified, so
+  // the fable tier resolves to Opus here rather than risking a 404. Fable
+  // routing is opt-in and off by default, so this is inert unless enabled.
+  fable:  'us.anthropic.claude-opus-4-8-v1:0',
 };
 
 export const VERTEX_MODELS: Record<Tier, string> = {
   haiku:  'claude-haiku-4-5',
   sonnet: 'claude-sonnet-5',
   opus:   'claude-opus-4-8',
+  // Same reasoning as Bedrock above.
+  fable:  'claude-opus-4-8',
 };
 
 /**
@@ -29,8 +36,10 @@ export const VERTEX_MODELS: Record<Tier, string> = {
  *   Sonnet 5  — $3.00 / $15.00 standard (intro $2.00 / $10.00 through 2026-08-31)
  *   Opus 4.6/4.7/4.8 — $5.00 / $25.00  (note: NOT the old $15/$75 of Opus 4.0/4.1)
  *
+ *   Fable 5  — $10.00 / $50.00 (2x Opus; the most expensive routable tier)
+ *
  * We price Sonnet at the standard rate so savings math stays stable when the
- * intro discount ends. Fable 5 ($10/$50) is intentionally not a tier here.
+ * intro discount ends.
  *
  * Pricing drift here silently corrupts every `savedCents` figure the router
  * reports — keep this in sync when a new generation ships, and rely on the
@@ -40,12 +49,11 @@ export const FAMILY_PRICING: Record<Tier, ModelPricing> = {
   haiku:  { input: 1.00, output: 5.00 },
   sonnet: { input: 3.00, output: 15.00 },
   opus:   { input: 5.00, output: 25.00 },
+  fable:  { input: 10.00, output: 50.00 },
 };
 
 /** Old-generation Opus (4.0, 4.1) — 3x the current Opus family rate. */
 const LEGACY_OPUS: ModelPricing = { input: 15.00, output: 75.00 };
-/** Fable 5 and its Project Glasswing twin Mythos 5 — above Opus tier. */
-const FABLE_TIER: ModelPricing = { input: 10.00, output: 50.00 };
 
 /**
  * Models whose price does NOT follow their family default. Each exact entry is
@@ -54,9 +62,10 @@ const FABLE_TIER: ModelPricing = { input: 10.00, output: 50.00 };
  *
  *  - **Legacy Opus** (4.0, 4.1) family-matches to the *current* Opus price, so
  *    the fallback understates every call by 3x.
- *  - **Fable 5 / Mythos 5** match no family at all (`familyForModel` returns
- *    undefined), so the fallback prices them at *nothing* — see
- *    `warnIfUnpriced` for what happens when a model reaches that state.
+ *  - **Mythos 5** matches no family at all (`familyForModel` has no substring to
+ *    key on), so the fallback prices it at *nothing* — see `warnIfUnpriced` for
+ *    what happens when a model reaches that state. Fable 5 no longer needs an
+ *    entry here: it is a tier now, so the family fallback resolves it.
  *
  * Every entry here must genuinely diverge from its family (or have no family);
  * `models.test.ts` asserts that, so a redundant entry fails the build rather
@@ -69,8 +78,8 @@ export const DIVERGENT_PRICING: Record<string, ModelPricing> = {
   'claude-opus-4-1-20250805': LEGACY_OPUS,
   'claude-opus-4-0': LEGACY_OPUS,
   'claude-opus-4-20250514': LEGACY_OPUS,
-  'claude-fable-5': FABLE_TIER,
-  'claude-mythos-5': FABLE_TIER,
+  // Same price as the fable tier, but no substring for familyForModel to match.
+  'claude-mythos-5': FAMILY_PRICING.fable,
 };
 
 /** IDs that price at their family default. Listed for clarity, not necessity —
@@ -83,6 +92,7 @@ const FAMILY_DERIVED_PRICING: Record<string, ModelPricing> = {
   'claude-opus-4-8': FAMILY_PRICING.opus,
   'claude-opus-4-7': FAMILY_PRICING.opus,
   'claude-opus-4-6': FAMILY_PRICING.opus,
+  'claude-fable-5': FAMILY_PRICING.fable,
 };
 
 /**
@@ -95,7 +105,17 @@ export const DEFAULT_PRICING: Record<string, ModelPricing> = {
   ...DIVERGENT_PRICING,
 };
 
-export const TIER_ORDER: Tier[] = ['haiku', 'sonnet', 'opus'];
+export const TIER_ORDER: Tier[] = ['haiku', 'sonnet', 'opus', 'fable'];
+
+/**
+ * Automatic escalation stops here. Fable is 2x opus, and the triggers that would
+ * reach it — truncation and refusal — have never fired on real traffic
+ * (`research/2026-07-21-detector-measurement.md`: 0 of 35,314 responses). Paying
+ * 2x on a signal with no observed activations is not a trade worth making
+ * silently. Fable stays reachable by classification (opt-in) and by an explicit
+ * tier pin, just not by the retry path.
+ */
+export const ESCALATION_CEILING: Tier = 'opus';
 
 /**
  * Map any Claude model ID (first-party, Bedrock `us.anthropic.*`, Vertex,
@@ -107,6 +127,7 @@ export function familyForModel(model: string): Tier | undefined {
   if (m.includes('haiku')) return 'haiku';
   if (m.includes('sonnet')) return 'sonnet';
   if (m.includes('opus')) return 'opus';
+  if (m.includes('fable')) return 'fable';
   return undefined;
 }
 

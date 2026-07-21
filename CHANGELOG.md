@@ -5,8 +5,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-07-21
+
+> ⚠️ **Contains breaking changes despite being a patch release.** A `^0.2.1` range picks this up automatically. If you `import` the scoring helpers (`heuristicScore`, `heuristicScoreDetailed`, `scoreToTier`, `scoreToConfidence`, `HEURISTIC_WEIGHTS`), **your build will fail** — they no longer exist. Use `routeByEvidence` instead. If you only run the proxy or use `createRouter()`, nothing you call has changed, but routing decisions will differ: Sonnet is now the default and tier selection no longer runs on a keyword score. Pin `0.2.1` if you need the old behaviour while you migrate.
+
+### Changed
+- **Routing is evidence-based gates, not a keyword score (breaking).** The additive 0–100 scorer let unrelated weak signals sum into an expensive decision — `matrix` (+25) and `determinant` (+25) reached the Opus threshold on a beginner numpy question, with neither word being evidence of difficulty. Summing was the bug, so no weight tuning could fix it. Replaced by `routeByEvidence()`: **Sonnet is the default** and leaving it requires positive evidence; gates are **conjunctive**, so coincidental matches cannot combine; and the agentic and single-turn profiles are scored separately because they expose different signals. Agentic routing keys on **loop position** — is the last message a `tool_result` — which is the one routing signal with a measurement behind it. Every decision carries a `reason` (e.g. `agentic:mid-loop`), so routing is auditable rather than a number you have to trust. See [`research/`](research/).
+- **Hybrid mode's score band is gone.** It now asks Haiku exactly when no gate fired and routing fell through to the default, instead of when a score landed between two thresholds.
+
 ### Added
-- **German refusal detection** — `REFUSAL_PATTERNS` now includes German refusal phrases ("Ich kann dabei nicht helfen", "Als KI kann ich nicht", …), so auto-escalation fires for German responses too. Patterns follow the same modal + object/verb anchoring as the English set to avoid over-matching benign sentences ("Ich kann keine Fehler finden"). First step for #3.
+- **Fable 5 as a fourth tier** ($10/$50), with per-tier pricing and parameter normalization — Fable rejects `thinking: {type: 'disabled'}`, so a client that disables thinking would 400 the moment it routed there. Reaching fable is **opt-in** (`routing.allowFable`) and requires depth *and* long-horizon signals together; the retry path never reaches it at all. Nothing measured supports predicting "super hard" from request text, and at 2x Opus a wrong promotion is the most expensive mistake the router can make.
+- **Structural refusal detection** — `stop_reason: 'refusal'` (Opus 4.7+, Sonnet 5, Fable 5) is checked before the lexical phrase list. It is language-independent, so it covers every language without a single new pattern; measured coverage is 100% of responses against the lexical path's 0.4%. `REFUSAL_PATTERNS` stays as the fallback for older models and for soft refusals, which arrive as `end_turn`. Includes the German patterns from the earlier step toward #3. Closes #22.
+- **`research/`** — the measurements behind the routing design: a literature review (23 sources, 14 confirmed / 11 refuted claims), a detector measurement over 35,314 real responses, a tier head-to-head, and a documented failed experiment. Scripts are reproducible and make no network calls.
+
+### Fixed
+- **`shouldRetry` could escalate away from Opus.** It gated "nowhere to escalate" on the end of `TIER_ORDER`, so appending fable silently made Opus retryable. Both it and `nextTier` now gate on `ESCALATION_CEILING`.
+
+### Removed
+- **The additive scorer's public surface (breaking).** `heuristicScore`, `heuristicScoreDetailed`, `scoreToTier`, `scoreToConfidence` and `HEURISTIC_WEIGHTS` are no longer exported — there is no score to expose. `routeByEvidence`, `isAgentic` and `isMidLoop` are exported instead. `routing.haikuMax` / `opusMin` / `hybridBand` are still accepted but are **no-ops**, kept so an existing config file loads rather than failing on upgrade.
+
+### Known limitations
+- **Fable on Bedrock / Vertex is not wired up.** Its inference-profile ID on those platforms is unverified, so the `fable` tier resolves to **Opus** there rather than risking a 404 — a request routed to fable on Bedrock or Vertex silently runs on Opus. This is inert while `allowFable` is off (the default). Set `tiers.fable` yourself, and verify it against your console, if you enable fable there.
+- **The single-turn haiku gate is unmeasured.** Its conditions are a deliberate conservative choice, not a calibrated result — the experiment that would have calibrated them failed, and is documented rather than quietly dropped.
 
 ## [0.2.1] — 2026-07-13
 

@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { Tier } from './types.js';
-import { TIER_ORDER } from './models.js';
+import { ESCALATION_CEILING, TIER_ORDER } from './models.js';
 
 // Fallback for what `stop_reason: 'refusal'` doesn't cover: older models that
 // never set it, and soft refusals that arrive as `end_turn`. New languages only
@@ -81,8 +81,9 @@ function extractResponseText(response: Anthropic.Message): string {
 export function shouldRetry(response: Anthropic.Message, tier: Tier): RetryDecision {
   const tierIndex = TIER_ORDER.indexOf(tier);
 
-  // Can't retry from opus — nowhere to escalate
-  if (tierIndex >= TIER_ORDER.length - 1) {
+  // Nowhere to escalate. Gated on ESCALATION_CEILING, not on the end of
+  // TIER_ORDER: adding fable above opus must not silently make opus retryable.
+  if (tierIndex < 0 || tierIndex >= TIER_ORDER.indexOf(ESCALATION_CEILING)) {
     return { retry: false, reason: null };
   }
 
@@ -138,8 +139,16 @@ export function shouldRetry(response: Anthropic.Message, tier: Tier): RetryDecis
   return { retry: false, reason: null };
 }
 
+/**
+ * Next tier up for an automatic retry, or null when there is nowhere to go.
+ *
+ * Stops at `ESCALATION_CEILING` rather than the top of `TIER_ORDER`: fable is
+ * 2x opus, and the triggers that would reach it have never fired on real
+ * traffic. Reaching fable is a classification decision, not a retry decision.
+ */
 export function nextTier(tier: Tier): Tier | null {
   const idx = TIER_ORDER.indexOf(tier);
-  if (idx < 0 || idx >= TIER_ORDER.length - 1) return null;
+  const ceiling = TIER_ORDER.indexOf(ESCALATION_CEILING);
+  if (idx < 0 || idx >= ceiling) return null;
   return TIER_ORDER[idx + 1]!;
 }
