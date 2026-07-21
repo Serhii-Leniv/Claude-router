@@ -1,6 +1,6 @@
 {
   "name": "@sheruq/claude-router",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "TypeScript-native Claude API cost router — auto-routes to Haiku/Sonnet/Opus by task complexity to cut your pay-per-token Anthropic/Bedrock/Vertex bill",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -33,8 +33,11 @@
     "opus",
     "proxy"
   ],
-  "author": "",
+  "author": "Serhii Leniv",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Serhii-Leniv/Claude-router.git"
