@@ -15,6 +15,19 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Fast first signal: a single typecheck/build on Linux reports in well under
+  # a minute while the full OS × Node matrix is still spinning up.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
   test:
     strategy:
       fail-fast: false

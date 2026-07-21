@@ -1,0 +1,28 @@
+name: welcome
+
+# Greets first-time contributors on their first PR.
+# pull_request_target (not pull_request) so the token can comment on fork PRs.
+# Safe because this workflow never checks out or executes PR code.
+on:
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/first-interaction@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-message: |
+            Thanks for your first contribution to claude-router! 🎉
+
+            A few things while you're here:
+            - CI runs automatically on your PR — no maintainer approval needed. It builds and runs the full suite on Linux/macOS/Windows across Node 20/22/24.
+            - Reviewers will look for a **test** covering the change and, if it's user-visible, a line under `## [Unreleased]` in `CHANGELOG.md`.
+            - [CONTRIBUTING.md](https://github.com/Serhii-Leniv/Claude-router/blob/master/CONTRIBUTING.md) has the full workflow; `CLAUDE.md` is the architecture deep-dive.
+
+            A maintainer will review soon. Questions welcome — just comment on the PR.

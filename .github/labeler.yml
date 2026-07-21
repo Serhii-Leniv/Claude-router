@@ -1,0 +1,30 @@
+# Config for actions/labeler@v5 (.github/workflows/label.yml).
+# Labels must already exist in the repo — labeler does not create them.
+
+area:proxy:
+  - changed-files:
+      - any-glob-to-any-file: 'src/proxy/**'
+
+area:routing:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'src/classifier.ts'
+          - 'src/routing.ts'
+
+area:models:
+  - changed-files:
+      - any-glob-to-any-file: 'src/models.ts'
+
+area:tests:
+  - changed-files:
+      - any-glob-to-any-file: 'src/__tests__/**'
+
+area:docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/*.md'
+          - 'docs/**'
+
+area:ci:
+  - changed-files:
+      - any-glob-to-any-file: '.github/**'

@@ -1,0 +1,19 @@
+name: label
+
+# Auto-labels PRs by touched area (config: .github/labeler.yml).
+# pull_request_target so the token can add labels on fork PRs.
+# Safe because this workflow never checks out or executes PR code.
+on:
+  pull_request_target:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          sync-labels: false

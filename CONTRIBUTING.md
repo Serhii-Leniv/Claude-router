@@ -17,7 +17,7 @@ Then branch, make your change **with a test**, and open a PR. That's it.
 
 ## Prerequisites
 
-- **Node.js 18+** (CI runs on 18 and 22). Node 21+ runs `node --test` globs natively; on older versions the suite is driven by `scripts/run-tests.mjs`, so just use `npm test`.
+- **Node.js 20+** (CI runs on 20, 22, and 24). Node 21+ runs `node --test` globs natively; on older versions the suite is driven by `scripts/run-tests.mjs`, so just use `npm test`.
 - **npm** (the repo uses `package-lock.json`; CI runs `npm ci`).
 - No Anthropic API key is required to build or test — every test is a pure unit test with mocked clients.
 
@@ -61,7 +61,7 @@ Every behavior change needs a test. The suite is fast (~1s) and uses only `node:
 
 - Add or extend a file under `src/__tests__/`.
 - Router/proxy tests mock the SDK client directly (see existing tests for the pattern) — **no real API calls**.
-- Run `npm test` and make sure the whole suite is green before pushing. CI runs the same suite across Linux/macOS/Windows on Node 18 and 22, so prefer cross-platform code (avoid shelling out to Unix-only tools).
+- Run `npm test` and make sure the whole suite is green before pushing. CI runs the same suite across Linux/macOS/Windows on Node 20, 22, and 24, so prefer cross-platform code (avoid shelling out to Unix-only tools).
 
 If you fix a bug, add a regression test that fails before your fix and passes after.
 
@@ -87,7 +87,7 @@ Common types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`. Scope 
 5. Update `CHANGELOG.md` under `## [Unreleased]` if your change is user-visible.
 6. A maintainer reviews before merge. **`master` is protected** — PRs merge by **squash** after an approving review and green CI. No direct pushes.
 
-> First-time contributors: CI won't run automatically on your first PR until a maintainer approves the workflow run — this is a GitHub default for forks, not a problem with your PR.
+> CI runs automatically on every PR, including your first one from a fork — no maintainer approval needed. A quick typecheck job reports within a minute; the full OS × Node matrix follows. Your PR will also be auto-labelled by touched area (`area:proxy`, `area:routing`, …), and first-time contributors get a short welcome comment with the essentials — both are automated, nothing for you to do.
 
 ## Reporting bugs & requesting features
 
