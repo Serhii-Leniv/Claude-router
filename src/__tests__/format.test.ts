@@ -18,6 +18,6 @@ describe('formatSavedCents', () => {
   it('supports the saved/extra label', () => {
     assert.equal(formatSavedCents(123, true), 'saved $1.23');
     assert.equal(formatSavedCents(-123, true), 'extra $1.23');
-    assert.equal(formatSavedCents(-0.2, true), 'saved $0.00');
+    assert.equal(formatSavedCents(-0.2, true), '$0.00');
   });
 });
