@@ -1,11 +1,25 @@
 // Version-proof test entry: `node --test <glob>` needs Node >= 21 and
 // directory args behave differently across versions, so enumerate the
 // compiled test files ourselves and pass them explicitly.
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
+// `tsc` only writes files; it never removes them. A test file that existed on a
+// branch you had checked out earlier stays compiled in dist/ and keeps running
+// long after its source is gone — inflating the count and, worse, reporting on
+// code that is no longer in the tree. Drop orphans before running.
+function pruneOrphans(testDir) {
+  for (const f of readdirSync(testDir)) {
+    if (!f.endsWith('.test.js')) continue;
+    if (!existsSync(join('src/__tests__', f.replace(/\.js$/, '.ts')))) {
+      rmSync(join(testDir, f), { force: true });
+    }
+  }
+}
+
 const dir = 'dist/__tests__';
+pruneOrphans(dir);
 const files = readdirSync(dir)
   .filter((f) => f.endsWith('.test.js'))
   .map((f) => join(dir, f));
@@ -15,5 +29,13 @@ if (files.length === 0) {
   process.exit(1);
 }
 
-const result = spawnSync(process.execPath, ['--test', ...files], { stdio: 'inherit' });
+// Colour off, always. `term` enables ANSI when stdout is a TTY or FORCE_COLOR is
+// set, so any assertion on styled output passes or fails depending on whose
+// terminal ran it — a contributor with FORCE_COLOR=1 in their profile gets a red
+// build from green code. Tests that care about colour opt in explicitly via
+// `createTerm({ forceColor: true })`, which reads no environment at all.
+const result = spawnSync(process.execPath, ['--test', ...files], {
+  stdio: 'inherit',
+  env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+});
 process.exit(result.status ?? 1);
