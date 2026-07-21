@@ -3,7 +3,7 @@
 import { serve } from '@hono/node-server';
 import fs from 'node:fs';
 import { createProxyApp } from './server.js';
-import { createProviderClient, type Provider } from './handler.js';
+import { createProviderClient, DEFAULT_UPSTREAM, type Provider } from './handler.js';
 import { DEFAULT_MODELS, BEDROCK_MODELS, VERTEX_MODELS } from '../models.js';
 import type { Tier } from '../types.js';
 import { term } from './term.js';
@@ -129,6 +129,7 @@ async function cmdStart(args: string[]): Promise<void> {
     pricing: options.pricing,
     routing: options.routing,
     historyFile: paths.historyFile,
+    upstream: options.upstream,
   }, providerClient);
 
   const regionDisplay = options.region ||
@@ -155,6 +156,12 @@ async function cmdStart(args: string[]): Promise<void> {
     ['', `${term.tier('sonnet')} ${term.dim('→')} ${models.sonnet}`],
     ['', `${term.tier('opus')} ${term.dim('→')} ${models.opus}`],
   ];
+  // A redirected upstream means requests are NOT going to Anthropic. That is the
+  // point when testing, and a silent disaster otherwise — so it is always on the
+  // banner, never merely absent when default.
+  if (options.upstream !== DEFAULT_UPSTREAM) {
+    rows.push(['Upstream', `${options.upstream} ${term.yellow('(not Anthropic)')}`]);
+  }
   if (exposed) rows.push(['Bind', `${options.host} ${term.yellow('(network-exposed)')}`]);
   if (regionDisplay) rows.push(['Region', regionDisplay]);
   if (loaded) rows.push(['Config', paths.configFile]);
