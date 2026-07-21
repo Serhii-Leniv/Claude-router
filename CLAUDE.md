@@ -120,6 +120,7 @@ src/proxy/
   daemon.ts     — detached-spawn daemon, ~/.claude-router/daemon.json state, health polling, stopDaemon
   platform.ts   — per-OS autostart/env-var behind PlatformIntegration adapters (windows/macos/linux) + platformIntegration() selector; pure builders + cross-platform statusline stay outside the adapters; exported functions are thin delegators (see Platform integration)
   term.ts       — zero-dep ANSI styling (Claude Code aesthetic), tier colors, box(), NO_COLOR/TTY detection
+  format.ts     — `formatSavedCents()`: the one place a saved/extra figure becomes text. An amount that rounds away renders as a neutral, unlabelled `$0.00` — never green `saved $0.00`, because a sub-cent loss is not a saving (same principle as unpriced models being loud rather than free)
   history.ts    — persistent route history (~/.claude-router/history.jsonl, append-only JSONL) with an incremental-read aggregate cache (folds via src/totals.ts); powers `stats` and the dashboard's lifetime cards. Only active when HandlerConfig.historyFile is set (the CLI sets it; tests/library don't).
 ```
 
