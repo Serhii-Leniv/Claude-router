@@ -65,7 +65,7 @@
   "files": [
     "dist",
     "!dist/__tests__",
-    "assets",
+    "assets/claude-router.svg",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
