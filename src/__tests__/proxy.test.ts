@@ -553,3 +553,28 @@ describe('proxy forwards anthropic-beta on routed calls', () => {
     assert.equal(opts?.headers?.['anthropic-beta'], 'context-management-2025-06-27');
   });
 });
+
+describe('getAnthropicClient — upstream override', () => {
+  it('defaults to the real API', () => {
+    clearClientCache();
+    const c = getAnthropicClient('sk-up-default', null) as unknown as { baseURL: string };
+    assert.equal(c.baseURL, 'https://api.anthropic.com');
+  });
+
+  it('honours an explicit upstream', () => {
+    clearClientCache();
+    const c = getAnthropicClient('sk-up-stub', null, 'http://127.0.0.1:9999') as unknown as { baseURL: string };
+    assert.equal(c.baseURL, 'http://127.0.0.1:9999');
+  });
+
+  it('keys the cache on upstream, not the credential alone', () => {
+    // A cached client carries its baseURL. Keying on the credential alone would
+    // hand back a client pointed at the wrong host for the same API key.
+    clearClientCache();
+    const stub = getAnthropicClient('sk-same', null, 'http://127.0.0.1:9999') as unknown as { baseURL: string };
+    const real = getAnthropicClient('sk-same', null) as unknown as { baseURL: string };
+    assert.equal(stub.baseURL, 'http://127.0.0.1:9999');
+    assert.equal(real.baseURL, 'https://api.anthropic.com');
+    assert.notEqual(stub, real);
+  });
+});
