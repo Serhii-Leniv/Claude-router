@@ -1,10 +1,10 @@
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  heuristicScore,
-  heuristicScoreDetailed,
-  scoreToTier,
-  scoreToConfidence,
+
+
+
+
   classifyHeuristic,
   classifyAI,
   classifyHybrid,
@@ -30,166 +30,6 @@ function makeInput(content: string, opts?: { system?: string; messageCount?: num
 
   return { messages, system: opts?.system };
 }
-
-describe('scoreToTier', () => {
-  it('maps low scores to haiku', () => {
-    assert.equal(scoreToTier(0), 'haiku');
-    assert.equal(scoreToTier(15), 'haiku');
-    assert.equal(scoreToTier(29), 'haiku');
-  });
-
-  it('maps mid scores to sonnet', () => {
-    assert.equal(scoreToTier(30), 'sonnet');
-    assert.equal(scoreToTier(50), 'sonnet');
-    assert.equal(scoreToTier(70), 'sonnet');
-  });
-
-  it('maps high scores to opus', () => {
-    assert.equal(scoreToTier(71), 'opus');
-    assert.equal(scoreToTier(85), 'opus');
-    assert.equal(scoreToTier(100), 'opus');
-  });
-});
-
-describe('heuristicScore', () => {
-  it('simple translation → haiku', () => {
-    const score = heuristicScore(makeInput('translate hello to French'));
-    assert.equal(scoreToTier(score), 'haiku');
-  });
-
-  it('explain React hooks → sonnet', () => {
-    const score = heuristicScore(makeInput('explain how React hooks work and compare useState with useReducer'));
-    assert.equal(scoreToTier(score), 'sonnet');
-  });
-
-  it('design distributed system → opus', () => {
-    const score = heuristicScore(
-      makeInput(
-        'architect and design a distributed system for real-time event processing that can evaluate and strategize about scaling patterns across multiple regions with comprehensive fault tolerance',
-      ),
-    );
-    assert.equal(scoreToTier(score), 'opus');
-  });
-
-  it('code block presence bumps score', () => {
-    const without = heuristicScore(makeInput('fix this function'));
-    const with_ = heuristicScore(makeInput('fix this function ```\nconst x = 1;\n```'));
-    assert.ok(with_ > without, `with code (${with_}) should be higher than without (${without})`);
-  });
-
-  it('long system prompt bumps score', () => {
-    const short = heuristicScore(makeInput('hello', { system: 'Be helpful.' }));
-    const long = heuristicScore(
-      makeInput('hello', { system: 'A'.repeat(600) }),
-    );
-    assert.ok(long > short, `long system (${long}) should be higher than short (${short})`);
-  });
-
-  it('multi-turn (>5 messages) bumps score', () => {
-    const few = heuristicScore(makeInput('continue', { messageCount: 2 }));
-    const many = heuristicScore(makeInput('continue', { messageCount: 8 }));
-    assert.ok(many > few, `many turns (${many}) should be higher than few (${few})`);
-  });
-
-  it('multi-turn (>15 messages) bumps more', () => {
-    const mid = heuristicScore(makeInput('continue', { messageCount: 8 }));
-    const lots = heuristicScore(makeInput('continue', { messageCount: 18 }));
-    assert.ok(lots > mid, `18 turns (${lots}) should be higher than 8 (${mid})`);
-  });
-
-  it('empty prompt → haiku (safe default)', () => {
-    const score = heuristicScore(makeInput(''));
-    assert.equal(scoreToTier(score), 'haiku');
-  });
-
-  it('score is clamped 0–100', () => {
-    // Many simple verbs → should not go below 0
-    const low = heuristicScore(
-      makeInput('translate summarize format convert list extract define count repeat spell'),
-    );
-    assert.ok(low >= 0, `score should be >= 0, got ${low}`);
-    assert.ok(low <= 100, `score should be <= 100, got ${low}`);
-  });
-
-  // --- Math/science domain: short queries must not route to haiku ---
-
-  it('short math theorem query → opus', () => {
-    const score = heuristicScore(makeInput('Prove Fermat Last Theorem'));
-    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
-  });
-
-  it('P=NP question → opus', () => {
-    const score = heuristicScore(makeInput('P=NP?'));
-    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
-  });
-
-  it('Riemann Hypothesis → opus', () => {
-    const score = heuristicScore(makeInput('Prove the Riemann Hypothesis'));
-    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
-  });
-
-  it('quantum entanglement question → opus', () => {
-    const score = heuristicScore(makeInput('explain quantum entanglement and wave function collapse'));
-    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
-  });
-
-  it('NP-hard complexity → at least sonnet (not haiku)', () => {
-    // "Is 3-SAT NP-hard?" is a factual yes/no question — sonnet is correct routing.
-    // Key requirement: must NOT route to haiku.
-    const score = heuristicScore(makeInput('Is 3-SAT NP-hard?'));
-    assert.ok(scoreToTier(score) !== 'haiku', `NP-hard should not route to haiku, score=${score}`);
-  });
-
-  it('eigenvalue computation → opus', () => {
-    const score = heuristicScore(makeInput('compute eigenvalues of this matrix'));
-    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
-  });
-
-  it('integral calculus → opus', () => {
-    const score = heuristicScore(makeInput('solve this differential equation using integral transform'));
-    assert.equal(scoreToTier(score), 'opus', `score=${score}`);
-  });
-
-  it('math notation (integral symbol) → high score', () => {
-    const score = heuristicScore(makeInput('∫f(x)dx'));
-    assert.ok(score >= 50, `integral symbol should bump score >= 50, got ${score}`);
-  });
-
-  it('LaTeX math → high score', () => {
-    const score = heuristicScore(makeInput('compute \\int_0^\\infty e^{-x} dx using \\frac{1}{s}'));
-    assert.ok(score >= 50, `LaTeX math should bump score >= 50, got ${score}`);
-  });
-
-  it('simple factual (no math) → still low', () => {
-    const score = heuristicScore(makeInput('what is the capital of France'));
-    assert.ok(score < 70, `non-math factual should not reach opus, got ${score}`);
-  });
-});
-
-describe('scoreToConfidence', () => {
-  it('extreme scores → high confidence', () => {
-    assert.equal(scoreToConfidence(0), 1.0);
-    assert.equal(scoreToConfidence(100), 1.0);
-  });
-
-  it('center score → low confidence', () => {
-    assert.equal(scoreToConfidence(50), 0.5);
-  });
-
-  it('near-boundary scores → moderate confidence', () => {
-    const conf40 = scoreToConfidence(40);
-    const conf60 = scoreToConfidence(60);
-    assert.ok(conf40 > 0.5 && conf40 < 1.0, `conf at 40: ${conf40}`);
-    assert.ok(conf60 > 0.5 && conf60 < 1.0, `conf at 60: ${conf60}`);
-    // Symmetric
-    assert.equal(conf40, conf60);
-  });
-
-  it('confidence increases with distance from center', () => {
-    assert.ok(scoreToConfidence(20) > scoreToConfidence(40));
-    assert.ok(scoreToConfidence(80) > scoreToConfidence(60));
-  });
-});
 
 describe('classifyHeuristic', () => {
   it('returns full ClassifyResult with confidence', () => {
@@ -276,30 +116,6 @@ describe('classifyHybrid', () => {
     assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 0);
   });
 
-  it('calls AI for ambiguous zone (score 40-60)', async () => {
-    const client = mockClient('2');
-    // This prompt scores 45 — in the ambiguous 40-60 zone
-    const input = makeInput('explain compare write generate describe this code');
-    const score = heuristicScore(input);
-    assert.ok(score >= 40 && score <= 60, `expected score 40-60, got ${score}`);
-
-    const result = await classifyHybrid(client, input, 'claude-haiku-4-5-20251001');
-    assert.equal(result.method, 'ai');
-    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 1);
-  });
-
-  it('calls AI for signal-poor non-English prompts outside the band', async () => {
-    const client = mockClient('2');
-    // No English keywords fire, but the text is substantive (>20 est. tokens)
-    const input = makeInput(
-      'напиши будь ласка довгий детальний огляд цієї архітектури і поясни компроміси між рішеннями',
-    );
-    const detail = heuristicScoreDetailed(input);
-    assert.equal(detail.keywordHits, 0, 'expected no keyword hits');
-    await classifyHybrid(client, input, 'claude-haiku-4-5-20251001');
-    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 1);
-  });
-
   // The score band is gone: there is no score for a request to sit between two
   // thresholds. Hybrid now spends a Haiku call exactly when no gate fired on
   // positive evidence and routing fell through to the default tier.
@@ -320,105 +136,6 @@ describe('classifyHybrid', () => {
     );
     assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 1);
     assert.equal(r.method, 'ai');
-  });
-});
-
-describe('heuristicScore — word boundaries', () => {
-  it('"listen" does not match simple verb "list"', () => {
-    const withFalsePositive = heuristicScore(makeInput('listen to this song and name the tempo'));
-    const withRealMatch = heuristicScore(makeInput('list to this song and name the tempo'));
-    assert.ok(withFalsePositive > withRealMatch, 'listen must not get the simple-verb penalty');
-  });
-
-  it('"planets" does not match complex verb "plan"', () => {
-    const withFalsePositive = heuristicScore(makeInput('the planets orbit the sun'));
-    const withRealMatch = heuristicScore(makeInput('the plan orbit the sun'));
-    assert.ok(withFalsePositive < withRealMatch, 'planets must not get the complex-verb bonus');
-  });
-
-  it('plural forms still match ("eigenvalues")', () => {
-    const score = heuristicScore(makeInput('Compute the eigenvalues of A'));
-    assert.ok(score > 50, `expected math signal to fire, got ${score}`);
-  });
-});
-
-describe('heuristicScore — token branches', () => {
-  it('very long prompts (>2000 tokens) score higher than long prompts (>500)', () => {
-    const long = heuristicScore(makeInput('word '.repeat(500))); // ~625 tokens
-    const veryLong = heuristicScore(makeInput('word '.repeat(2000))); // ~2500 tokens
-    assert.ok(veryLong > long, `expected ${veryLong} > ${long}`);
-  });
-});
-
-describe('heuristicScore — tool and image signals', () => {
-  const base = makeInput('what is the weather');
-
-  it('tool_use blocks raise the score', () => {
-    const withTools: ClassifyInput = {
-      messages: [
-        { role: 'user', content: 'what is the weather' },
-        {
-          role: 'assistant',
-          content: [{ type: 'tool_use', id: 't1', name: 'get_weather', input: {} }],
-        },
-      ],
-    };
-    assert.ok(heuristicScore(withTools) > heuristicScore(base));
-  });
-
-  it('tool_result content counts toward token estimate, not keywords', () => {
-    const bigResult: ClassifyInput = {
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'tool_result', tool_use_id: 't1', content: 'translate list count '.repeat(500) },
-          ],
-        },
-      ],
-    };
-    // 10500 chars of tool output → >2000 est. tokens, but the simple verbs
-    // inside the tool output must NOT apply their -12 penalties
-    const detail = heuristicScoreDetailed(bigResult);
-    assert.ok(detail.estimatedTokens > 2000);
-    assert.equal(detail.keywordHits, 0);
-  });
-
-  it('defined tools raise the score, many tools raise it more', () => {
-    const fewTools: ClassifyInput = { ...base, tools: [{}, {}] };
-    const manyTools: ClassifyInput = { ...base, tools: Array.from({ length: 10 }, () => ({})) };
-    assert.ok(heuristicScore(fewTools) > heuristicScore(base));
-    assert.ok(heuristicScore(manyTools) > heuristicScore(fewTools));
-  });
-
-  it('image blocks raise the score', () => {
-    const withImage: ClassifyInput = {
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: 'what is the weather' },
-            {
-              type: 'image',
-              source: { type: 'base64', media_type: 'image/png', data: '' },
-            },
-          ],
-        },
-      ],
-    };
-    assert.ok(heuristicScore(withImage) > heuristicScore(base));
-  });
-});
-
-describe('scoreToTier — custom thresholds', () => {
-  it('haikuMax override widens the haiku band', () => {
-    assert.equal(scoreToTier(35), 'sonnet');
-    assert.equal(scoreToTier(35, { haikuMax: 40 }), 'haiku');
-  });
-
-  it('opusMin override widens the opus band', () => {
-    assert.equal(scoreToTier(65), 'sonnet');
-    assert.equal(scoreToTier(65, { opusMin: 60 }), 'opus');
   });
 });
 
@@ -645,23 +362,25 @@ describe('Strategy 1 — task-scored routing + capped harness + agentic floor', 
 
   it('harness alone (big system + many tools) cannot push a trivial task to opus', () => {
     // This is the money bug: the harness used to add ~+40 → opus on "2+2".
-    const score = heuristicScore({
+    // Gates cannot reproduce it by construction — promotion needs an explicit
+    // depth request in the task text, and harness size is not a task signal.
+    const r = classifyHeuristic({
       messages: [{ role: 'user', content: 'what is 2+2?' }],
       system: bigSystem,
-      tools,
+      tools: tools as never,
     });
-    assert.notEqual(scoreToTier(score), 'opus', `trivial task must not reach opus, score=${score}`);
+    assert.notEqual(r.tier, 'opus', 'trivial task must not reach opus');
   });
 
-  it('scores the LATEST user turn — an earlier hard turn does not inflate a trivial one', () => {
-    const score = heuristicScore({
+  it('reads the LATEST user turn — an earlier hard turn does not inflate a trivial one', () => {
+    const r = classifyHeuristic({
       messages: [
         { role: 'user', content: 'architect a distributed system and prove correctness' },
         { role: 'assistant', content: 'Here is a design ...' },
         { role: 'user', content: 'thanks, now what is 2+2?' },
       ],
     });
-    assert.notEqual(scoreToTier(score), 'opus', `latest trivial turn must not inherit earlier complexity, score=${score}`);
+    assert.notEqual(r.tier, 'opus', 'latest trivial turn must not inherit earlier complexity');
   });
 
   it('floors an agentic trivial turn at sonnet (never haiku by default)', async () => {

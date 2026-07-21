@@ -42,11 +42,11 @@
 | | |
 |---|---|
 | 🔌 **Zero code changes** | Point any Anthropic app at the proxy via `ANTHROPIC_BASE_URL`, or `import` it as a library. |
-| 🧠 **Task-aware routing** | Scores the *actual task* (latest user turn), not the harness — so agentic clients like Claude Code aren't force-routed to Opus. |
+| 🧠 **Evidence-based routing** | Conjunctive gates on request shape, not a keyword score. Sonnet is the default; leaving it needs positive evidence. See [research/](research/) for the measurements behind it. |
 | 🛟 **Quality-safe** | Sonnet floor for tool-using sessions, plus auto-escalation on truncation/refusal and auto-fallback on rate limits. |
 | 📊 **Measurable** | Every call reports exact cents saved vs your baseline, with lifetime `stats` and a live dashboard. |
 | 💯 **Correct by construction** | Per-tier parameter normalization (so routed requests don't 400) and prompt-cache-aware pricing. |
-| 🏠 **Self-hosted & Claude-only** | No third party sees your traffic; tuned specifically for the Haiku/Sonnet/Opus tiers. |
+| 🏠 **Self-hosted & Claude-only** | No third party sees your traffic; tuned specifically for the Haiku/Sonnet/Opus/Fable tiers. |
 
 ---
 
@@ -116,21 +116,21 @@ claude
 For each request the proxy classifies the task, routes to the right tier, calls the API, and returns the response plus `x-router-*` headers:
 
 - **Route** — `model: "auto"` (or omitted) is classified and routed. An explicit model passes through unchanged **unless** `--force-route` is set.
-- **Task-scored, harness-aware** — complexity is scored from the **latest user turn** (the actual task), not the whole payload. An agentic client like Claude Code attaches a large *constant* harness (system prompt + tool definitions + prior tool output); its contribution is **capped** so it can nudge but never dominate. Without this, even *"what is 2+2?"* scored as Opus-complex and routed **up**, costing more.
-- **Agentic floor** — when tools (or in-flight `tool_use` / `tool_result` blocks) are present, the tier is floored at **Sonnet**: a trivial-*looking* turn in a coding loop can be hard to execute, and a wrong cheap step cascades into more work. Set `routing.allowHaikuInAgentic: true` to let clearly-trivial agentic turns reach Haiku.
+- **Sonnet by default** — the router leaves Sonnet only on positive evidence, in either direction. Gates are *conjunctive*: every condition must hold, so two coincidental keyword matches can't combine into an expensive verdict. (The old additive score sent a beginner numpy question to Opus because *"matrix"* and *"determinant"* summed past the threshold.)
+- **Loop-position aware** — inside a tool-using session the router asks *where in the loop are we*, not *how hard does this sound*. A turn answering a `tool_result` is a mid-loop step, and those are largely tier-insensitive; a fresh instruction may be synthesis, which is where the top tier earns its cost. This is the one signal with a measurement behind it. Agentic turns never reach Haiku unless `routing.allowHaikuInAgentic: true`.
 - **Auto-retry** — a truncated or refused response escalates one tier and retries.
 - **Auto-fallback** — a rate-limited (429) tier falls back to the next tier up.
-- **Parameter normalization** — the router owns the model, so it adapts model-coupled params to the chosen tier (otherwise a request built for one model 400s on another). Haiku: strips `thinking` and `output_config.effort`. Sonnet/Opus: strips `temperature`/`top_p`/`top_k` and converts a fixed `thinking.budget_tokens` to adaptive thinking. Your `messages`, `system`, `tools`, and `max_tokens` are never touched.
+- **Parameter normalization** — the router owns the model, so it adapts model-coupled params to the chosen tier (otherwise a request built for one model 400s on another). Haiku: strips `thinking` and `output_config.effort`. Sonnet/Opus/Fable: strips `temperature`/`top_p`/`top_k` and converts a fixed `thinking.budget_tokens` to adaptive thinking; Fable additionally rejects *disabled* thinking, so that is dropped too. Your `messages`, `system`, `tools`, and `max_tokens` are never touched.
 
 ### Classification modes
 
 | Mode | Overhead | How it decides |
 |------|----------|----------------|
-| `heuristic` | ~0ms | Rule-based score 0–100 (cognitive verbs, length, code, math/science, tools, images, depth). |
+| `heuristic` | ~0ms | Conjunctive gates on request shape: tool use, loop position, message count, length, code fences, explicit depth markers. |
 | `ai` | one Haiku call (~$0.00004) | Asks Haiku to rate task complexity 1–3. |
-| `hybrid` *(default)* | 0ms, or one Haiku call | Heuristic first; confirms with Haiku only when the score is ambiguous (40–60) or the text yields no signals (e.g. non-English). |
+| `hybrid` *(default)* | 0ms, or one Haiku call | Gates first; asks Haiku only when no gate fired and routing fell through to the default. |
 
-Thresholds: **Haiku** < 30 · **Sonnet** 30–70 · **Opus** > 70 (tunable via `routing`). AI classification is resilient by design — results are cached (LRU 500), calls time out at 1.5s, and any failure falls back to the heuristic, so a Haiku outage never blocks a request.
+Every decision carries a `reason` (e.g. `agentic:mid-loop`), so routing is auditable rather than a number you have to trust. **Fable** is opt-in (`routing.allowFable`) — at $10/$50 an automatic promotion there is the most expensive mistake the router could make, and nothing measured supports predicting it from request text. AI classification is resilient by design — results are cached (LRU 500), calls time out at 1.5s, and any failure falls back to the heuristic, so a Haiku outage never blocks a request.
 
 ---
 

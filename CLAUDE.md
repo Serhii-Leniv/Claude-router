@@ -13,7 +13,7 @@ node --test dist/__tests__/classifier.test.js  # Run single test file (build fir
 
 ## Architecture
 
-**claude-router** is a routing layer that auto-routes Claude API calls to Haiku/Sonnet/Opus by prompt complexity. The routing engine (classifier, cost model, tier fallback, retry/escalation) is the project's own; it builds on `@anthropic-ai/sdk` as the transport to Anthropic (and its Bedrock/Vertex siblings) and stays drop-in compatible with it.
+**claude-router** is a routing layer that auto-routes Claude API calls across Haiku/Sonnet/Opus/Fable by evidence-based gates. The routing engine (classifier, cost model, tier fallback, retry/escalation) is the project's own; it builds on `@anthropic-ai/sdk` as the transport to Anthropic (and its Bedrock/Vertex siblings) and stays drop-in compatible with it.
 
 ```
 ClaudeRouter.send(params)
@@ -28,11 +28,12 @@ ClaudeRouter.send(params)
 
 - `src/types.ts` — All interfaces (Tier, RouterConfig, RoutingTuning, RouteMeta, RoutedMessage, RouterStats, ClassifyInput/Result)
 - `src/models.ts` — Pricing constants, `computeCostCents()`, `computeRouteCost()` (cost + savings for a completed response), tier→model mapping
-- `src/classifier.ts` — Heuristic scoring (0–100 → haiku/sonnet/opus), AI classification via Haiku, hybrid mode, unified `classify()` entry point with LRU cache
+- `src/classifier.ts` — AI classification via Haiku, hybrid mode, unified `classify()` entry point with LRU cache. Tier selection itself lives in `src/routing.ts`
 - `src/cache.ts` — Generic bounded `LruCache` (classification results, per-credential SDK clients)
 - `src/route.ts` — `executeRoute()`: the shared routing-execution kernel (normalize → create → rate-limit walk-up → escalation retry), returns a `RouteResult` (see Retry / escalation)
 - `src/totals.ts` — Shared route-event aggregation: `RouteTotals`, `emptyTotals()`, pure `foldOutcome(acc, e)` over the minimal `RouteOutcomeLike` shape (see Route aggregation)
 - `src/tracker.ts` — CostTracker folds each `RouteMeta` via `foldOutcome` into a `RouteTotals`, maps to `RouterStats` (O(1) memory; no per-call array)
+- `src/routing.ts` — `routeByEvidence()`: gate-based tier selection (see Routing)
 - `src/params.ts` — `normalizeParamsForTier()`: strips/adapts model-specific params to the routed tier (see Parameter normalization)
 - `src/index.ts` — ClaudeRouter class, `createRouter()` factory, re-exports
 
@@ -40,19 +41,33 @@ ClaudeRouter.send(params)
 
 `computeCostCents()` accepts optional prompt-cache tokens (5th param): cache reads bill at `CACHE_READ_RATE` (10%) and writes at `CACHE_WRITE_RATE` (125%) of the input rate. Both routed paths pass `usage.cache_read_input_tokens`/`cache_creation_input_tokens` — omitting them understates every Claude Code cost figure.
 
-Pricing is **family-based**, not per-ID. `priceForModel()` resolves an exact ID match first (so user overrides win), then falls back to the model's family (`familyForModel()` matches on `haiku`/`sonnet`/`opus` substrings). This keeps `savedCents` correct for dated snapshots and Bedrock/Vertex `us.anthropic.*` IDs without a code change. Default tiers (`DEFAULT_MODELS`): haiku→`claude-haiku-4-5`, sonnet→`claude-sonnet-5`, opus→`claude-opus-4-8`. Current generation (`FAMILY_PRICING`, $/1M in/out): Haiku 4.5 $1/$5, Sonnet 5 $3/$15 (standard; intro $2/$10 through 2026-08-31), Opus 4.6–4.8 $5/$25. **Opus is NOT the old $15/$75 — drift here silently corrupts every savings figure.**
+Pricing is **family-based**, not per-ID. `priceForModel()` resolves an exact ID match first (so user overrides win), then falls back to the model's family (`familyForModel()` matches on `haiku`/`sonnet`/`opus`/`fable` substrings). This keeps `savedCents` correct for dated snapshots and Bedrock/Vertex `us.anthropic.*` IDs without a code change. Default tiers (`DEFAULT_MODELS`): haiku→`claude-haiku-4-5`, sonnet→`claude-sonnet-5`, opus→`claude-opus-4-8`, fable→`claude-fable-5`. Current generation (`FAMILY_PRICING`, $/1M in/out): Haiku 4.5 $1/$5, Sonnet 5 $3/$15 (standard; intro $2/$10 through 2026-08-31), Opus 4.6–4.8 $5/$25, Fable 5 $10/$50. **Opus is NOT the old $15/$75 — drift here silently corrupts every savings figure.**
 
-`DEFAULT_PRICING` is assembled as family-derived entries ← spread ← `DIVERGENT_PRICING`. The latter is the exported table of models the family fallback would misprice: legacy Opus 4.0/4.1 (`$15/$75`, 3x the current family rate) and Fable 5 / Mythos 5 (`$10/$50`, no family match at all). Adding a divergent model is one row there — `models.test.ts` derives its exclusion set from the same table, in both directions, so a redundant or missing entry fails the build instead of rotting.
+`DEFAULT_PRICING` is assembled as family-derived entries ← spread ← `DIVERGENT_PRICING`. The latter is the exported table of models the family fallback would misprice: legacy Opus 4.0/4.1 (`$15/$75`, 3x the current family rate) and Mythos 5 (`$10/$50`, no family substring to match). Fable 5 is a tier now, so the family fallback covers it. Adding a divergent model is one row there — `models.test.ts` derives its exclusion set from the same table, in both directions, so a redundant or missing entry fails the build instead of rotting.
 
 **Unpriced models are loud, never free.** A model with no exact entry *and* no family match is not $0 — it's unknown, and the old `if (!p) return 0` collapsed the two (this is what shipped Fable 5 at zero cost). `computeCostCents` stays a pure math function returning 0; `computeRouteCost` — the path every routed call takes — raises the signal: `RouteCost.priced` is false when the routed model, the baseline, or both are unpriced (an unpriced baseline makes `savedCents` just as wrong), plus one `console.warn` per model ID. `priced: false` flows into `RouteMeta`/`RouteEvent` → `foldOutcome` → `RouteTotals.unpricedModels`, which `stats`, the dashboard, and the verbose log render as "unknown" rather than `$0.00`. The field is written **only when false**, so pre-existing `history.jsonl` lines keep counting as measured.
 
-### Classifier
+### Routing (`src/routing.ts`)
 
-Heuristic score 0–100: Haiku (<30), Sonnet (30–70), Opus (>70). All weights live in the exported `HEURISTIC_WEIGHTS` block. Signals: cognitive-verb keywords (word-boundary regex with `s?` plural suffix — NOT substring; "listen" must not match "list"), token estimate (includes tool_result volume via `extraChars`, which deliberately does NOT feed keyword matching), code blocks, math/science keywords+notation, tool_use/tool_result blocks, request-level `tools` count, image blocks, system-prompt length/expert keywords, message count.
+**There is no score.** The additive 0–100 keyword scorer was removed: it let unrelated weak signals sum into an expensive decision (`matrix` +25 and `determinant` +25 reached the Opus threshold on a beginner numpy question, with neither word being evidence of difficulty). Summing was the bug, so no weight tuning could fix it. `routing.test.ts` pins that regression.
 
-Hybrid mode confirms with AI when score is in the band (default 40–60) **or** when `keywordHits === 0 && estimatedTokens >= 20` (signal-poor, e.g. non-English). Both call sites use the unified `classify()` entry (`src/classifier.ts`) — do not reintroduce per-caller switch statements.
+`routeByEvidence(input, opts)` returns `{ tier, reason, confidence }` under three rules:
 
-**AI classifier never throws**: 1.5s `AbortSignal.timeout` + try/catch fall back to `classifyHeuristic()`. Only genuine `method: 'ai'` results are cached (sha1 key over normalized snippet/system/message count/tool count); heuristic fallbacks are recomputed so a transient Haiku outage isn't cached. Tuning knobs (`RouterConfig.routing` / `FileConfig.routing`): `haikuMax`, `opusMin`, `hybridBand`, `aiTimeoutMs`, `classifyCacheSize` — all optional, defaults preserve behavior.
+1. **Sonnet is the default.** Leaving it requires positive evidence — absence of complexity is not evidence of simplicity (`"hi"` routes to sonnet, not haiku).
+2. **Gates are conjunctive.** Every condition must hold, so two coincidental matches cannot combine into a verdict.
+3. **The two traffic profiles are scored separately**, because they expose different signals.
+
+**Agentic branch** (tools defined, or tool blocks in `messages`). The signal is `isMidLoop()` — is the last message a `tool_result`. This is the only routing signal in the codebase with a measurement behind it (`research/2026-07-21-tier-ceiling.md`: mid-loop tool selection is largely tier-insensitive, sonnet adequate 75% with zero clear losses; final synthesis is not, opus won 10 of 11). It is purely structural: no keywords, no language dependence, no verb-without-object failure mode.
+
+**Single-turn branch.** Demotion to haiku requires **all** of: no tools, single message, short task text, no code fence, short system, no images, no depth markers, and a transform verb present. The boundary here is **unmeasured** — the attempt to measure it failed (`research/2026-07-21-single-turn-failed.md`) — so this branch is deliberately conservative rather than tuned. Do not widen the gate without evidence.
+
+**Fable** is opt-in (`allowFable`) and needs depth **and** long-horizon signals together. Nothing measured supports predicting "super hard" from request text, and at $10/$50 a wrong promotion is the most expensive mistake the router can make.
+
+Hybrid mode defers to the AI classifier exactly when no gate fired and routing fell through to the default (`reason` ends with `:default`). Both call sites use the unified `classify()` entry — do not reintroduce per-caller switch statements.
+
+`ClassifyResult.reason` records which gate decided, so a routing decision is auditable after the fact. `routing.haikuMax` / `opusMin` / `hybridBand` are accepted-but-dead config knobs (marked `@deprecated`); they thresholded a score that no longer exists.
+
+**AI classifier never throws**: 1.5s `AbortSignal.timeout` + try/catch fall back to `classifyHeuristic()`. Only genuine `method: 'ai'` results are cached (sha1 key over normalized snippet/system/message count/tool count); heuristic fallbacks are recomputed so a transient Haiku outage isn't cached. Tuning knobs (`RouterConfig.routing` / `FileConfig.routing`): `aiTimeoutMs`, `classifyCacheSize` — optional. `haikuMax`/`opusMin`/`hybridBand` are accepted-but-dead (see Routing).
 
 ### Route aggregation
 
@@ -64,7 +79,7 @@ Hybrid mode confirms with AI when score is in the band (default 40–60) **or** 
 - **Truncation**: `stop_reason === 'max_tokens'` with >20 output tokens → escalate tier
 - **Refusal**: output <200 chars whose first 80 chars match `REFUSAL_PATTERNS` → escalate tier (anchored to the opening so quoted refusal phrases mid-answer don't false-positive)
 
-`nextTier()` walks `TIER_ORDER` (haiku→sonnet→opus). Opus never retries — no higher tier.
+`nextTier()` walks `TIER_ORDER` (haiku→sonnet→opus→fable) but stops at `ESCALATION_CEILING` (opus): fable is 2x opus and the escalation triggers have never fired on real traffic (`research/2026-07-21-detector-measurement.md`: 0 of 35,314 responses). `shouldRetry` gates on the same ceiling — deriving it from `TIER_ORDER.length` silently made opus retryable when fable was added.
 
 `src/route.ts` `executeRoute(client, apiParams, startTier, models, { fallbackOnRateLimit })` is the one place this loop lives — shared by `ClaudeRouter.send` and the proxy `handleNonStreaming`. It normalizes for the tier's model, calls the API, optionally walks up `TIER_ORDER` on a `RateLimitError`, and escalates **once** on truncation/refusal — but only on the originally-classified tier's first response (`!fallbackUsed`), never after a rate-limit walk-up. The library passes `fallbackOnRateLimit: true` (config `fallback`), the proxy `false` (a 429 surfaces to the client). Both then price via `computeRouteCost` and record through their own sink (CostTracker / RouteEvent). Do not re-inline this loop at a caller — the two copies had already drifted on the escalation condition before this was unified. Streaming paths don't use `executeRoute` (no retry once bytes flow).
 

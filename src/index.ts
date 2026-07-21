@@ -308,15 +308,14 @@ export type {
   ClassifyResult,
 } from './types.js';
 
-export {
-  heuristicScore,
-  heuristicScoreDetailed,
-  scoreToTier,
-  scoreToConfidence,
-  classifyHeuristic,
-  classify,
-  HEURISTIC_WEIGHTS,
-} from './classifier.js';
+export { classifyHeuristic, classify } from './classifier.js';
+// Routing is gate-based now. `heuristicScore`, `heuristicScoreDetailed`,
+// `scoreToTier`, `scoreToConfidence` and `HEURISTIC_WEIGHTS` were the additive
+// scorer's surface and are gone — there is no score to expose. Inspect a
+// decision with `routeByEvidence`, which returns the tier, the gate that chose
+// it, and a confidence.
+export { routeByEvidence, isAgentic, isMidLoop } from './routing.js';
+export type { RouteDecision, RoutingOptions } from './routing.js';
 export { shouldRetry, nextTier } from './retry.js';
 export { normalizeParamsForTier } from './params.js';
 export {
