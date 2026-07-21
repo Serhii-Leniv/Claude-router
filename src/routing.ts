@@ -29,6 +29,37 @@ import type { ClassifyInput, Tier } from './types.js';
  *  - Nothing licenses automatic promotion to fable, which is why it is opt-in.
  */
 
+/**
+ * Knobs that thresholded the old additive score. Gate-based routing has no score
+ * to threshold, so they do nothing — but they still parse, which is worse than
+ * failing: a deployment that tuned them keeps loading and silently routes
+ * differently after an upgrade. Say so, once per key per process.
+ *
+ * Warning rather than throwing is deliberate: an upgrade must not take a working
+ * proxy down over a config key that is merely obsolete.
+ */
+const DEAD_ROUTING_KEYS = ['haikuMax', 'opusMin', 'hybridBand'] as const;
+const warnedDeadKeys = new Set<string>();
+
+/** @internal Test hook */
+export function resetDeadRoutingWarnings(): void {
+  warnedDeadKeys.clear();
+}
+
+export function warnDeadRoutingKeys(routing: Record<string, unknown> | undefined): void {
+  if (!routing) return;
+  for (const key of DEAD_ROUTING_KEYS) {
+    if (routing[key] === undefined || warnedDeadKeys.has(key)) continue;
+    warnedDeadKeys.add(key);
+    console.warn(
+      `[claude-router] config: routing.${key} no longer does anything and is ignored. ` +
+        `It thresholded the 0-100 classifier score, which was replaced by evidence-based ` +
+        `gates in 0.2.2 — there is no score to threshold. Routing may differ from what ` +
+        `this config produced before. Remove the key to silence this.`,
+    );
+  }
+}
+
 export interface RouteDecision {
   tier: Tier;
   /** Why this tier — surfaced in logs and the dashboard so routing is auditable. */

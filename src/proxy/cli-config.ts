@@ -1,3 +1,4 @@
+import { warnDeadRoutingKeys } from '../routing.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -166,6 +167,10 @@ export function parseServeArgs(args: string[], file: FileConfig = {}): ServeOpti
       values[spec.key] = coerce(spec, args[++i]);
     }
   }
+
+  // The config file is where these keys actually live for most users, so this
+  // is the call site that matters. Warn after parsing, before the proxy starts.
+  warnDeadRoutingKeys(file.routing as Record<string, unknown> | undefined);
 
   return {
     ...(values as unknown as Omit<ServeOptions, 'tiers' | 'pricing' | 'routing'>),
