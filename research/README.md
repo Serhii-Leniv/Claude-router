@@ -32,6 +32,30 @@ node research/scripts/sample-turns.mjs           # extract turns for head-to-hea
 `sample-turns.mjs` **does** extract conversation content, and is scoped to this
 project's own transcripts for that reason — widen `ROOT` deliberately, not by default.
 
+### Wire capture
+
+Transcripts are **not** a substitute for what Claude Code sends. They store what
+the user typed; the harness injects CLAUDE.md, skill and agent rosters at API-call
+time. Of 444 transcript files for this repo, 6 contain `<system-reminder>` and 2
+contain the CLAUDE.md injection — which is why the 200-turn replay below showed
+197 sonnet / 3 opus and never surfaced #34, where injected text was deciding the
+tier on every request. Two rounds of that bug (#18, #34) shipped for this reason.
+
+```bash
+node research/scripts/record-wire.mjs            # forwards to the real API, records requests
+export ANTHROPIC_BASE_URL=http://127.0.0.1:4200  # then work normally
+node research/scripts/analyze-wire.mjs           # replay the corpus through routeByEvidence
+```
+
+`record-wire.mjs` does **not** route — it records and forwards, so collecting a
+corpus cannot change which model serves real work. The corpus contains full
+prompts, source code and tool output; it is written to `~/.claude-router/wire`,
+outside the repository, and should be deleted after the measurement.
+
+`analyze-wire.mjs` reports **leaks first** — harness text that reached scored task
+text, by channel — because that is the failure mode that has shipped twice, and a
+healthy-looking tier distribution is exactly what it produces.
+
 ## Standing caveats
 
 These apply to every measurement here and are repeated in each document:
