@@ -471,7 +471,10 @@ describe('proxy parameter normalization', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'claude-opus-4-8', // client pins a model; --force-route overrides it
-        messages: [{ role: 'user', content: 'hi' }], // trivial → classifies to haiku
+        // Short, single-turn, mechanical transform — the only shape that clears
+        // the conjunctive haiku gate. ("hi" no longer does: absence of
+        // complexity is not evidence of simplicity.)
+        messages: [{ role: 'user', content: 'translate this to French: hello' }],
         max_tokens: 10,
         thinking: { type: 'adaptive' },
         output_config: { effort: 'high' },
@@ -484,7 +487,9 @@ describe('proxy parameter normalization', () => {
     assert.equal(captured!.model, DEFAULT_MODELS.haiku);
     assert.ok(!('thinking' in captured!), 'adaptive thinking must be stripped for Haiku');
     assert.ok(!('output_config' in captured!), 'effort must be stripped for Haiku');
-    assert.deepEqual(captured!.messages, [{ role: 'user', content: 'hi' }]);
+    assert.deepEqual(captured!.messages, [
+      { role: 'user', content: 'translate this to French: hello' },
+    ]);
   });
 });
 

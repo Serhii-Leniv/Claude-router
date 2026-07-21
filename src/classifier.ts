@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
 import { LruCache } from './cache.js';
+import { routeByEvidence } from './routing.js';
 import type { ClassifyInput, ClassifyResult, Tier } from './types.js';
 
 const SIMPLE_VERBS = [
@@ -330,19 +331,32 @@ export function scoreToConfidence(score: number): number {
   return Math.min(1, Math.abs(score - 50) / 50 + 0.5);
 }
 
+/**
+ * Nominal score per tier, kept only so `RouteMeta.score`, the dashboard, and the
+ * `x-router-*` headers keep reporting a number. Routing no longer flows through
+ * a score — see `routeByEvidence` for why summing signals was the bug.
+ */
+const NOMINAL_SCORE: Record<Tier, number> = {
+  haiku: 15,
+  sonnet: 50,
+  opus: 80,
+  fable: 95,
+};
+
 export function classifyHeuristic(
   input: ClassifyInput,
-  thresholds?: TierThresholds,
+  opts?: ClassifyOptions,
 ): ClassifyResult {
   const start = performance.now();
-  const score = heuristicScore(input);
+  const decision = routeByEvidence(input, opts);
   const ms = performance.now() - start;
   return {
-    tier: scoreToTier(score, thresholds),
-    score,
+    tier: decision.tier,
+    score: NOMINAL_SCORE[decision.tier],
     method: 'heuristic',
     ms: Math.round(ms * 100) / 100,
-    confidence: Math.round(scoreToConfidence(score) * 100) / 100,
+    confidence: decision.confidence,
+    reason: decision.reason,
   };
 }
 
@@ -491,34 +505,31 @@ async function classifyAICached(
   return result;
 }
 
+/**
+ * Confirm with AI only where the gates produced no verdict.
+ *
+ * The old band test ("score between 40 and 60") no longer exists, because there
+ * is no score to sit between thresholds. Its replacement is more direct: a gate
+ * either fired on positive evidence or it did not. When none fired we fell back
+ * to the default tier, and *that* is the case worth spending a Haiku call on.
+ *
+ * This also drops the old `signalPoor` rule (zero keyword hits + enough tokens),
+ * which existed to catch non-English text the keyword lists could not score.
+ * Gates keyed on request shape rather than vocabulary do not have that blind
+ * spot for the structural decisions; where they abstain, the default path below
+ * already routes to AI confirmation.
+ */
 export async function classifyHybrid(
   client: Anthropic,
   input: ClassifyInput,
   haikuModel: string,
   opts?: ClassifyOptions,
 ): Promise<ClassifyResult> {
-  const start = performance.now();
-  const detail = heuristicScoreDetailed(input);
-  const [bandLow, bandHigh] = opts?.hybridBand ?? DEFAULT_HYBRID_BAND;
-
-  // Confirm with AI when the score is ambiguous, or when the text produced no
-  // keyword signals at all (non-English or otherwise unscorable content).
-  const ambiguous = detail.score >= bandLow && detail.score <= bandHigh;
-  const signalPoor =
-    detail.keywordHits === 0 && detail.estimatedTokens >= SIGNAL_POOR_MIN_TOKENS;
-
-  if (ambiguous || signalPoor) {
+  const decision = routeByEvidence(input, opts);
+  if (decision.reason.endsWith(':default')) {
     return classifyAICached(client, input, haikuModel, opts);
   }
-
-  const ms = performance.now() - start;
-  return {
-    tier: scoreToTier(detail.score, opts),
-    score: detail.score,
-    method: 'heuristic',
-    ms: Math.round(ms * 100) / 100,
-    confidence: Math.round(scoreToConfidence(detail.score) * 100) / 100,
-  };
+  return classifyHeuristic(input, opts);
 }
 
 /**

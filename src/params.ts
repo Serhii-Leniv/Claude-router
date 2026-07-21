@@ -12,6 +12,10 @@ import type { Tier } from './types.js';
  *    thinking (`thinking: {type: "adaptive"}`). Accepts sampling params.
  *  - Sonnet 5 / Opus 4.8: reject `temperature` / `top_p` / `top_k` and
  *    `thinking: {type: "enabled", budget_tokens}` — use adaptive thinking instead.
+ *  - Fable 5: as above, and additionally rejects `thinking: {type: "disabled"}`
+ *    — thinking is always on, so the parameter must be omitted rather than
+ *    switched off. A client that disables thinking (common) would otherwise 400
+ *    the moment it is routed here.
  *
  * Only model-coupled parameters are touched. `messages`, `system`, `tools`,
  * `max_tokens`, and everything else pass through unchanged.
@@ -32,19 +36,21 @@ export function normalizeParamsForTier<T extends Record<string, any>>(
       else out['output_config'] = oc;
     }
   } else {
-    // Sonnet 5 / Opus 4.8 reject sampling params and fixed thinking budgets.
+    // Sonnet 5 / Opus 4.8 / Fable 5 reject sampling params and fixed budgets.
     delete out['temperature'];
     delete out['top_p'];
     delete out['top_k'];
     const thinking = out['thinking'];
-    if (
-      thinking &&
-      typeof thinking === 'object' &&
-      thinking.type === 'enabled'
-    ) {
-      const next: Record<string, unknown> = { type: 'adaptive' };
-      if (thinking.display !== undefined) next['display'] = thinking.display;
-      out['thinking'] = next;
+    if (thinking && typeof thinking === 'object') {
+      if (thinking.type === 'enabled') {
+        const next: Record<string, unknown> = { type: 'adaptive' };
+        if (thinking.display !== undefined) next['display'] = thinking.display;
+        out['thinking'] = next;
+      } else if (tier === 'fable' && thinking.type === 'disabled') {
+        // Thinking cannot be switched off on Fable; omitting the parameter is
+        // the documented way to express "leave it alone".
+        delete out['thinking'];
+      }
     }
   }
 

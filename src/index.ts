@@ -57,6 +57,7 @@ function resolveConfig(config: RouterConfig): ResolvedConfig {
     haiku: config.tiers?.haiku ?? DEFAULT_MODELS.haiku,
     sonnet: config.tiers?.sonnet ?? DEFAULT_MODELS.sonnet,
     opus: config.tiers?.opus ?? DEFAULT_MODELS.opus,
+    fable: config.tiers?.fable ?? DEFAULT_MODELS.fable,
   };
 
   return {

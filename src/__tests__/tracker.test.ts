@@ -28,7 +28,7 @@ describe('CostTracker', () => {
     assert.equal(stats.callCount, 0);
     assert.equal(stats.totalCostCents, 0);
     assert.equal(stats.totalSavedCents, 0);
-    assert.deepEqual(stats.tierBreakdown, { haiku: 0, sonnet: 0, opus: 0 });
+    assert.deepEqual(stats.tierBreakdown, { haiku: 0, sonnet: 0, opus: 0, fable: 0 });
     assert.deepEqual(stats.unpricedModels, {});
   });
 
@@ -107,7 +107,7 @@ describe('CostTracker — volume', () => {
     assert.equal(first.callCount, 10_000);
     assert.equal(first.totalCostCents, 1000);
     assert.equal(first.totalSavedCents, 500);
-    assert.deepEqual(first.tierBreakdown, { haiku: 5000, sonnet: 0, opus: 5000 });
+    assert.deepEqual(first.tierBreakdown, { haiku: 5000, sonnet: 0, opus: 5000, fable: 0 });
     assert.deepEqual(second, first);
   });
 });

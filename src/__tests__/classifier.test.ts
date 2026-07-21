@@ -300,14 +300,26 @@ describe('classifyHybrid', () => {
     assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 1);
   });
 
-  it('respects a custom hybrid band', async () => {
+  // The score band is gone: there is no score for a request to sit between two
+  // thresholds. Hybrid now spends a Haiku call exactly when no gate fired on
+  // positive evidence and routing fell through to the default tier.
+  it('does not call the AI when a gate fired on positive evidence', async () => {
     const client = mockClient('2');
-    const input = makeInput('translate hello'); // clear haiku score, outside default band
-    const score = heuristicScore(input);
-    await classifyHybrid(client, input, 'claude-haiku-4-5-20251001', {
-      hybridBand: [Math.max(0, score - 1), score + 1],
-    });
+    // Short single-turn mechanical transform — the haiku gate fires outright.
+    await classifyHybrid(client, makeInput('translate hello'), 'claude-haiku-4-5-20251001');
+    assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 0);
+  });
+
+  it('calls the AI when every gate abstained and routing fell back to the default', async () => {
+    const client = mockClient('2');
+    // Neither simple enough to demote nor explicitly deep enough to promote.
+    const r = await classifyHybrid(
+      client,
+      makeInput('take a look at the invoice module and tell me what you think'),
+      'claude-haiku-4-5-20251001',
+    );
     assert.equal((client.messages.create as unknown as ReturnType<typeof mock.fn>).mock.calls.length, 1);
+    assert.equal(r.method, 'ai');
   });
 });
 
@@ -562,19 +574,25 @@ describe('classifier — custom thresholds honored in AI paths (G2/G3)', () => {
     assert.equal((await classify(mockClient('3'), makeInput('t'), 'ai', 'h')).tier, 'opus');
   });
 
-  it('AI-failure fallback preserves custom thresholds (G3)', async () => {
+  it('AI-failure fallback lands on the gate verdict, not on a hardcoded tier', async () => {
+    // `haikuMax`/`opusMin` were score thresholds and no longer have anything to
+    // threshold — routing is gate-based. What still matters is that an AI outage
+    // degrades to the same decision the heuristic path would have made, rather
+    // than to a fixed default.
     const client = { messages: { create: mock.fn(async () => { throw new Error('down'); }) } } as unknown as Anthropic;
-    // An input scoring in (38, 70]: default → sonnet, but opusMin=38 → opus.
-    const input = makeInput('please explain this concept clearly to everyone');
-    const score = heuristicScoreDetailed(input).score;
-    assert.ok(score > 38 && score <= 70, `guard: score ${score} must be in (38,70]`);
 
-    const dflt = await classify(client, input, 'ai', 'claude-haiku-4-5-20251001', {});
-    assert.equal(dflt.tier, 'sonnet');
-    assert.equal(dflt.method, 'heuristic'); // fell back
+    const deep = await classify(
+      client,
+      makeInput('architect a payment system and prove correctness under partition'),
+      'ai',
+      'claude-haiku-4-5-20251001',
+    );
+    assert.equal(deep.method, 'heuristic', 'fell back');
+    assert.equal(deep.tier, 'opus', 'an explicit depth request still promotes');
 
-    const tuned = await classify(client, input, 'ai', 'claude-haiku-4-5-20251001', { opusMin: 38 });
-    assert.equal(tuned.tier, 'opus', 'fallback must honor the custom opusMin');
+    const trivial = await classify(client, makeInput('translate hello to French'), 'ai', 'claude-haiku-4-5-20251001');
+    assert.equal(trivial.method, 'heuristic');
+    assert.equal(trivial.tier, 'haiku', 'a mechanical transform still demotes');
   });
 });
 
@@ -653,8 +671,12 @@ describe('Strategy 1 — task-scored routing + capped harness + agentic floor', 
       'heuristic',
       'claude-haiku-4-5',
     );
+    // Sonnet is now reached by the agentic gate itself rather than by flooring a
+    // haiku verdict after the fact, so `floored` is no longer set on this path.
+    // The guarantee that matters — an agentic turn never silently reaches haiku —
+    // is unchanged, and the reason records which gate decided it.
     assert.equal(r.tier, 'sonnet');
-    assert.equal(r.floored, true);
+    assert.equal(r.reason, 'agentic:default');
   });
 
   it('an in-flight tool_result (no request-level tools) marks the session agentic and floors haiku→sonnet', async () => {
@@ -669,8 +691,9 @@ describe('Strategy 1 — task-scored routing + capped harness + agentic floor', 
       'heuristic',
       'claude-haiku-4-5',
     );
+    // Last message is a tool_result, so this is the measured mid-loop case.
     assert.equal(r.tier, 'sonnet');
-    assert.equal(r.floored, true);
+    assert.equal(r.reason, 'agentic:mid-loop');
   });
 
   it('allowHaikuInAgentic opts out of the floor', async () => {
