@@ -17,6 +17,7 @@ export class CostTracker {
       callCount: t.requests,
       // Public shape always carries all three tiers, zero-filled.
       tierBreakdown: tierBreakdown(t, TIER_ORDER),
+      unpricedModels: { ...t.unpricedModels },
     };
   }
 

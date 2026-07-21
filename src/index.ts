@@ -127,7 +127,7 @@ export class ClaudeRouter {
     retried: boolean = false,
     retryReason: string | null = null,
   ): RouteMeta {
-    const { costCents, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens } =
+    const { costCents, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens, priced } =
       computeRouteCost(model, usage, this.config.defaultModel, this.config.pricing);
 
     return {
@@ -139,6 +139,9 @@ export class ClaudeRouter {
       cacheCreationTokens,
       costCents,
       savedCents,
+      // Only carried when false — absent means priced, which keeps the common
+      // record (and the proxy's JSONL line built from the same shape) lean.
+      ...(priced ? {} : { priced: false as const }),
       classifierMethod: classifyResult.method,
       classifierMs: classifyResult.ms,
       fallbackUsed,
@@ -154,13 +157,19 @@ export class ClaudeRouter {
     const fallbackNote = meta.fallbackUsed
       ? `, fallback from ${classifyResult.tier}`
       : '';
-    const saved =
-      meta.savedCents >= 0
-        ? `saved: $${(meta.savedCents / 100).toFixed(4)}`
-        : `extra: $${(Math.abs(meta.savedCents) / 100).toFixed(4)}`;
+    // An unpriced model has no cost figure to report — printing "$0.0000" here
+    // is exactly the lie this signal exists to stop.
+    const money =
+      meta.priced === false
+        ? `cost: unknown (no pricing for ${meta.model})`
+        : `cost: $${(meta.costCents / 100).toFixed(4)} | ${
+            meta.savedCents >= 0
+              ? `saved: $${(meta.savedCents / 100).toFixed(4)}`
+              : `extra: $${(Math.abs(meta.savedCents) / 100).toFixed(4)}`
+          } vs ${this.config.defaultModel}`;
 
     console.log(
-      `[claude-router] → ${meta.tier} (${meta.classifierMethod}, ${meta.classifierMs}ms${fallbackNote}) | cost: $${(meta.costCents / 100).toFixed(4)} | ${saved} vs ${this.config.defaultModel}`,
+      `[claude-router] → ${meta.tier} (${meta.classifierMethod}, ${meta.classifierMs}ms${fallbackNote}) | ${money}`,
     );
   }
 
