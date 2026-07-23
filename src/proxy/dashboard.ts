@@ -1,4 +1,5 @@
 import { emptyTotals, foldOutcome, tierBreakdown } from '../totals.js';
+import { savedCentsDisplay } from './format.js';
 import type { RouteEvent } from './handler.js';
 import type { LifetimeStats } from './history.js';
 
@@ -118,16 +119,20 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
       <div class="label">Auto-retried</div>
       <div class="value">${retried}</div>
     </div>
-    ${lifetime ? `
+    ${lifetime ? (() => {
+      const d = savedCentsDisplay(lifetime.savedCents);
+      const toneClass = d.tone === 'neutral' ? '' : d.tone;
+      return `
     <div class="stat-card">
       <div class="label">Lifetime Saved</div>
-      <div class="value green">$${(lifetime.savedCents / 100).toFixed(2)}</div>
+      <div class="value${toneClass ? ` ${toneClass}` : ''}">${d.text}</div>
       ${lifetimeUnpriced}
     </div>
     <div class="stat-card">
       <div class="label">Lifetime Requests</div>
       <div class="value blue">${lifetime.requests}</div>
-    </div>` : ''}
+    </div>`;
+    })() : ''}
   </div>
 
   <div class="tier-bar">

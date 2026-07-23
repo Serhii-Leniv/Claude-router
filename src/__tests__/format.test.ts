@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatSavedCents } from '../proxy/format.js';
+import { formatSavedCents, savedCentsDisplay } from '../proxy/format.js';
 
 describe('formatSavedCents', () => {
   it('renders a neutral zero for sub-cent amounts (no signed zero) — #38', () => {
@@ -19,5 +19,28 @@ describe('formatSavedCents', () => {
     assert.equal(formatSavedCents(123, true), 'saved $1.23');
     assert.equal(formatSavedCents(-123, true), 'extra $1.23');
     assert.equal(formatSavedCents(-0.2, true), '$0.00');
+  });
+});
+
+describe('savedCentsDisplay', () => {
+  it('collapses sub-cent amounts to a neutral zero regardless of sign — #38', () => {
+    assert.deepEqual(savedCentsDisplay(-0.2), { text: '$0.00', tone: 'neutral' });
+    assert.deepEqual(savedCentsDisplay(0.2), { text: '$0.00', tone: 'neutral' });
+    assert.deepEqual(savedCentsDisplay(0), { text: '$0.00', tone: 'neutral' });
+  });
+
+  it('reports a clear saving as positive', () => {
+    assert.deepEqual(savedCentsDisplay(123), { text: '$1.23', tone: 'positive' });
+  });
+
+  it('reports a clear loss as negative with a signed amount', () => {
+    assert.deepEqual(savedCentsDisplay(-123), { text: '-$1.23', tone: 'negative' });
+    assert.deepEqual(savedCentsDisplay(-1), { text: '-$0.01', tone: 'negative' });
+  });
+
+  it('supports the saved/extra label', () => {
+    assert.deepEqual(savedCentsDisplay(123, true), { text: 'saved $1.23', tone: 'positive' });
+    assert.deepEqual(savedCentsDisplay(-123, true), { text: 'extra $1.23', tone: 'negative' });
+    assert.deepEqual(savedCentsDisplay(-0.2, true), { text: '$0.00', tone: 'neutral' });
   });
 });
