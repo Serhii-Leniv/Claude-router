@@ -23,6 +23,6 @@ jobs:
             A few things while you're here:
             - CI runs automatically on your PR — no maintainer approval needed. It builds and runs the full suite on Linux/macOS/Windows across Node 20/22/24.
             - Reviewers will look for a **test** covering the change and, if it's user-visible, a line under `## [Unreleased]` in `CHANGELOG.md`.
-            - [CONTRIBUTING.md](https://github.com/Serhii-Leniv/Claude-router/blob/master/CONTRIBUTING.md) has the full workflow; `CLAUDE.md` is the architecture deep-dive.
+            - [CONTRIBUTING.md](https://github.com/Serhii-Leniv/claude-router/blob/master/CONTRIBUTING.md) has the full workflow; `CLAUDE.md` is the architecture deep-dive.
 
             A maintainer will review soon. Questions welcome — just comment on the PR.
