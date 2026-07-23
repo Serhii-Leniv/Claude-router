@@ -277,7 +277,10 @@ async function cmdStatus(args: string[]): Promise<void> {
   // --port here can reach it; a background daemon records its port, so prefer
   // that over the default when the user did not pin one (#39).
   const portFromFlag = args.includes('--port') || args.includes('-p');
-  const check = resolveStatusPort(options.port, portFromFlag, state);
+  // Only a live daemon's recorded port is evidence; a stale record must not
+  // steer the probe away from the port the user actually configured.
+  const daemon = state && isProcessAlive(state.pid) ? state : null;
+  const check = resolveStatusPort(options.port, portFromFlag, daemon);
   const health = await checkHealth(check.port);
 
   if (!health) {
