@@ -254,7 +254,7 @@ function cmdStats(args: string[]): void {
     return;
   }
 
-  if (stats.requests === 0) {
+  if (stats.requests === 0 && stats.errors === 0) {
     console.log(term.dim('No routing history yet — savings are recorded once requests flow through the proxy.'));
     return;
   }
@@ -271,6 +271,12 @@ function cmdStats(args: string[]): void {
     ['Auto-retried', String(stats.retried)],
     ['Tiers', tierLine || term.dim('none')],
   ];
+
+  // Mid-flight failures (e.g. a stream that died after headers went out) are
+  // counted apart from the money figures — shown only when there are any.
+  if (stats.errors > 0) {
+    rows.push(['Errors', term.red(String(stats.errors))]);
+  }
 
   // The totals above exclude every unpriced call. Saying so is the difference
   // between "we saved little" and "we can't tell you what we saved".

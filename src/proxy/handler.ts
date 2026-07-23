@@ -58,6 +58,12 @@ export interface RouteEvent {
    * before this field existed must keep counting as measured.
    */
   priced?: boolean;
+  /**
+   * Set when the request failed mid-flight (stream died after headers were
+   * sent). `foldOutcome` counts such events only toward `RouteTotals.errors` —
+   * their zeros are placeholders, not measurements.
+   */
+  error?: string;
 }
 
 const MAX_HISTORY = 1000;
@@ -364,19 +370,34 @@ async function handleNonStreaming(
 
     return new Response(JSON.stringify(result.response), { status: 200, headers });
   } catch (err) {
-    // Catch Anthropic API errors from any provider SDK (instanceof fails cross-bundle)
-    if (err instanceof Anthropic.APIError || (err instanceof Error && 'status' in err && typeof (err as { status: unknown }).status === 'number')) {
-      const status = (err as { status: number }).status;
-      return c.json({ error: { type: 'api_error', message: err.message } }, status as 400);
-    }
-    // Non-API SDK errors (e.g. the client-side non-streaming timeout guard) are
-    // AnthropicError without a status. Return a clean error instead of letting it
-    // throw uncaught — that surfaced as an opaque 500 and leaked the connection.
-    if (err instanceof Anthropic.AnthropicError) {
-      return c.json({ error: { type: 'proxy_error', message: err.message } }, 500);
-    }
-    throw err;
+    return apiErrorResponse(c, err);
   }
+}
+
+/**
+ * Map an upstream/SDK error to a clean HTTP response — shared by the
+ * non-streaming path and the pre-stream phase of the streaming path, so an auth
+ * or validation failure gets the same status code whether or not the client
+ * asked to stream. Rethrows anything it doesn't recognize.
+ */
+function apiErrorResponse(c: Context, err: unknown): Response {
+  // Catch Anthropic API errors from any provider SDK (instanceof fails cross-bundle).
+  // Gate on a numeric status: a connection failure is APIError-shaped but carries
+  // status undefined, and passing that to c.json would silently produce a 200.
+  if (err instanceof Error && 'status' in err && typeof (err as { status: unknown }).status === 'number') {
+    const status = (err as { status: number }).status;
+    return c.json({ error: { type: 'api_error', message: err.message } }, status as 400);
+  }
+  if (err instanceof Anthropic.APIConnectionError) {
+    return c.json({ error: { type: 'proxy_error', message: `Failed to reach upstream: ${err.message}` } }, 502);
+  }
+  // Non-API SDK errors (e.g. the client-side non-streaming timeout guard) are
+  // AnthropicError without a status. Return a clean error instead of letting it
+  // throw uncaught — that surfaced as an opaque 500 and leaked the connection.
+  if (err instanceof Anthropic.AnthropicError) {
+    return c.json({ error: { type: 'proxy_error', message: err.message } }, 500);
+  }
+  throw err;
 }
 
 async function handleStreaming(
@@ -389,10 +410,24 @@ async function handleStreaming(
   config: HandlerConfig,
   anthropicBeta?: string,
 ): Promise<Response> {
-  const stream = client.messages.stream(
-    normalizeParamsForTier({ ...apiParams, model }, tier) as Anthropic.MessageStreamParams,
-    betaRequestOptions(anthropicBeta),
-  );
+  // Pre-stream phase: everything before the Response is committed. The SDK
+  // rarely throws synchronously; the real pre-stream failures (401 auth,
+  // 400 validation) surface on the first iterator pull — awaiting it here,
+  // before any headers go out, lets them map to proper HTTP statuses exactly
+  // like the non-streaming path instead of a `200 OK` carrying an error frame.
+  let stream: ReturnType<Anthropic['messages']['stream']>;
+  let iterator: AsyncIterator<Anthropic.MessageStreamEvent>;
+  let first: IteratorResult<Anthropic.MessageStreamEvent>;
+  try {
+    stream = client.messages.stream(
+      normalizeParamsForTier({ ...apiParams, model }, tier) as Anthropic.MessageStreamParams,
+      betaRequestOptions(anthropicBeta),
+    );
+    iterator = stream[Symbol.asyncIterator]();
+    first = await iterator.next();
+  } catch (err) {
+    return apiErrorResponse(c, err);
+  }
 
   const headers = new Headers({
     'content-type': 'text/event-stream',
@@ -410,7 +445,8 @@ async function handleStreaming(
   const readable = new ReadableStream({
     async start(controller) {
       try {
-        for await (const event of stream) {
+        for (let r = first; !r.done; r = await iterator.next()) {
+          const event = r.value;
           const data = `event: ${(event as { type: string }).type}\ndata: ${JSON.stringify(event)}\n\n`;
           controller.enqueue(encoder.encode(data));
         }
@@ -442,8 +478,31 @@ async function handleStreaming(
 
         controller.close();
       } catch (err) {
+        // Headers are long gone — an SSE error frame is the only signal the
+        // client can still receive. But the failure must not vanish from the
+        // proxy's own books: record it so history/stats count it as an error
+        // rather than showing nothing (or a $0.00 "success").
         const errorData = `event: error\ndata: ${JSON.stringify({ error: { message: String(err) } })}\n\n`;
         controller.enqueue(encoder.encode(errorData));
+        if (config.verbose) {
+          console.error(
+            `${term.dim('[claude-router]')} ${term.red('stream error')} → ${tier} (${model}): ${String(err)}`,
+          );
+        }
+        recordEvent({
+          timestamp: new Date().toISOString(),
+          tier,
+          model,
+          costCents: 0,
+          savedCents: 0,
+          confidence: classifyResult.confidence,
+          classifier: classifyResult.method,
+          retried: false,
+          retryReason: null,
+          inputTokens: 0,
+          outputTokens: 0,
+          error: String(err).slice(0, 200),
+        }, config);
         controller.close();
       }
     },

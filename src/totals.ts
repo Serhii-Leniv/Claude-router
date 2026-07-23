@@ -15,6 +15,13 @@ export interface RouteTotals {
   costCents: number;
   savedCents: number;
   retried: number;
+  /**
+   * Requests that failed mid-flight (e.g. a stream died after headers were
+   * sent). Counted here and nowhere else: an errored event has no usable cost
+   * or tier outcome, and folding its placeholder zeros into the money figures
+   * would present a failure as a $0.00 success.
+   */
+  errors: number;
   /** Count per tier label (may include 'passthrough'); only seen labels appear. */
   tiers: Record<string, number>;
   /** Per-day aggregates keyed by YYYY-MM-DD; empty when events carry no timestamp. */
@@ -47,6 +54,8 @@ export interface RouteOutcomeLike {
    * and treating them as unpriced would retroactively void every past total.
    */
   priced?: boolean;
+  /** Set when the request failed mid-flight; the event counts only toward `errors`. */
+  error?: string;
 }
 
 export function emptyTotals(): RouteTotals {
@@ -55,6 +64,7 @@ export function emptyTotals(): RouteTotals {
     costCents: 0,
     savedCents: 0,
     retried: 0,
+    errors: 0,
     tiers: {},
     byDay: {},
     unpricedModels: {},
@@ -78,6 +88,10 @@ export function tierBreakdown<L extends string>(
 
 /** Fold one route outcome into a running total, in place. */
 export function foldOutcome(acc: RouteTotals, e: RouteOutcomeLike): void {
+  if (e.error) {
+    acc.errors++;
+    return;
+  }
   acc.requests++;
   acc.costCents += e.costCents;
   acc.savedCents += e.savedCents;
