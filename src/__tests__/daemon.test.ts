@@ -10,6 +10,8 @@ import {
   clearDaemonState,
   isProcessAlive,
   readDaemonState,
+  resolveStatusPort,
+  stoppedStatusDetail,
   writeDaemonState,
 } from '../proxy/daemon.js';
 import { createProxyApp } from '../proxy/server.js';
@@ -38,6 +40,55 @@ describe('daemon state file', () => {
     fs.writeFileSync(paths.daemonStateFile, 'not json', 'utf8');
     assert.equal(readDaemonState(paths), null);
     fs.rmSync(home, { recursive: true, force: true });
+  });
+});
+
+describe('resolveStatusPort — #39', () => {
+  it('falls back to the resolved default when there is no daemon state', () => {
+    assert.deepEqual(resolveStatusPort(4000, false, null), { port: 4000, source: 'default' });
+  });
+
+  it('prefers the daemon-recorded port over a free default', () => {
+    // The bug: a daemon on 4300 is invisible because status only probed 4000.
+    assert.deepEqual(
+      resolveStatusPort(4000, false, { port: 4300 }),
+      { port: 4300, source: 'daemon' },
+    );
+  });
+
+  it('stays on the resolved port when daemon.json agrees with it', () => {
+    assert.deepEqual(
+      resolveStatusPort(4300, false, { port: 4300 }),
+      { port: 4300, source: 'default' },
+    );
+  });
+
+  it('honours an explicit --port over the daemon-recorded port', () => {
+    // Flags always win: the user asked about 5000, so probe 5000.
+    assert.deepEqual(
+      resolveStatusPort(5000, true, { port: 4300 }),
+      { port: 5000, source: 'flag' },
+    );
+  });
+
+  it('reports an explicit --port as its own source with no state', () => {
+    assert.deepEqual(resolveStatusPort(5000, true, null), { port: 5000, source: 'flag' });
+  });
+});
+
+describe('stoppedStatusDetail — #39', () => {
+  it('names daemon.json as the source for a daemon-recorded port', () => {
+    const detail = stoppedStatusDetail({ port: 4300, source: 'daemon' });
+    assert.equal(detail, 'no proxy on port 4300 (from daemon.json)');
+  });
+
+  it('hints at --port when only the default was checked', () => {
+    const detail = stoppedStatusDetail({ port: 4000, source: 'default' });
+    assert.equal(detail, 'no proxy on port 4000 — pass --port if it is running elsewhere');
+  });
+
+  it('drops the hint when the user already named the port', () => {
+    assert.equal(stoppedStatusDetail({ port: 5000, source: 'flag' }), 'no proxy on port 5000');
   });
 });
 

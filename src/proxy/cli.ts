@@ -26,7 +26,9 @@ import {
   checkHealth,
   isProcessAlive,
   readDaemonState,
+  resolveStatusPort,
   startDaemon,
+  stoppedStatusDetail,
   stopDaemon,
   writeDaemonState,
 } from './daemon.js';
@@ -270,11 +272,19 @@ async function cmdRestart(args: string[]): Promise<void> {
 
 async function cmdStatus(args: string[]): Promise<void> {
   const options = resolveOptions(args);
-  const health = await checkHealth(options.port);
   const state = readDaemonState(paths);
+  // A foreground `start --port` writes no daemon.json, so only an explicit
+  // --port here can reach it; a background daemon records its port, so prefer
+  // that over the default when the user did not pin one (#39).
+  const portFromFlag = args.includes('--port') || args.includes('-p');
+  // Only a live daemon's recorded port is evidence; a stale record must not
+  // steer the probe away from the port the user actually configured.
+  const daemon = state && isProcessAlive(state.pid) ? state : null;
+  const check = resolveStatusPort(options.port, portFromFlag, daemon);
+  const health = await checkHealth(check.port);
 
   if (!health) {
-    console.log(`${term.fail()} ${term.bold('stopped')} ${term.dim(`(no proxy on port ${options.port})`)}`);
+    console.log(`${term.fail()} ${term.bold('stopped')} ${term.dim(`(${stoppedStatusDetail(check)})`)}`);
     if (state && !isProcessAlive(state.pid)) {
       console.log(term.dim(`  stale daemon state found (pid ${state.pid} is gone)`));
     }
@@ -285,15 +295,15 @@ async function cmdStatus(args: string[]): Promise<void> {
 
   const rows: Array<[string, string]> = [
     ['Status', `${term.green('running')}${state ? term.dim(` (pid ${state.pid})`) : ''}`],
-    ['URL', `http://localhost:${options.port}`],
-    ['Dashboard', `http://localhost:${options.port}/dashboard`],
+    ['URL', `http://localhost:${check.port}`],
+    ['Dashboard', `http://localhost:${check.port}/dashboard`],
     ['Provider', health.provider],
     ['Classifier', health.classifier],
     ['Force-route', health.forceRoute ? term.green('on') : term.dim('off')],
     ['Requests', String(health.requests)],
     ['Last tier', health.lastTier ? term.tier(health.lastTier) : term.dim('none')],
     ['Autostart', isAutostartRegistered(paths) ? term.green('registered') : term.dim('not registered')],
-    ['Env var', isEnvVarSet(options.port) ? term.green('set') : term.dim('not set')],
+    ['Env var', isEnvVarSet(check.port) ? term.green('set') : term.dim('not set')],
   ];
   console.log('\n' + term.box('claude-router status', rows) + '\n');
 }

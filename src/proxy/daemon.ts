@@ -34,6 +34,53 @@ export function clearDaemonState(paths: RouterPaths = routerPaths()): void {
   }
 }
 
+export type StatusPortSource = 'flag' | 'daemon' | 'default';
+
+export interface StatusPortCheck {
+  port: number;
+  source: StatusPortSource;
+}
+
+/**
+ * Decide which port `status` should probe, and where that port came from.
+ *
+ * `status` used to check only the resolved port — a `--port` flag, else the
+ * config value or the default 4000 — and report "stopped" from a free default
+ * even while a daemon served traffic on another port recorded in daemon.json
+ * (#39). When the user did not pin a port with `--port` and daemon.json records
+ * a different one, prefer the daemon's recorded port so a running non-default
+ * daemon is actually found. An explicit `--port` always wins, matching the
+ * "flags always win" rule the rest of the CLI follows.
+ */
+export function resolveStatusPort(
+  resolvedPort: number,
+  portFromFlag: boolean,
+  state: Pick<DaemonState, 'port'> | null,
+): StatusPortCheck {
+  if (!portFromFlag && state && state.port !== resolvedPort) {
+    return { port: state.port, source: 'daemon' };
+  }
+  return { port: resolvedPort, source: portFromFlag ? 'flag' : 'default' };
+}
+
+/**
+ * Plain-text account of what `status` actually checked when nothing responded,
+ * so the report is a claim about a specific port rather than about the service
+ * (#39). A daemon-recorded port names daemon.json as its source; a bare default
+ * adds the `--port` hint, since the proxy may simply be listening elsewhere; an
+ * explicit `--port` needs no hint — the user already named the port.
+ */
+export function stoppedStatusDetail(check: StatusPortCheck): string {
+  switch (check.source) {
+    case 'daemon':
+      return `no proxy on port ${check.port} (from daemon.json)`;
+    case 'flag':
+      return `no proxy on port ${check.port}`;
+    default:
+      return `no proxy on port ${check.port} — pass --port if it is running elsewhere`;
+  }
+}
+
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
