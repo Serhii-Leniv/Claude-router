@@ -119,7 +119,8 @@ src/proxy/
   dashboard.ts  — HTML dashboard; aggregates routeHistory via foldOutcome (src/totals.ts)
   cli.ts        — CLI dispatcher + commands; bin name `claude-router` (package.json `bin`)
   cli-config.ts — paths (routerPaths), FileConfig loading; one `OPTIONS` table drives parseServeArgs / serveArgsFrom / configFromOptions (see Serve options); getVersion, suggestCommand
-  daemon.ts     — detached-spawn daemon, ~/.claude-router/daemon.json state, health polling, stopDaemon; rotateLogIfNeeded (proxy.log → proxy.log.old at 10MB, only between daemon runs — never rotate under a live writer)
+  daemon.ts     — detached-spawn daemon, ~/.claude-router/daemon.json state, health polling, stopDaemon; calls rotateLogIfLarge at start
+  log-rotate.ts — rotateLogIfLarge (proxy.log → proxy.log.1 at 5 MiB, only between daemon runs — never rotate under a live writer; #49)
   platform.ts   — per-OS autostart/env-var behind PlatformIntegration adapters (windows/macos/linux) + platformIntegration() selector; pure builders + cross-platform statusline stay outside the adapters; exported functions are thin delegators (see Platform integration)
   term.ts       — zero-dep ANSI styling (Claude Code aesthetic), tier colors, box(), NO_COLOR/TTY detection
   format.ts     — `formatSavedCents()`: the one place a saved/extra figure becomes text. An amount that rounds away renders as a neutral, unlabelled `$0.00` — never green `saved $0.00`, because a sub-cent loss is not a saving (same principle as unpriced models being loud rather than free)

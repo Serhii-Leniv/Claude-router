@@ -31,8 +31,9 @@ Production-hardening release from a full three-angle audit (core library, proxy/
 
 ### Added
 - **`RouterConfig.logger`** — inject a warn sink (or `{ warn: () => {} }` to silence) for the library's warnings (unpriced models, dead config keys); embedders no longer get unconditional `console.warn` from library code. Default behavior unchanged.
-- **`proxy.log` rotation** — rotates to `proxy.log.old` at 10 MB on daemon start; `logs` reads a bounded tail (256 KB) instead of the whole file into memory, and `logs -f` survives rotation instead of silently going quiet. `history.jsonl` is deliberately never rotated (it is the lifetime-savings ledger; archive it anytime — stats restart from zero, with a one-time nudge past 100 MB).
+- **`proxy.log` rotation** — rolls over to `proxy.log.1` at 5 MiB on daemon start ([#49](https://github.com/Serhii-Leniv/claude-router/pull/49), thanks @Nitjsefnie); `logs` reads a bounded tail (256 KB) instead of the whole file into memory, and `logs -f` survives rotation instead of silently going quiet. `history.jsonl` is deliberately never rotated (it is the lifetime-savings ledger; archive it anytime — stats restart from zero, with a one-time nudge past 100 MB).
 - **Graceful shutdown** — SIGINT/SIGTERM close the server with a capped drain (POSIX + Ctrl+C everywhere; Windows `TerminateProcess` remains abrupt by design, with nothing to flush).
+- **Dashboard restyle** — new dark theme with live tier bars and card layout, building on the sign-correct savings cards: the lifetime card no longer renders a negative total as hardcoded green `$-0.00` ([#46](https://github.com/Serhii-Leniv/claude-router/pull/46)) and the Session Saved card keeps its 4-decimal precision with the same sign/tone rules ([#48](https://github.com/Serhii-Leniv/claude-router/pull/48), both thanks @Nitjsefnie).
 - Dedicated tests for `executeRoute`, the CLI server-bind path, log rotation/tail reads, and the streaming failure modes (driven over real sockets).
 
 ### Known limitations (deferred, low severity)
