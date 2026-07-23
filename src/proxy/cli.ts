@@ -383,23 +383,50 @@ function cmdLogs(args: string[]): void {
     return;
   }
 
-  const printTail = (fromSize = 0): number => {
-    const content = fs.readFileSync(paths.logFile, 'utf8');
-    if (fromSize === 0) {
-      const tail = content.split('\n').slice(-lines - 1).join('\n');
-      process.stdout.write(tail.endsWith('\n') ? tail : tail + '\n');
-    } else if (content.length > fromSize) {
-      process.stdout.write(content.slice(fromSize));
-    }
-    return content.length;
-  };
+  const initial = readLogTail(paths.logFile, null);
+  const tail = initial.text.split('\n').slice(-lines - 1).join('\n');
+  if (tail) process.stdout.write(tail.endsWith('\n') ? tail : tail + '\n');
 
-  let size = printTail();
+  let size = initial.size;
   if (follow) {
     console.log(term.dim('— following (ctrl+c to exit) —'));
     fs.watchFile(paths.logFile, { interval: 500 }, () => {
-      size = printTail(size);
+      const next = readLogTail(paths.logFile, size);
+      if (next.text) process.stdout.write(next.text);
+      size = next.size;
     });
+  }
+}
+
+/**
+ * Bounded read of a log file's tail — never the whole file into memory.
+ * `fromByte: null` reads the last `maxBytes` (initial tail); a number reads
+ * `[fromByte, EOF)` (follow mode). A file that shrank under us (rotation)
+ * resets to a fresh tail instead of silently going quiet, which is what the
+ * old length-comparison follow loop did. Exported for tests.
+ */
+export function readLogTail(
+  file: string,
+  fromByte: number | null,
+  maxBytes: number = 256 * 1024,
+): { text: string; size: number } {
+  let size: number;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    return { text: '', size: 0 };
+  }
+  let start = fromByte ?? Math.max(0, size - maxBytes);
+  if (start > size) start = Math.max(0, size - maxBytes);
+  if (start >= size) return { text: '', size };
+
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    return { text: buf.toString('utf8'), size };
+  } finally {
+    fs.closeSync(fd);
   }
 }
 

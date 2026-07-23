@@ -6,11 +6,37 @@ import type { RouteEvent } from './handler.js';
 /**
  * Persistent route history: one JSON line per event, append-only.
  * Powers `claude-router stats` and the dashboard's lifetime figures.
+ *
+ * Deliberately never rotated: this file IS the lifetime-savings ledger, and
+ * rotating it would delete the product's headline number. At ~250 bytes/event,
+ * 1M routed requests ≈ 250 MB — years of heavy use. Users may archive or
+ * delete it at any time; the offset cache below self-invalidates on shrink and
+ * totals restart from zero. Writes assume a single writer — the daemon's
+ * pre-start health check enforces one proxy per port.
  */
+
+const HISTORY_SIZE_NUDGE_BYTES = 100 * 1024 * 1024;
+// One stat + at most one warn per process — keeps the append hot path free of
+// per-event size checks. Growth past the threshold mid-run is caught on the
+// next daemon start.
+let checkedHistorySize = false;
 
 export function appendEvent(file: string, event: RouteEvent): void {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    if (!checkedHistorySize) {
+      checkedHistorySize = true;
+      try {
+        if (fs.statSync(file).size > HISTORY_SIZE_NUDGE_BYTES) {
+          console.warn(
+            `[claude-router] ${file} is over 100 MB. It is append-only by design (it holds your lifetime savings); ` +
+              `archive or delete it to start fresh — stats will restart from zero.`,
+          );
+        }
+      } catch {
+        // No file yet — nothing to nudge about.
+      }
+    }
     fs.appendFileSync(file, JSON.stringify(event) + '\n', 'utf8');
   } catch {
     // History is best-effort — never let persistence break a request.
