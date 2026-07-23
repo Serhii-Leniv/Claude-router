@@ -40,6 +40,13 @@ export async function executeRoute(
   opts: ExecuteRouteOptions,
 ): Promise<RouteResult> {
   const startIndex = TIER_ORDER.indexOf(startTier);
+  // A tier outside TIER_ORDER would start the loop at -1 and send the API a
+  // request with `model: undefined` — fail loudly at the boundary instead.
+  if (startIndex < 0) {
+    throw new TypeError(
+      `[claude-router] Unknown tier "${startTier}" — expected one of: ${TIER_ORDER.join(', ')}`,
+    );
+  }
   let lastError: unknown;
 
   for (let i = startIndex; i < TIER_ORDER.length; i++) {
@@ -60,21 +67,30 @@ export async function executeRoute(
         const escalated = nextTier(tier);
         if (escalated) {
           const escalatedModel = models[escalated];
-          const retryResponse = await client.messages.create(
-            normalizeParamsForTier(
-              { ...apiParams, model: escalatedModel },
-              escalated,
-            ) as Anthropic.MessageCreateParamsNonStreaming,
-            opts.requestOptions,
-          );
-          return {
-            response: retryResponse,
-            tier: escalated,
-            model: escalatedModel,
-            fallbackUsed: true,
-            retried: true,
-            retryReason: decision.reason,
-          };
+          // Escalation is best-effort: if the escalated call fails (e.g. its
+          // tier is rate-limited), serve the truncated/refused-but-real original
+          // rather than letting the error escape into the outer catch, where a
+          // RateLimitError would discard the response we already have and
+          // re-walk the tiers.
+          try {
+            const retryResponse = await client.messages.create(
+              normalizeParamsForTier(
+                { ...apiParams, model: escalatedModel },
+                escalated,
+              ) as Anthropic.MessageCreateParamsNonStreaming,
+              opts.requestOptions,
+            );
+            return {
+              response: retryResponse,
+              tier: escalated,
+              model: escalatedModel,
+              fallbackUsed: true,
+              retried: true,
+              retryReason: decision.reason,
+            };
+          } catch {
+            return { response, tier, model, fallbackUsed, retried: false, retryReason: null };
+          }
         }
       }
 
@@ -92,5 +108,5 @@ export async function executeRoute(
     }
   }
 
-  throw lastError;
+  throw lastError ?? new Error('[claude-router] executeRoute exhausted all tiers without a response');
 }
