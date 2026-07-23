@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { routerPaths, type RouterPaths } from './cli-config.js';
 import { unloadLaunchAgent } from './platform.js';
+import { rotateLogIfLarge } from './log-rotate.js';
 import { SERVICE_ID, type HealthInfo } from './health.js';
 
 export interface DaemonState {
@@ -81,6 +82,9 @@ export async function startDaemon(
   }
 
   fs.mkdirSync(paths.configDir, { recursive: true });
+  // Keep proxy.log from growing without bound: roll it over to proxy.log.1
+  // once it exceeds the size cap, before reopening for append.
+  rotateLogIfLarge(paths.logFile);
   const logFd = fs.openSync(paths.logFile, 'a');
 
   const child = spawn(process.execPath, [process.argv[1]!, 'start', ...serveArgs], {
