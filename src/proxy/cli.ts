@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { serve } from '@hono/node-server';
+import { serve, type ServerType } from '@hono/node-server';
+import type { Hono } from 'hono';
 import fs from 'node:fs';
 import { createProxyApp } from './server.js';
 import { createProviderClient, DEFAULT_UPSTREAM, type Provider } from './handler.js';
@@ -183,7 +184,50 @@ async function cmdStart(args: string[]): Promise<void> {
     process.exit(1);
   });
 
-  serve({ fetch: app.fetch, port: options.port, hostname: options.host });
+  const server = startServer(app, options.port, options.host);
+
+  // SIGINT covers Ctrl+C on all platforms. SIGTERM covers `kill` on POSIX; on
+  // Windows process.kill is TerminateProcess and no handler runs — acceptable,
+  // since history appends are per-event synchronous and there is nothing to flush.
+  const shutdown = (signal: string) => {
+    console.log(term.dim(`\n[claude-router] ${signal} — shutting down`));
+    server.close(() => process.exit(0));
+    // In-flight SSE streams can hold the server open indefinitely — cap the drain.
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+}
+
+/**
+ * Bind the server with a clean failure path and a graceful shutdown.
+ * Exported so the EADDRINUSE handling is testable without spawning a CLI
+ * process. `serve()` returns the underlying node:http server, so listen
+ * errors arrive as 'error' events — not promise rejections, which is why the
+ * unhandledRejection handler above never saw them.
+ */
+export function startServer(
+  app: Pick<Hono, 'fetch'>,
+  port: number,
+  hostname: string,
+  // Injectable so tests can observe the fatal path without killing the runner.
+  onFatal: (code: number) => void = (code) => process.exit(code),
+): ServerType {
+  const server = serve({ fetch: app.fetch, port, hostname });
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      term.errorLine(`Port ${port} is already in use — another proxy or app owns it.`);
+      console.error(term.dim(`  Check: claude-router status   ·   or pick a port: claude-router start --port <n>`));
+    } else if (err.code === 'EACCES') {
+      term.errorLine(`No permission to bind ${hostname}:${port}.`);
+    } else {
+      term.errorLine(`Server error: ${String(err)}`);
+    }
+    onFatal(1);
+  });
+
+  return server;
 }
 
 // ── stop / restart ─────────────────────────────────────────────────────────
@@ -206,6 +250,12 @@ async function cmdRestart(args: string[]): Promise<void> {
     process.exit(1);
   }
   // Reuse the previous daemon's args unless new flags were given
+  if (args.length === 0 && !state) {
+    console.error(
+      term.warn() +
+        ' No previous daemon state found — restarting with defaults. Any flags the old daemon ran with (e.g. --force-route, --provider) are not carried over; pass them again if needed.',
+    );
+  }
   const options = resolveOptions(args.length > 0 ? args : state?.args ?? []);
   const result = await startDaemon(serveArgsFrom(options), options.port, paths);
   if (result.ok) {
@@ -633,11 +683,18 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  if (err instanceof CliUsageError) {
-    term.errorLine(err.message);
-  } else {
-    term.errorLine(String(err));
-  }
-  process.exit(1);
-});
+// Only dispatch when executed as the entry script (`claude-router …` /
+// `node dist/proxy/cli.js`). Importing this module (tests need startServer)
+// must not run the CLI — before this guard, a bare import executed main()
+// against the importer's argv and exited the process. (CJS output, so the
+// require.main idiom is the entry check.)
+if (require.main === module) {
+  main().catch((err) => {
+    if (err instanceof CliUsageError) {
+      term.errorLine(err.message);
+    } else {
+      term.errorLine(String(err));
+    }
+    process.exit(1);
+  });
+}
