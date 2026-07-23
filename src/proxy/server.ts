@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { cors } from 'hono/cors';
 import Anthropic from '@anthropic-ai/sdk';
 import { handleMessages, handlePassthrough, routeHistory, type HandlerConfig } from './handler.js';
 import { renderDashboard } from './dashboard.js';
@@ -12,7 +11,12 @@ export function createProxyApp(
 ): Hono {
   const app = new Hono();
 
-  app.use('*', cors());
+  // Deliberately NO CORS middleware. Every legitimate consumer is same-origin
+  // (the dashboard) or CORS-exempt (Node fetch from the CLI/statusline). A
+  // wildcard here let any webpage in the operator's browser POST /v1/messages
+  // to localhost and read the response — with bedrock/vertex that spends the
+  // operator's cloud credentials with no authentication. Browsers blocking
+  // cross-origin reads IS the security boundary; do not add cors() back.
 
   app.get('/health', (c) => c.json(buildHealth(config, routeHistory)));
 

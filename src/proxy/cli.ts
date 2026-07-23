@@ -137,10 +137,15 @@ async function cmdStart(args: string[]): Promise<void> {
      options.provider === 'vertex' ? process.env['ANTHROPIC_VERTEX_REGION'] ?? 'us-east5' : '');
 
   const exposed = options.host !== '127.0.0.1' && options.host !== 'localhost';
-  if (exposed && (options.provider === 'bedrock' || options.provider === 'vertex')) {
+  if (exposed) {
+    // Every provider is dangerous on a network bind: bedrock/vertex spend the
+    // operator's cloud credentials, and anthropic is an unauthenticated open
+    // relay to api.anthropic.com for anyone who supplies a key.
     console.error(
       term.warn() +
-        ` Binding to ${options.host} with the ${options.provider} provider exposes YOUR cloud credentials to the network — incoming requests are not authenticated.`,
+        (options.provider === 'anthropic'
+          ? ` Binding to ${options.host} makes this proxy an open, unauthenticated relay to the Anthropic API for anyone on the network.`
+          : ` Binding to ${options.host} with the ${options.provider} provider exposes YOUR cloud credentials to the network — incoming requests are not authenticated.`),
     );
   }
 

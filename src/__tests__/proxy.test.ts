@@ -76,6 +76,13 @@ describe('createProxyApp', () => {
     assert.equal(body.classifier, 'heuristic');
   });
 
+  it('does not serve CORS headers — cross-origin browser reads stay blocked', async () => {
+    // Pins the security posture: a wildcard CORS header would let any webpage
+    // in the operator's browser read responses from this local proxy.
+    const res = await app.request('/health', { headers: { origin: 'https://evil.example' } });
+    assert.equal(res.headers.get('access-control-allow-origin'), null);
+  });
+
   it('GET /dashboard returns HTML', async () => {
     const res = await app.request('/dashboard');
     assert.equal(res.status, 200);
@@ -116,6 +123,7 @@ describe('renderDashboard', () => {
       costCents: 100,
       savedCents: 4700,
       retried: 1,
+      errors: 0,
       tiers: { haiku: 40, opus: 2 },
       byDay: {},
       unpricedModels: {},
