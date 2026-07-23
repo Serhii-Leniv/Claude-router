@@ -43,4 +43,10 @@ describe('savedCentsDisplay', () => {
     assert.deepEqual(savedCentsDisplay(-123, true), { text: 'extra $1.23', tone: 'negative' });
     assert.deepEqual(savedCentsDisplay(-0.2, true), { text: '$0.00', tone: 'neutral' });
   });
+
+  it('shows sub-cent figures signed at precision 4 (no neutral collapse) — #47', () => {
+    assert.deepEqual(savedCentsDisplay(-0.43, false, 4), { text: '-$0.0043', tone: 'negative' });
+    assert.deepEqual(savedCentsDisplay(0, false, 4), { text: '$0.0000', tone: 'neutral' });
+    assert.deepEqual(savedCentsDisplay(4567, false, 4), { text: '$45.6700', tone: 'positive' });
+  });
 });

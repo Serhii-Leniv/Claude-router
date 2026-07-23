@@ -110,11 +110,15 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
       <div class="label">Session Cost</div>
       <div class="value orange">$${(totalCost / 100).toFixed(4)}</div>
     </div>
-    <div class="stat-card">
+    ${(() => {
+      const d = savedCentsDisplay(totalSaved, false, 4);
+      const toneClass = d.tone === 'neutral' ? '' : d.tone;
+      return `<div class="stat-card">
       <div class="label">Session Saved</div>
-      <div class="value green">$${(totalSaved / 100).toFixed(4)}</div>
+      <div class="value${toneClass ? ` ${toneClass}` : ''}">${d.text}</div>
       ${sessionUnpriced}
-    </div>
+    </div>`;
+    })()}
     <div class="stat-card">
       <div class="label">Auto-retried</div>
       <div class="value">${retried}</div>
