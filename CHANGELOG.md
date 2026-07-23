@@ -6,7 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 ## [Unreleased]
 
 ### Fixed
-- `claude-router stats` no longer renders a signed zero like `-$0.00` or `extra $0.00` for sub-cent savings; they now show a neutral `$0.00` ([#38](https://github.com/Serhii-Leniv/Claude-router/issues/38))
+- `claude-router stats` no longer renders a signed zero like `-$0.00` or `extra $0.00` for sub-cent savings; they now show a neutral `$0.00` ([#38](https://github.com/Serhii-Leniv/claude-router/issues/38))
 - **`files` no longer sweeps all of `assets/` into the published package.** The entry was the bare directory, so `npm pack` picked up anything sitting there — including files not tracked in git, which meant the tarball could differ between machines. A 147kB promo image was caught on its way into 0.2.2 this way. Narrowed to `assets/claude-router.svg`, the only asset the README actually references.
 
 ## [0.2.2] — 2026-07-21

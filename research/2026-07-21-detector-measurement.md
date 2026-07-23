@@ -70,8 +70,8 @@ from haiku.
 
 - The queued per-language refusal-pattern work (es/fr/pt/uk, following #3 and #20)
   is deprioritised — those patterns extend a path with no observed activations.
-- [#1](https://github.com/Serhii-Leniv/Claude-router/issues/1) (streaming refusal
+- [#1](https://github.com/Serhii-Leniv/claude-router/issues/1) (streaming refusal
   escalation) was annotated with this data and left open but deprioritised.
-- [#22](https://github.com/Serhii-Leniv/Claude-router/issues/22) / PR #25 shipped
+- [#22](https://github.com/Serhii-Leniv/claude-router/issues/22) / PR #25 shipped
   anyway: the structural signal is strictly cheaper and wider than the lexical one,
   and it is the path that would fire first if refusals do appear on cheaper tiers.

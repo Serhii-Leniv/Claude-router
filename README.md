@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Serhii-Leniv/Claude-router/actions/workflows/test.yml"><img src="https://github.com/Serhii-Leniv/Claude-router/actions/workflows/test.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Serhii-Leniv/claude-router/actions/workflows/test.yml"><img src="https://github.com/Serhii-Leniv/claude-router/actions/workflows/test.yml/badge.svg" alt="CI"></a>
   <a href="https://www.npmjs.com/package/@sheruq/claude-router"><img src="https://img.shields.io/npm/v/@sheruq/claude-router?color=D97757&label=npm" alt="npm version"></a>
   <img src="https://img.shields.io/npm/dm/@sheruq/claude-router?color=D97757" alt="npm downloads">
   <img src="https://img.shields.io/node/v/@sheruq/claude-router?color=D97757" alt="node version">

@@ -5,7 +5,7 @@
 Please report security issues **privately** — do not open a public issue or PR.
 
 Use GitHub's private advisory form:
-**https://github.com/Serhii-Leniv/Claude-router/security/advisories/new**
+**https://github.com/Serhii-Leniv/claude-router/security/advisories/new**
 
 We'll acknowledge the report, investigate, and coordinate a fix and disclosure timeline with you. Please give us a reasonable window to release a fix before any public disclosure.
 

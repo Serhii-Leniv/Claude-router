@@ -40,11 +40,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Serhii-Leniv/Claude-router.git"
+    "url": "git+https://github.com/Serhii-Leniv/claude-router.git"
   },
-  "homepage": "https://serhii-leniv.github.io/Claude-router/",
+  "homepage": "https://serhii-leniv.github.io/claude-router/",
   "bugs": {
-    "url": "https://github.com/Serhii-Leniv/Claude-router/issues"
+    "url": "https://github.com/Serhii-Leniv/claude-router/issues"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
