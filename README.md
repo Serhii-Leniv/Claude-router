@@ -279,13 +279,18 @@ console.log(response.meta.tier);       // 'haiku'
 console.log(response.meta.savedCents); // 1.2
 ```
 
-**Streaming** — `meta` resolves after the stream completes:
+**Streaming** — `await router.stream(...)` classifies first, then returns the real SDK `MessageStream`; `meta` resolves after the stream completes:
 
 ```typescript
-const { stream, meta } = router.stream({
+const { stream, meta } = await router.stream({
   messages: [{ role: 'user', content: 'Write a detailed essay on quantum computing' }],
   max_tokens: 4096,
 });
+
+for await (const event of stream) {
+  // standard @anthropic-ai/sdk stream events; .on()/.finalMessage() work too
+}
+
 const routeMeta = await meta;
 console.log(routeMeta.tier); // 'sonnet'
 ```
