@@ -2,6 +2,7 @@ import { describe, it, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { ClaudeRouter } from '../index.js';
 import { DEFAULT_MODELS } from '../models.js';
+import { resetDeadRoutingWarnings } from '../routing.js';
 import Anthropic from '@anthropic-ai/sdk';
 
 function fakeMessage(
@@ -394,6 +395,31 @@ describe('ClaudeRouter — classifier resilience', () => {
     assert.equal(result.meta.classifierMethod, 'heuristic');
     assert.equal(calls, 2, 'classifier attempt + routed request');
     assert.ok(result.meta.tier);
+  });
+});
+
+describe('ClaudeRouter logger sink', () => {
+  it('routes config warnings to an injected logger, not the console', () => {
+    resetDeadRoutingWarnings();
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (msg: unknown) => void warnings.push(String(msg));
+    const custom: string[] = [];
+    try {
+      new ClaudeRouter({
+        apiKey: 'sk-test',
+        verbose: false,
+        logger: { warn: (msg) => void custom.push(msg) },
+        routing: { haikuMax: 30 } as never,
+      });
+    } finally {
+      console.warn = original;
+      resetDeadRoutingWarnings();
+    }
+
+    assert.equal(custom.length, 1);
+    assert.match(custom[0]!, /routing\.haikuMax/);
+    assert.deepEqual(warnings, [], 'console.warn must stay silent');
   });
 });
 

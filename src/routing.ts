@@ -46,12 +46,15 @@ export function resetDeadRoutingWarnings(): void {
   warnedDeadKeys.clear();
 }
 
-export function warnDeadRoutingKeys(routing: Record<string, unknown> | undefined): void {
+export function warnDeadRoutingKeys(
+  routing: Record<string, unknown> | undefined,
+  warn: (message: string) => void = console.warn,
+): void {
   if (!routing) return;
   for (const key of DEAD_ROUTING_KEYS) {
     if (routing[key] === undefined || warnedDeadKeys.has(key)) continue;
     warnedDeadKeys.add(key);
-    console.warn(
+    warn(
       `[claude-router] config: routing.${key} no longer does anything and is ignored. ` +
         `It thresholded the 0-100 classifier score, which was replaced by evidence-based ` +
         `gates in 0.2.2 — there is no score to threshold. Routing may differ from what ` +

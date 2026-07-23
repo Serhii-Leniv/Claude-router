@@ -9,6 +9,7 @@ import {
   DEFAULT_MODELS,
   DEFAULT_PRICING,
   computeRouteCost,
+  type WarnFn,
 } from './models.js';
 import { CostTracker } from './tracker.js';
 import { executeRoute } from './route.js';
@@ -35,6 +36,7 @@ interface ResolvedConfig {
   fallback: boolean;
   verbose: boolean;
   routing: RoutingTuning;
+  warn: WarnFn;
 }
 
 export interface StreamResult {
@@ -54,7 +56,11 @@ type StreamParams = Omit<
 };
 
 function resolveConfig(config: RouterConfig): ResolvedConfig {
-  warnDeadRoutingKeys(config.routing as Record<string, unknown> | undefined);
+  // Resolve the warn sink before anything that might warn.
+  const warn: WarnFn = config.logger
+    ? config.logger.warn.bind(config.logger)
+    : console.warn;
+  warnDeadRoutingKeys(config.routing as Record<string, unknown> | undefined, warn);
   const tiers: Record<Tier, string> = {
     haiku: config.tiers?.haiku ?? DEFAULT_MODELS.haiku,
     sonnet: config.tiers?.sonnet ?? DEFAULT_MODELS.sonnet,
@@ -71,11 +77,9 @@ function resolveConfig(config: RouterConfig): ResolvedConfig {
     fallback: config.fallback ?? true,
     verbose: config.verbose ?? false,
     routing: config.routing ?? {},
+    warn,
   };
 }
-
-// Library entry: the caller passed `routing` in code, so warn here too — the
-// proxy has its own call site for the config file.
 
 function buildClassifyInput(
   params: SendParams | StreamParams,
@@ -134,7 +138,7 @@ export class ClaudeRouter {
     retryReason: string | null = null,
   ): RouteMeta {
     const { costCents, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens, priced } =
-      computeRouteCost(model, usage, this.config.defaultModel, this.config.pricing);
+      computeRouteCost(model, usage, this.config.defaultModel, this.config.pricing, this.config.warn);
 
     return {
       tier,

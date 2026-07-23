@@ -46,6 +46,12 @@ export interface RouterConfig {
   fallback?: boolean;
   /** Log routing decisions to console (default: false) */
   verbose?: boolean;
+  /**
+   * Sink for library warnings (unpriced models, dead config keys).
+   * Pass `{ warn: () => {} }` to silence, or your own logger.
+   * Default: `console`.
+   */
+  logger?: { warn(message: string): void };
 }
 
 export interface RouteMeta {

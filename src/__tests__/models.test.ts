@@ -218,6 +218,22 @@ describe('unpriced models are loud, not free', () => {
     assert.deepEqual(warnings, []);
   });
 
+  it('delivers warnings to an injected sink, not the console', () => {
+    const custom: string[] = [];
+    const { warnings } = capturingWarnings(() =>
+      computeRouteCost(
+        'some-future-model-5',
+        usage,
+        DEFAULT_MODELS.sonnet,
+        DEFAULT_PRICING,
+        (msg) => void custom.push(msg),
+      ),
+    );
+    assert.equal(custom.length, 1);
+    assert.match(custom[0]!, /some-future-model-5/);
+    assert.deepEqual(warnings, [], 'console.warn must stay silent');
+  });
+
   it('prices Mythos 5 and Fable 5 rather than flagging them', () => {
     // The two models the silent-$0 bug actually bit. Both must now be measured.
     for (const id of ['claude-mythos-5', 'claude-fable-5']) {
