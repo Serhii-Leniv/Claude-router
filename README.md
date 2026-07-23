@@ -177,7 +177,7 @@ claude-router restart [options]     Restart the background proxy
 claude-router status                Health, routing stats, install state
 claude-router stats [--json]        Lifetime savings and per-day breakdown
 claude-router logs [-f] [-n N]      Show (or follow) the daemon log
-claude-router init [--force]        Scaffold ~/.claude-router/config.json
+claude-router init [--force] [options]  Scaffold ~/.claude-router/config.json from the given options
 claude-router doctor                Diagnose common setup problems
 claude-router --version, -V         Print version
 
@@ -203,6 +203,8 @@ Install-only options:
 ## Pricing & savings
 
 Each response's `savedCents` is `(baseline cost − actual cost)` for the tokens used, where the baseline is your `defaultModel` (Sonnet by default). **Prompt-cache tokens are included** — reads bill at 10% of the input rate and writes at 125% — so figures stay accurate for cache-heavy clients like Claude Code. Every routed request is appended to `~/.claude-router/history.jsonl`, so savings survive restarts (`claude-router stats` / the dashboard's *Lifetime Saved* card).
+
+`history.jsonl` is append-only by design and never rotated — it *is* the lifetime-savings ledger (~250 bytes/event; a million routed requests ≈ 250 MB). Archive or delete it anytime to start fresh; stats restart from zero. The daemon log (`~/.claude-router/proxy.log`) *does* rotate: past 5 MiB it rolls over to `proxy.log.1` on the next daemon start.
 
 Pricing tracks the **current Claude generation**; unknown/dated/Bedrock/Vertex IDs are priced by family so the math stays correct across model launches:
 
@@ -279,13 +281,18 @@ console.log(response.meta.tier);       // 'haiku'
 console.log(response.meta.savedCents); // 1.2
 ```
 
-**Streaming** — `meta` resolves after the stream completes:
+**Streaming** — `await router.stream(...)` classifies first, then returns the real SDK `MessageStream`; `meta` resolves after the stream completes:
 
 ```typescript
-const { stream, meta } = router.stream({
+const { stream, meta } = await router.stream({
   messages: [{ role: 'user', content: 'Write a detailed essay on quantum computing' }],
   max_tokens: 4096,
 });
+
+for await (const event of stream) {
+  // standard @anthropic-ai/sdk stream events; .on()/.finalMessage() work too
+}
+
 const routeMeta = await meta;
 console.log(routeMeta.tier); // 'sonnet'
 ```

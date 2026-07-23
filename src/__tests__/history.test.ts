@@ -77,4 +77,44 @@ describe('history', () => {
   it('appendEvent never throws on an unwritable path', () => {
     assert.doesNotThrow(() => appendEvent('\0invalid\0path', makeEvent()));
   });
+
+  it('counts errored events apart from the money figures', () => {
+    const file = tempFile();
+    appendEvent(file, makeEvent());
+    appendEvent(file, makeEvent({ error: 'stream died', costCents: 0, savedCents: 0 }));
+
+    const stats = readLifetimeStats(file);
+    assert.equal(stats.errors, 1);
+    assert.equal(stats.requests, 1, 'errored event must not count as a completed request');
+    assert.equal(Math.round(stats.costCents * 100) / 100, 0.1, 'placeholder zeros stay out of the totals');
+    assert.deepEqual(stats.tiers, { haiku: 1 });
+  });
+
+  it('truncate-then-append refolds from zero (documented archival stance)', () => {
+    const file = tempFile();
+    appendEvent(file, makeEvent());
+    appendEvent(file, makeEvent());
+    assert.equal(readLifetimeStats(file).requests, 2);
+
+    // User archives/deletes the ledger; the offset cache must self-invalidate
+    // and totals restart from zero rather than serving stale figures.
+    fs.writeFileSync(file, '', 'utf8');
+    appendEvent(file, makeEvent({ savedCents: 2 }));
+
+    const stats = readLifetimeStats(file);
+    assert.equal(stats.requests, 1);
+    assert.equal(Math.round(stats.savedCents * 100) / 100, 2);
+  });
+
+  it('legacy lines without an error field keep counting as measured', () => {
+    const file = tempFile();
+    // A pre-`error`-field line, written verbatim as an old version would have.
+    const { error: _e, ...legacy } = makeEvent() as RouteEvent & { error?: string };
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, JSON.stringify(legacy) + '\n', 'utf8');
+
+    const stats = readLifetimeStats(file);
+    assert.equal(stats.requests, 1);
+    assert.equal(stats.errors, 0);
+  });
 });

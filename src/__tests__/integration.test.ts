@@ -17,11 +17,15 @@
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { serve } from '@hono/node-server';
 import Anthropic from '@anthropic-ai/sdk';
 import { createProxyApp } from '../proxy/server.js';
 import type { HandlerConfig } from '../proxy/handler.js';
+import { readLifetimeStats, resetHistoryCache } from '../proxy/history.js';
 import { DEFAULT_MODELS } from '../models.js';
 
 // ── Fake Anthropic upstream ──────────────────────────────────────────────────
@@ -41,8 +45,12 @@ interface FakeUpstream {
  * Start a fake Anthropic `/v1/messages` server on an ephemeral port.
  * `truncateModels` makes the given models answer with `stop_reason: 'max_tokens'`
  * (and > 20 output tokens) so the router's truncation-retry path fires.
+ * `streamAuthFail` answers every streaming request with a 401 JSON error.
+ * `dropMidStream` sends the opening SSE events then destroys the socket.
  */
-async function startFakeUpstream(opts: { truncateModels?: string[] } = {}): Promise<FakeUpstream> {
+async function startFakeUpstream(
+  opts: { truncateModels?: string[]; streamAuthFail?: boolean; dropMidStream?: boolean } = {},
+): Promise<FakeUpstream> {
   const truncate = new Set(opts.truncateModels ?? []);
   const calls: UpstreamCall[] = [];
 
@@ -65,6 +73,13 @@ async function startFakeUpstream(opts: { truncateModels?: string[] } = {}): Prom
       const outputTokens = truncated ? 50 : 3;
       const text = `hello from ${model}`;
 
+      if (isStream && opts.streamAuthFail) {
+        res.writeHead(401, { 'content-type': 'application/json' }).end(
+          JSON.stringify({ error: { type: 'authentication_error', message: 'invalid x-api-key' } }),
+        );
+        return;
+      }
+
       if (isStream) {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         const send = (type: string, data: unknown) =>
@@ -83,6 +98,14 @@ async function startFakeUpstream(opts: { truncateModels?: string[] } = {}): Prom
           },
         });
         send('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+        if (opts.dropMidStream) {
+          // Abrupt socket death after the stream is underway. The small delay
+          // lets the opening events flush so the proxy's primed first event
+          // succeeds and its 200 is committed — otherwise the drop races the
+          // first read and lands in the pre-stream phase instead.
+          setTimeout(() => res.destroy(), 100);
+          return;
+        }
         send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } });
         send('content_block_stop', { type: 'content_block_stop', index: 0 });
         send('message_delta', { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: outputTokens } });
@@ -153,8 +176,15 @@ async function startProxy(upstream: FakeUpstream, overrides: Partial<HandlerConf
 }
 
 /** Start a fake upstream + proxy, registering both for teardown. */
-async function setup(opts: { truncateModels?: string[]; config?: Partial<HandlerConfig> } = {}): Promise<{ upstream: FakeUpstream; base: string }> {
-  const upstream = await startFakeUpstream({ truncateModels: opts.truncateModels });
+async function setup(
+  opts: {
+    truncateModels?: string[];
+    streamAuthFail?: boolean;
+    dropMidStream?: boolean;
+    config?: Partial<HandlerConfig>;
+  } = {},
+): Promise<{ upstream: FakeUpstream; base: string }> {
+  const upstream = await startFakeUpstream(opts);
   after(() => upstream.close());
   const proxy = await startProxy(upstream, opts.config);
   after(() => proxy.close());
@@ -276,6 +306,51 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
     assert.equal(upstream.calls.length, 1);
     assert.equal(upstream.calls[0]!.model, DEFAULT_MODELS.haiku);
     assert.equal(upstream.calls[0]!.stream, true);
+  });
+
+  it('a pre-stream auth failure returns HTTP 401, not a 200 SSE error frame', async () => {
+    const { base } = await setup({ streamAuthFail: true });
+
+    const res = await post(base, {
+      model: 'claude-opus-4-8',
+      messages: [{ role: 'user', content: 'translate hello to French' }],
+      max_tokens: 100,
+      stream: true,
+    });
+
+    // The first stream event is awaited before headers are committed, so the
+    // upstream 401 maps to a real 401 — same contract as the non-streaming path.
+    assert.equal(res.status, 401);
+    assert.doesNotMatch(res.headers.get('content-type') ?? '', /text\/event-stream/);
+    const body = (await res.json()) as { error: { type: string } };
+    assert.equal(body.error.type, 'api_error');
+  });
+
+  it('a mid-stream failure emits an SSE error frame and is recorded as an error', async () => {
+    const historyFile = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'claude-router-test-')),
+      'history.jsonl',
+    );
+    const { base } = await setup({ dropMidStream: true, config: { historyFile } });
+
+    const res = await post(base, {
+      model: 'claude-opus-4-8',
+      messages: [{ role: 'user', content: 'translate hello to French' }],
+      max_tokens: 100,
+      stream: true,
+    });
+
+    // Headers were already committed when the upstream died — 200 is unavoidable;
+    // the SSE error frame is the in-band signal.
+    assert.equal(res.status, 200);
+    const sse = await readSse(res);
+    assert.match(sse, /event: error/);
+
+    // The failure must not vanish from the proxy's books.
+    resetHistoryCache();
+    const stats = readLifetimeStats(historyFile);
+    assert.equal(stats.errors, 1);
+    assert.equal(stats.requests, 0, 'an errored stream is not a completed request');
   });
 
   it('anthropic provider without credentials returns 401 over the socket', async () => {

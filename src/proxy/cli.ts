@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { serve } from '@hono/node-server';
+import { serve, type ServerType } from '@hono/node-server';
+import type { Hono } from 'hono';
 import fs from 'node:fs';
 import { createProxyApp } from './server.js';
 import { createProviderClient, DEFAULT_UPSTREAM, type Provider } from './handler.js';
@@ -137,10 +138,15 @@ async function cmdStart(args: string[]): Promise<void> {
      options.provider === 'vertex' ? process.env['ANTHROPIC_VERTEX_REGION'] ?? 'us-east5' : '');
 
   const exposed = options.host !== '127.0.0.1' && options.host !== 'localhost';
-  if (exposed && (options.provider === 'bedrock' || options.provider === 'vertex')) {
+  if (exposed) {
+    // Every provider is dangerous on a network bind: bedrock/vertex spend the
+    // operator's cloud credentials, and anthropic is an unauthenticated open
+    // relay to api.anthropic.com for anyone who supplies a key.
     console.error(
       term.warn() +
-        ` Binding to ${options.host} with the ${options.provider} provider exposes YOUR cloud credentials to the network — incoming requests are not authenticated.`,
+        (options.provider === 'anthropic'
+          ? ` Binding to ${options.host} makes this proxy an open, unauthenticated relay to the Anthropic API for anyone on the network.`
+          : ` Binding to ${options.host} with the ${options.provider} provider exposes YOUR cloud credentials to the network — incoming requests are not authenticated.`),
     );
   }
 
@@ -178,7 +184,50 @@ async function cmdStart(args: string[]): Promise<void> {
     process.exit(1);
   });
 
-  serve({ fetch: app.fetch, port: options.port, hostname: options.host });
+  const server = startServer(app, options.port, options.host);
+
+  // SIGINT covers Ctrl+C on all platforms. SIGTERM covers `kill` on POSIX; on
+  // Windows process.kill is TerminateProcess and no handler runs — acceptable,
+  // since history appends are per-event synchronous and there is nothing to flush.
+  const shutdown = (signal: string) => {
+    console.log(term.dim(`\n[claude-router] ${signal} — shutting down`));
+    server.close(() => process.exit(0));
+    // In-flight SSE streams can hold the server open indefinitely — cap the drain.
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+}
+
+/**
+ * Bind the server with a clean failure path and a graceful shutdown.
+ * Exported so the EADDRINUSE handling is testable without spawning a CLI
+ * process. `serve()` returns the underlying node:http server, so listen
+ * errors arrive as 'error' events — not promise rejections, which is why the
+ * unhandledRejection handler above never saw them.
+ */
+export function startServer(
+  app: Pick<Hono, 'fetch'>,
+  port: number,
+  hostname: string,
+  // Injectable so tests can observe the fatal path without killing the runner.
+  onFatal: (code: number) => void = (code) => process.exit(code),
+): ServerType {
+  const server = serve({ fetch: app.fetch, port, hostname });
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      term.errorLine(`Port ${port} is already in use — another proxy or app owns it.`);
+      console.error(term.dim(`  Check: claude-router status   ·   or pick a port: claude-router start --port <n>`));
+    } else if (err.code === 'EACCES') {
+      term.errorLine(`No permission to bind ${hostname}:${port}.`);
+    } else {
+      term.errorLine(`Server error: ${String(err)}`);
+    }
+    onFatal(1);
+  });
+
+  return server;
 }
 
 // ── stop / restart ─────────────────────────────────────────────────────────
@@ -201,6 +250,12 @@ async function cmdRestart(args: string[]): Promise<void> {
     process.exit(1);
   }
   // Reuse the previous daemon's args unless new flags were given
+  if (args.length === 0 && !state) {
+    console.error(
+      term.warn() +
+        ' No previous daemon state found — restarting with defaults. Any flags the old daemon ran with (e.g. --force-route, --provider) are not carried over; pass them again if needed.',
+    );
+  }
   const options = resolveOptions(args.length > 0 ? args : state?.args ?? []);
   const result = await startDaemon(serveArgsFrom(options), options.port, paths);
   if (result.ok) {
@@ -254,7 +309,7 @@ function cmdStats(args: string[]): void {
     return;
   }
 
-  if (stats.requests === 0) {
+  if (stats.requests === 0 && stats.errors === 0) {
     console.log(term.dim('No routing history yet — savings are recorded once requests flow through the proxy.'));
     return;
   }
@@ -271,6 +326,12 @@ function cmdStats(args: string[]): void {
     ['Auto-retried', String(stats.retried)],
     ['Tiers', tierLine || term.dim('none')],
   ];
+
+  // Mid-flight failures (e.g. a stream that died after headers went out) are
+  // counted apart from the money figures — shown only when there are any.
+  if (stats.errors > 0) {
+    rows.push(['Errors', term.red(String(stats.errors))]);
+  }
 
   // The totals above exclude every unpriced call. Saying so is the difference
   // between "we saved little" and "we can't tell you what we saved".
@@ -322,23 +383,50 @@ function cmdLogs(args: string[]): void {
     return;
   }
 
-  const printTail = (fromSize = 0): number => {
-    const content = fs.readFileSync(paths.logFile, 'utf8');
-    if (fromSize === 0) {
-      const tail = content.split('\n').slice(-lines - 1).join('\n');
-      process.stdout.write(tail.endsWith('\n') ? tail : tail + '\n');
-    } else if (content.length > fromSize) {
-      process.stdout.write(content.slice(fromSize));
-    }
-    return content.length;
-  };
+  const initial = readLogTail(paths.logFile, null);
+  const tail = initial.text.split('\n').slice(-lines - 1).join('\n');
+  if (tail) process.stdout.write(tail.endsWith('\n') ? tail : tail + '\n');
 
-  let size = printTail();
+  let size = initial.size;
   if (follow) {
     console.log(term.dim('— following (ctrl+c to exit) —'));
     fs.watchFile(paths.logFile, { interval: 500 }, () => {
-      size = printTail(size);
+      const next = readLogTail(paths.logFile, size);
+      if (next.text) process.stdout.write(next.text);
+      size = next.size;
     });
+  }
+}
+
+/**
+ * Bounded read of a log file's tail — never the whole file into memory.
+ * `fromByte: null` reads the last `maxBytes` (initial tail); a number reads
+ * `[fromByte, EOF)` (follow mode). A file that shrank under us (rotation)
+ * resets to a fresh tail instead of silently going quiet, which is what the
+ * old length-comparison follow loop did. Exported for tests.
+ */
+export function readLogTail(
+  file: string,
+  fromByte: number | null,
+  maxBytes: number = 256 * 1024,
+): { text: string; size: number } {
+  let size: number;
+  try {
+    size = fs.statSync(file).size;
+  } catch {
+    return { text: '', size: 0 };
+  }
+  let start = fromByte ?? Math.max(0, size - maxBytes);
+  if (start > size) start = Math.max(0, size - maxBytes);
+  if (start >= size) return { text: '', size };
+
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(size - start);
+    fs.readSync(fd, buf, 0, buf.length, start);
+    return { text: buf.toString('utf8'), size };
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
@@ -545,7 +633,7 @@ ${term.bold('Usage')}
   ${a('claude-router status')}                Health, routing stats, install state
   ${a('claude-router stats')} [--json]        Lifetime savings and per-day breakdown
   ${a('claude-router logs')} [-f] [-n N]      Show (or follow) the daemon log
-  ${a('claude-router init')} [--force]        Scaffold ~/.claude-router/config.json
+  ${a('claude-router init')} [--force] [options]  Scaffold ~/.claude-router/config.json from the given options
   ${a('claude-router doctor')}                Diagnose common setup problems
 
 ${term.bold('Options')} ${d('(install / start / restart / status / doctor)')}
@@ -622,11 +710,18 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  if (err instanceof CliUsageError) {
-    term.errorLine(err.message);
-  } else {
-    term.errorLine(String(err));
-  }
-  process.exit(1);
-});
+// Only dispatch when executed as the entry script (`claude-router …` /
+// `node dist/proxy/cli.js`). Importing this module (tests need startServer)
+// must not run the CLI — before this guard, a bare import executed main()
+// against the importer's argv and exited the process. (CJS output, so the
+// require.main idiom is the entry check.)
+if (require.main === module) {
+  main().catch((err) => {
+    if (err instanceof CliUsageError) {
+      term.errorLine(err.message);
+    } else {
+      term.errorLine(String(err));
+    }
+    process.exit(1);
+  });
+}

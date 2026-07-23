@@ -2,6 +2,7 @@ import { describe, it, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { ClaudeRouter } from '../index.js';
 import { DEFAULT_MODELS } from '../models.js';
+import { resetDeadRoutingWarnings } from '../routing.js';
 import Anthropic from '@anthropic-ai/sdk';
 
 function fakeMessage(
@@ -397,21 +398,53 @@ describe('ClaudeRouter — classifier resilience', () => {
   });
 });
 
+describe('ClaudeRouter logger sink', () => {
+  it('routes config warnings to an injected logger, not the console', () => {
+    resetDeadRoutingWarnings();
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (msg: unknown) => void warnings.push(String(msg));
+    const custom: string[] = [];
+    try {
+      new ClaudeRouter({
+        apiKey: 'sk-test',
+        verbose: false,
+        logger: { warn: (msg) => void custom.push(msg) },
+        routing: { haikuMax: 30 } as never,
+      });
+    } finally {
+      console.warn = original;
+      resetDeadRoutingWarnings();
+    }
+
+    assert.equal(custom.length, 1);
+    assert.match(custom[0]!, /routing\.haikuMax/);
+    assert.deepEqual(warnings, [], 'console.warn must stay silent');
+  });
+});
+
 describe('ClaudeRouter.stream', () => {
+  function withStream(
+    router: ClaudeRouter,
+    impl: (params: { model: string }) => unknown,
+  ): ReturnType<typeof mock.fn> {
+    const streamFn = mock.fn(impl);
+    (router as unknown as { _client: { messages: { stream: typeof streamFn } } })._client.messages.stream = streamFn;
+    return streamFn;
+  }
+
   it('routes a streamed request and resolves meta for the chosen tier', async () => {
     const { router } = createMockRouter();
 
     let streamedModel: string | undefined;
-    const streamFn = mock.fn((params: { model: string }) => {
+    const streamFn = withStream(router, (params) => {
       streamedModel = params.model;
-      // Minimal MessageStream stand-in: the router only awaits finalMessage().
       return {
         finalMessage: async () => fakeMessage({ model: params.model }),
       };
     });
-    (router as unknown as { _client: { messages: { stream: typeof streamFn } } })._client.messages.stream = streamFn;
 
-    const { meta } = router.stream({
+    const { meta } = await router.stream({
       messages: [{ role: 'user', content: 'translate hello to French' }],
       max_tokens: 100,
     });
@@ -422,5 +455,90 @@ describe('ClaudeRouter.stream', () => {
     assert.equal(streamedModel, DEFAULT_MODELS.haiku);
     assert.equal(streamFn.mock.calls.length, 1);
     assert.equal(router.stats().callCount, 1);
+  });
+
+  it('returns the real stream: for-await iteration works', async () => {
+    const { router } = createMockRouter();
+
+    withStream(router, () => ({
+      // The API contract the old Proxy wrapper broke: the returned object IS
+      // the SDK stream, so its async iterator must be directly consumable.
+      [Symbol.asyncIterator]: async function* () {
+        yield { type: 'content_block_delta' };
+        yield { type: 'message_stop' };
+      },
+      finalMessage: async () => fakeMessage(),
+    }));
+
+    const { stream } = await router.stream({
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 100,
+    });
+
+    const events: unknown[] = [];
+    for await (const event of stream as AsyncIterable<{ type: string }>) {
+      events.push(event);
+    }
+    assert.equal(events.length, 2);
+  });
+
+  it('rejects when the SDK stream call throws synchronously', async () => {
+    const { router } = createMockRouter();
+    withStream(router, () => {
+      throw new Error('bad params');
+    });
+
+    await assert.rejects(
+      router.stream({
+        messages: [{ role: 'user', content: 'hello' }],
+        max_tokens: 100,
+      }),
+      /bad params/,
+    );
+  });
+
+  it('rejects an unknown forced tier before any API call', async () => {
+    const { router } = createMockRouter();
+    const streamFn = withStream(router, () => ({
+      finalMessage: async () => fakeMessage(),
+    }));
+
+    await assert.rejects(
+      router.stream({
+        messages: [{ role: 'user', content: 'hello' }],
+        max_tokens: 100,
+        tier: 'gpt4' as never,
+      }),
+      TypeError,
+    );
+    assert.equal(streamFn.mock.calls.length, 0);
+  });
+
+  it('a mid-stream failure cannot crash a caller that ignores meta', async () => {
+    const { router } = createMockRouter();
+    withStream(router, () => ({
+      finalMessage: async () => {
+        throw new Error('stream died');
+      },
+    }));
+
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => void rejections.push(reason);
+    process.on('unhandledRejection', onRejection);
+    try {
+      const { meta } = await router.stream({
+        messages: [{ role: 'user', content: 'hello' }],
+        max_tokens: 100,
+      });
+      // Consume only the stream (i.e. do nothing with meta) and give the
+      // rejection a macrotask to surface if it were unhandled.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(rejections, [], 'ignoring meta must not raise unhandledRejection');
+      // Awaiting meta still surfaces the error.
+      await assert.rejects(meta, /stream died/);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
   });
 });

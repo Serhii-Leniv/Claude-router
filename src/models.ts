@@ -161,7 +161,12 @@ export interface CacheTokens {
   creationTokens?: number;
 }
 
+/** Sink for library warnings. Defaults to `console.warn` everywhere it's accepted. */
+export type WarnFn = (message: string) => void;
+
 // Models we've already warned about, so a hot request path warns once, not per call.
+// Deliberately module-global: dedup across router instances is fine — the sink
+// itself is per-call so two instances with different loggers never fight.
 const warnedUnpriced = new Set<string>();
 
 /** @internal Test hook */
@@ -175,10 +180,10 @@ export function resetUnpricedWarnings(): void {
  * saved" reporting $0.00 reads as a slow week rather than a bug. Callers get the
  * machine-readable signal via `RouteCost.priced`; this is the human one.
  */
-function warnIfUnpriced(model: string, priced: boolean): void {
+function warnIfUnpriced(model: string, priced: boolean, warn: WarnFn = console.warn): void {
   if (priced || warnedUnpriced.has(model)) return;
   warnedUnpriced.add(model);
-  console.warn(
+  warn(
     `[claude-router] No pricing for "${model}" — its cost and savings are reported as 0, ` +
       `not measured. Add a "pricing" entry for it in ~/.claude-router/config.json.`,
   );
@@ -248,6 +253,7 @@ export function computeRouteCost(
   usage: Anthropic.Usage | undefined,
   defaultModel: string,
   pricing: Record<string, ModelPricing>,
+  warn: WarnFn = console.warn,
 ): RouteCost {
   const inputTokens = usage?.input_tokens ?? 0;
   const outputTokens = usage?.output_tokens ?? 0;
@@ -260,8 +266,8 @@ export function computeRouteCost(
 
   const modelPriced = priceForModel(model, pricing) !== undefined;
   const baselinePriced = priceForModel(defaultModel, pricing) !== undefined;
-  warnIfUnpriced(model, modelPriced);
-  warnIfUnpriced(defaultModel, baselinePriced);
+  warnIfUnpriced(model, modelPriced, warn);
+  warnIfUnpriced(defaultModel, baselinePriced, warn);
 
   return {
     costCents: Math.round(cost * 1000) / 1000,

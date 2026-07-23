@@ -1,5 +1,4 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { MessageStream } from '@anthropic-ai/sdk/lib/MessageStream.js';
 import {
   classify,
   DEFAULT_CLASSIFY_CACHE_SIZE,
@@ -9,6 +8,7 @@ import {
   DEFAULT_MODELS,
   DEFAULT_PRICING,
   computeRouteCost,
+  type WarnFn,
 } from './models.js';
 import { CostTracker } from './tracker.js';
 import { executeRoute } from './route.js';
@@ -35,10 +35,24 @@ interface ResolvedConfig {
   fallback: boolean;
   verbose: boolean;
   routing: RoutingTuning;
+  warn: WarnFn;
 }
 
+/**
+ * The SDK's streaming handle, derived from the client surface rather than a
+ * deep `lib/` import — internal SDK layout is not a stable export, and this is
+ * exactly the type `messages.stream()` returns.
+ */
+export type MessageStream = ReturnType<Anthropic['messages']['stream']>;
+
 export interface StreamResult {
+  /** The real SDK stream: `for await`, `.on()` chaining, `.finalMessage()` all work. */
   stream: MessageStream;
+  /**
+   * Resolves once the stream completes and the route is priced/recorded.
+   * Rejects if the stream errors — pre-marked as handled, so ignoring it
+   * cannot crash the host process; awaiting it still surfaces the error.
+   */
   meta: Promise<RouteMeta>;
 }
 
@@ -54,7 +68,11 @@ type StreamParams = Omit<
 };
 
 function resolveConfig(config: RouterConfig): ResolvedConfig {
-  warnDeadRoutingKeys(config.routing as Record<string, unknown> | undefined);
+  // Resolve the warn sink before anything that might warn.
+  const warn: WarnFn = config.logger
+    ? config.logger.warn.bind(config.logger)
+    : console.warn;
+  warnDeadRoutingKeys(config.routing as Record<string, unknown> | undefined, warn);
   const tiers: Record<Tier, string> = {
     haiku: config.tiers?.haiku ?? DEFAULT_MODELS.haiku,
     sonnet: config.tiers?.sonnet ?? DEFAULT_MODELS.sonnet,
@@ -71,11 +89,9 @@ function resolveConfig(config: RouterConfig): ResolvedConfig {
     fallback: config.fallback ?? true,
     verbose: config.verbose ?? false,
     routing: config.routing ?? {},
+    warn,
   };
 }
-
-// Library entry: the caller passed `routing` in code, so warn here too — the
-// proxy has its own call site for the config file.
 
 function buildClassifyInput(
   params: SendParams | StreamParams,
@@ -134,7 +150,7 @@ export class ClaudeRouter {
     retryReason: string | null = null,
   ): RouteMeta {
     const { costCents, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens, priced } =
-      computeRouteCost(model, usage, this.config.defaultModel, this.config.pricing);
+      computeRouteCost(model, usage, this.config.defaultModel, this.config.pricing, this.config.warn);
 
     return {
       tier,
@@ -213,78 +229,48 @@ export class ClaudeRouter {
     return routed;
   }
 
-  stream(params: StreamParams): StreamResult {
+  /**
+   * Classify first (awaited — `classify()` never throws by contract), then hand
+   * back the real SDK `MessageStream` untouched. Streaming intentionally
+   * bypasses `executeRoute`: there is no retry once bytes have flowed.
+   */
+  async stream(params: StreamParams): Promise<StreamResult> {
     const { tier: forcedTier, ...apiParams } = params;
-    const input = buildClassifyInput(params);
 
-    const classifyPromise = forcedTier
-      ? Promise.resolve({
+    if (forcedTier && !(forcedTier in this.config.tiers)) {
+      throw new TypeError(
+        `[claude-router] Unknown tier "${forcedTier}" — expected one of: ${Object.keys(this.config.tiers).join(', ')}`,
+      );
+    }
+
+    const classifyResult: ClassifyResult = forcedTier
+      ? {
           tier: forcedTier,
           score: -1,
           method: 'heuristic' as const,
           ms: 0,
           confidence: 1.0,
-        })
-      : this.classify(input);
+        }
+      : await this.classify(buildClassifyInput(params));
 
-    // We need to classify first, then start stream
-    let resolveStream: (s: MessageStream) => void;
-    let rejectStream: (e: unknown) => void;
+    const tier = classifyResult.tier;
+    const model = this.config.tiers[tier];
 
-    const streamReady = new Promise<MessageStream>((res, rej) => {
-      resolveStream = res;
-      rejectStream = rej;
+    const stream = this._client.messages.stream(
+      normalizeParamsForTier({ ...apiParams, model }, tier) as Anthropic.MessageStreamParams,
+    );
+
+    const meta = stream.finalMessage().then((finalMessage) => {
+      const m = this.buildMeta(tier, model, finalMessage.usage, classifyResult, false);
+      this.tracker.record(m);
+      this.log(m, classifyResult);
+      return m;
     });
+    // Mark handled: a caller consuming only `stream` must not be able to crash
+    // the host on a mid-stream error. `await meta` still sees the rejection.
+    meta.catch(() => {});
 
-    const metaPromise = classifyPromise
-      .then(async (classifyResult) => {
-        const tier = classifyResult.tier;
-        const model = this.config.tiers[tier];
-
-        const s = this._client.messages.stream(
-          normalizeParamsForTier({ ...apiParams, model }, tier),
-        );
-
-        resolveStream!(s);
-
-        const finalMessage = await s.finalMessage();
-        const meta = this.buildMeta(
-          tier,
-          model,
-          finalMessage.usage,
-          classifyResult,
-          false,
-        );
-
-        this.tracker.record(meta);
-        this.log(meta, classifyResult);
-        return meta;
-      })
-      .catch((err) => {
-        rejectStream!(err);
-        throw err;
-      });
-
-    // Return a proxy that waits for classification to complete
-    const streamProxy = new Proxy({} as MessageStream, {
-      get(_target, prop) {
-        if (prop === 'then') return undefined; // Not a thenable
-        return (...args: unknown[]) => {
-          return streamReady.then((s) => {
-            const val = (s as unknown as Record<string | symbol, unknown>)[prop];
-            if (typeof val === 'function') {
-              return (val as Function).apply(s, args);
-            }
-            return val;
-          });
-        };
-      },
-    });
-
-    return {
-      stream: streamProxy,
-      meta: metaPromise,
-    };
+    return { stream, meta };
   }
 
   stats(): RouterStats {
