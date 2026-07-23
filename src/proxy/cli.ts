@@ -633,7 +633,7 @@ ${term.bold('Usage')}
   ${a('claude-router status')}                Health, routing stats, install state
   ${a('claude-router stats')} [--json]        Lifetime savings and per-day breakdown
   ${a('claude-router logs')} [-f] [-n N]      Show (or follow) the daemon log
-  ${a('claude-router init')} [--force]        Scaffold ~/.claude-router/config.json
+  ${a('claude-router init')} [--force] [options]  Scaffold ~/.claude-router/config.json from the given options
   ${a('claude-router doctor')}                Diagnose common setup problems
 
 ${term.bold('Options')} ${d('(install / start / restart / status / doctor)')}

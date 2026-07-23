@@ -3,11 +3,40 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/) (pre-1.0: minor = features, patch = fixes).
 
-## [Unreleased]
+## [0.3.0] — 2026-07-23
+
+Production-hardening release from a full three-angle audit (core library, proxy/CLI, packaging).
+
+> ⚠️ **Breaking:** `router.stream()` is now async. The old form returned a Proxy that broke `for await` and `.on()` chaining and could crash the host process with an unhandled rejection — no working code can depend on it. Migration is one `await`:
+> ```ts
+> const { stream, meta } = await router.stream({ ... });
+> for await (const event of stream) { /* real SDK MessageStream */ }
+> ```
+
+### Changed
+- **`stream()` returns `Promise<StreamResult>` (breaking).** Classification is awaited first, then the caller gets the untouched SDK `MessageStream` — `for await`, `.on()` chaining, and `.finalMessage()` all work as in the plain SDK. `meta` still resolves after the stream completes; it is pre-marked handled, so a caller that ignores it can no longer crash the process via `unhandledRejection` when a stream errors. Also drops the deep import of `@anthropic-ai/sdk/lib/MessageStream.js` (internal SDK layout) for a type derived from the client surface.
+
+### Security
+- **Removed wildcard CORS (breaking for cross-origin browser reads).** The proxy served `Access-Control-Allow-Origin: *` on every route, letting any webpage in the operator's browser POST `/v1/messages` to localhost and read the response — with `bedrock`/`vertex` that spends the operator's cloud credentials with no authentication. No supported consumer needs CORS (the dashboard is same-origin; CLI/statusline use Node fetch). A test pins the header's absence.
+- The non-loopback bind warning now also fires for the `anthropic` provider — an exposed proxy is an open, unauthenticated relay regardless of provider.
 
 ### Fixed
+- **Streaming failures get honest status codes.** Pre-stream errors (401 auth, 400 validation, connection failures) previously surfaced as `200 OK` carrying an SSE `event: error` frame; the first stream event is now awaited before headers are committed, so they map to their real HTTP status like the non-streaming path. Connection errors map to 502 instead of silently becoming 200 (the SDK's `APIConnectionError` has no `status`).
+- **Mid-stream failures no longer vanish from the books.** A stream that dies after headers are sent still emits the SSE error frame, and is now recorded with an `error` field; `stats` shows an `Errors` row and the money totals exclude the placeholder zeros. Legacy history lines are unaffected.
+- **`executeRoute` defensive gaps.** An unknown tier now throws a typed error instead of sending the API `model: undefined`; a failed escalation retry (e.g. the escalated tier is rate-limited) serves the truncated-but-real original response instead of discarding it and re-walking the tiers; the exhausted-loop path can no longer `throw undefined`.
+- **Port conflicts fail cleanly.** `EADDRINUSE`/`EACCES` on startup print an actionable message and exit 1 instead of an uncaught stack trace.
+- **`restart` with no daemon state warns** that the previous flags (e.g. `--force-route`) are not carried over, instead of silently restarting with defaults.
 - `claude-router stats` no longer renders a signed zero like `-$0.00` or `extra $0.00` for sub-cent savings; they now show a neutral `$0.00` ([#38](https://github.com/Serhii-Leniv/claude-router/issues/38))
 - **`files` no longer sweeps all of `assets/` into the published package.** The entry was the bare directory, so `npm pack` picked up anything sitting there — including files not tracked in git, which meant the tarball could differ between machines. A 147kB promo image was caught on its way into 0.2.2 this way. Narrowed to `assets/claude-router.svg`, the only asset the README actually references.
+
+### Added
+- **`RouterConfig.logger`** — inject a warn sink (or `{ warn: () => {} }` to silence) for the library's warnings (unpriced models, dead config keys); embedders no longer get unconditional `console.warn` from library code. Default behavior unchanged.
+- **`proxy.log` rotation** — rotates to `proxy.log.old` at 10 MB on daemon start; `logs` reads a bounded tail (256 KB) instead of the whole file into memory, and `logs -f` survives rotation instead of silently going quiet. `history.jsonl` is deliberately never rotated (it is the lifetime-savings ledger; archive it anytime — stats restart from zero, with a one-time nudge past 100 MB).
+- **Graceful shutdown** — SIGINT/SIGTERM close the server with a capped drain (POSIX + Ctrl+C everywhere; Windows `TerminateProcess` remains abrupt by design, with nothing to flush).
+- Dedicated tests for `executeRoute`, the CLI server-bind path, log rotation/tail reads, and the streaming failure modes (driven over real sockets).
+
+### Known limitations (deferred, low severity)
+- Passthrough forwards client headers verbatim (no allowlist); `~/.claude-router` files are not chmod-0600; a recycled PID on Windows could make `stop` signal an unrelated process; the dashboard "session" figures cap at the last 1000 events; `computeRouteCost`/`TIER_ORDER` and friends are not re-exported from the package entry; no ESLint/Prettier in the repo (typecheck only).
 
 ## [0.2.2] — 2026-07-21
 
