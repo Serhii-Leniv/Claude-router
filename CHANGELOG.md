@@ -3,6 +3,14 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/) (pre-1.0: minor = features, patch = fixes).
 
+## [0.3.1] — 2026-07-25
+
+### Added
+- **`sessionModel` — pin the Claude Code coordinator session to a tier** ([#55](https://github.com/Serhii-Leniv/claude-router/issues/55), thanks @smoochy). Set `--session-model opus` (or `"sessionModel": "opus"` in `config.json`) to keep Claude Code's main interactive session on one tier — a large context window with no early compaction — while tasks and subagents still route down by evidence. Coordinator vs subagent is told apart by the gateway protocol's `x-claude-code-agent-id` header, which Claude Code sets only on subagent requests, so it works even when subagents inherit the main model. Only effective under `--force-route` (the startup banner flags when it isn't); a config typo naming an unknown tier degrades to normal routing rather than sending the API `model: undefined`. Verified against live Claude Code v2.1.219.
+
+### Fixed
+- Docs no longer imply `defaultModel` is a `config.json` option — it is a library-only field and only sets the savings baseline, never the routed model. Use `sessionModel` to influence routing ([#55](https://github.com/Serhii-Leniv/claude-router/issues/55)).
+
 ## [0.3.0] — 2026-07-23
 
 Production-hardening release from a full three-angle audit (core library, proxy/CLI, packaging).
