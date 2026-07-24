@@ -24,6 +24,16 @@ export interface HandlerConfig {
   provider: Provider;
   models: Record<Tier, string>;
   forceRoute: boolean;
+  /**
+   * Pin the Claude Code coordinator session to this tier, bypassing the
+   * classifier for it. The main interactive session sends NO x-claude-code-agent-id
+   * header; only subagents Claude Code spawns do (gateway protocol). So a request
+   * without that header is the coordinator — pinning it keeps a large context
+   * window for the whole session (no early compaction) while subagents still
+   * route by evidence. Only meaningful under forceRoute (otherwise the client's
+   * pinned model already passes through). Undefined = classify every request.
+   */
+  sessionModel?: Tier;
   /** Pricing table for savings math (default: current-generation DEFAULT_PRICING) */
   pricing?: Record<string, ModelPricing>;
   /** Classifier thresholds/band/timeout/cache tuning */
@@ -295,8 +305,19 @@ export async function handleMessages(
     return proxyPassthrough(c, rawBody, config.upstream ?? DEFAULT_UPSTREAM);
   }
 
-  const input = buildClassifyInput(body);
-  const classifyResult = await classify(client, input, config);
+  // Coordinator-session pin (Claude Code): a request WITHOUT x-claude-code-agent-id
+  // is the main interactive session; subagents carry that header. When sessionModel
+  // is set (and maps to a known tier), pin the coordinator to it and skip the
+  // classifier entirely — subagents fall through to normal evidence routing. The
+  // config-file value is trusted like `classifier`/`provider`, but a typo'd tier
+  // has no `models[tier]` entry, so we degrade to classification rather than send
+  // `model: undefined` to the API.
+  const isSubagent = c.req.header('x-claude-code-agent-id') != null;
+  const pinTier = config.sessionModel;
+  const classifyResult: ClassifyResult =
+    pinTier && !isSubagent && config.models[pinTier]
+      ? { tier: pinTier, score: 0, method: 'pinned', ms: 0, confidence: 1, reason: 'session:coordinator-pinned' }
+      : await classify(client, buildClassifyInput(body), config);
 
   const tier = classifyResult.tier;
   const model = config.models[tier];
