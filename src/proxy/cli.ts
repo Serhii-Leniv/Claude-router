@@ -129,6 +129,7 @@ async function cmdStart(args: string[]): Promise<void> {
     provider: options.provider,
     models,
     forceRoute: options.forceRoute,
+    sessionModel: options.sessionModel ? (options.sessionModel as Tier) : undefined,
     pricing: options.pricing,
     routing: options.routing,
     historyFile: paths.historyFile,
@@ -164,6 +165,14 @@ async function cmdStart(args: string[]): Promise<void> {
     ['', `${term.tier('sonnet')} ${term.dim('→')} ${models.sonnet}`],
     ['', `${term.tier('opus')} ${term.dim('→')} ${models.opus}`],
   ];
+  // A pinned coordinator changes routing meaningfully (the main session skips the
+  // classifier), so surface it — and flag when it can't take effect.
+  if (options.sessionModel) {
+    const note = options.forceRoute
+      ? term.dim('(subagents still routed)')
+      : term.yellow('(needs --force-route to take effect)');
+    rows.push(['Session', `${term.tier(options.sessionModel as Tier)} pinned ${note}`]);
+  }
   // A redirected upstream means requests are NOT going to Anthropic. That is the
   // point when testing, and a silent disaster otherwise — so it is always on the
   // banner, never merely absent when default.

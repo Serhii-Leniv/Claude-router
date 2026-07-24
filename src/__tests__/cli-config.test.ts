@@ -67,10 +67,29 @@ describe('parseServeArgs', () => {
       { ...opts, tiers: undefined, pricing: undefined, routing: undefined },
       {
         port: 4100, host: '127.0.0.1', verbose: true, classifier: 'heuristic', provider: 'bedrock',
-        region: 'eu-west-1', forceRoute: true, upstream: 'https://api.anthropic.com',
+        region: 'eu-west-1', forceRoute: true, upstream: 'https://api.anthropic.com', sessionModel: '',
         tiers: undefined, pricing: undefined, routing: undefined,
       },
     );
+  });
+
+  it('parses --session-model, validates the tier, and defaults to disabled', () => {
+    assert.equal(parseServeArgs([]).sessionModel, '', 'disabled by default');
+    assert.equal(parseServeArgs(['--session-model', 'opus']).sessionModel, 'opus');
+    assert.equal(parseServeArgs([], { sessionModel: 'opus' }).sessionModel, 'opus', 'file config supplies it');
+    // Flag overrides file, and only a real tier is accepted.
+    assert.equal(parseServeArgs(['--session-model', 'sonnet'], { sessionModel: 'opus' }).sessionModel, 'sonnet');
+    assert.throws(() => parseServeArgs(['--session-model', 'gpt-4']), CliUsageError);
+    assert.throws(() => parseServeArgs(['--session-model']), CliUsageError);
+  });
+
+  it('round-trips --session-model through spawn args, omitting it when disabled', () => {
+    const opts = parseServeArgs(['--session-model', 'opus']);
+    const args = serveArgsFrom(opts);
+    assert.ok(args.includes('--session-model'));
+    assert.equal(parseServeArgs(args).sessionModel, 'opus');
+    // Default (disabled) must not be emitted.
+    assert.ok(!serveArgsFrom(parseServeArgs([])).includes('--session-model'));
   });
 
   it('defaults upstream to the real API and never reads it from the environment', () => {

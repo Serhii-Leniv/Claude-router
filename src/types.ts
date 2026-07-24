@@ -72,7 +72,7 @@ export interface RouteMeta {
    * this call's model (or the baseline) has no known price. Absent means priced.
    */
   priced?: boolean;
-  classifierMethod: 'heuristic' | 'ai';
+  classifierMethod: 'heuristic' | 'ai' | 'pinned';
   /** Routing overhead in milliseconds */
   classifierMs: number;
   /** True if original tier was rate-limited and a different tier was used */
@@ -112,7 +112,13 @@ export interface ClassifyInput {
 export interface ClassifyResult {
   tier: Tier;
   score: number;
-  method: 'heuristic' | 'ai';
+  /**
+   * How the tier was decided. `pinned` is not a classification at all — the
+   * proxy short-circuits the classifier to honor a configured coordinator model
+   * (see HandlerConfig.sessionModel); it rides this field so the existing
+   * headers/log/history path records "why this tier" uniformly.
+   */
+  method: 'heuristic' | 'ai' | 'pinned';
   ms: number;
   confidence: number;
   /** True when the result was served from the classification cache */

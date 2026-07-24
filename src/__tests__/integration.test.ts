@@ -266,6 +266,85 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
     assert.equal(upstream.calls.at(-1)!.model, DEFAULT_MODELS.opus);
   });
 
+  it('pins the coordinator session to sessionModel when no x-claude-code-agent-id header', async () => {
+    // The Claude Code main session sends no agent-id header. A trivial prompt that
+    // WOULD route to haiku must be pinned to opus instead — and skip the classifier.
+    const { upstream, base } = await setup({ config: { sessionModel: 'opus' } });
+
+    const res = await post(base, {
+      model: 'claude-opus-4-8',
+      messages: [{ role: 'user', content: 'translate hello to French' }],
+      max_tokens: 100,
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'opus', 'coordinator pinned, not routed to haiku');
+    assert.equal(res.headers.get('x-router-model'), DEFAULT_MODELS.opus);
+    assert.equal(res.headers.get('x-router-classifier'), 'pinned', 'classifier bypassed');
+    assert.equal(upstream.calls.length, 1, 'no extra classifier call');
+    assert.equal(upstream.calls[0]!.model, DEFAULT_MODELS.opus, 'pinned model reached the wire');
+  });
+
+  it('pins the coordinator session on a streaming request too (Claude Code streams)', async () => {
+    // Real Claude Code main-session requests are stream:true; the pin sits before
+    // the stream/non-stream branch, so it must apply there as well.
+    const { upstream, base } = await setup({ config: { sessionModel: 'opus' } });
+
+    const res = await post(base, {
+      model: 'claude-opus-4-8',
+      messages: [{ role: 'user', content: 'translate hello to French' }],
+      max_tokens: 100,
+      stream: true,
+    });
+
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') ?? '', /text\/event-stream/);
+    assert.equal(res.headers.get('x-router-tier'), 'opus');
+    assert.equal(res.headers.get('x-router-classifier'), 'pinned');
+
+    const sse = await readSse(res);
+    assert.match(sse, new RegExp(`hello from ${DEFAULT_MODELS.opus}`));
+    assert.equal(upstream.calls.at(-1)!.model, DEFAULT_MODELS.opus);
+    assert.equal(upstream.calls.at(-1)!.stream, true);
+  });
+
+  it('routes subagent requests by evidence even when sessionModel is set', async () => {
+    // Subagents carry x-claude-code-agent-id — they must NOT be pinned; the same
+    // trivial prompt routes to haiku by evidence.
+    const { upstream, base } = await setup({ config: { sessionModel: 'opus' } });
+
+    const res = await fetch(`${base}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-claude-code-agent-id': 'agent_abc123' },
+      body: JSON.stringify({
+        model: 'claude-opus-4-8',
+        messages: [{ role: 'user', content: 'translate hello to French' }],
+        max_tokens: 100,
+      }),
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'haiku', 'subagent routed, not pinned');
+    assert.equal(res.headers.get('x-router-classifier'), 'heuristic');
+    assert.equal(upstream.calls.at(-1)!.model, DEFAULT_MODELS.haiku);
+  });
+
+  it('falls back to classification when sessionModel names an unknown tier', async () => {
+    // A typo'd config value has no models[tier] entry — degrade to routing rather
+    // than send model: undefined to the API.
+    const { upstream, base } = await setup({ config: { sessionModel: 'opus-typo' as unknown as 'opus' } });
+
+    const res = await post(base, {
+      model: 'claude-opus-4-8',
+      messages: [{ role: 'user', content: 'translate hello to French' }],
+      max_tokens: 100,
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'haiku', 'bad pin ignored, request still routed');
+    assert.equal(upstream.calls.at(-1)!.model, DEFAULT_MODELS.haiku);
+  });
+
   it('escalates haiku→sonnet on truncation, end-to-end', async () => {
     const { upstream, base } = await setup({ truncateModels: [DEFAULT_MODELS.haiku] });
 

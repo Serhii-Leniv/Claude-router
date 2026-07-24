@@ -54,6 +54,12 @@ export interface FileConfig {
    * from the environment — see `DEFAULT_UPSTREAM`.
    */
   upstream?: string;
+  /**
+   * Pin the Claude Code coordinator session (the main interactive session, which
+   * sends no x-claude-code-agent-id header) to this tier, bypassing the classifier
+   * for it. Subagents still route by evidence. Only takes effect under forceRoute.
+   */
+  sessionModel?: Tier;
   /** Override the model ID used for each tier. */
   tiers?: Partial<Record<Tier, string>>;
   /** Override pricing ($/1M tokens) for savings math, keyed by model ID. */
@@ -88,6 +94,8 @@ export interface ServeOptions {
   region: string;
   forceRoute: boolean;
   upstream: string;
+  /** '' = disabled (classify every request); a tier name pins the coordinator. */
+  sessionModel: string;
   tiers?: Partial<Record<Tier, string>>;
   pricing?: Record<string, ModelPricing>;
   routing?: RoutingTuning;
@@ -112,7 +120,7 @@ type OptionKind =
  */
 interface OptionSpec {
   /** Corresponding key on ServeOptions / FileConfig. */
-  key: 'port' | 'host' | 'verbose' | 'classifier' | 'provider' | 'region' | 'forceRoute' | 'upstream';
+  key: 'port' | 'host' | 'verbose' | 'classifier' | 'provider' | 'region' | 'forceRoute' | 'upstream' | 'sessionModel';
   flags: string[];
   kind: OptionKind;
   default: string | number | boolean;
@@ -132,6 +140,8 @@ const OPTIONS: OptionSpec[] = [
   { key: 'region',     flags: ['--region'],        kind: { type: 'string' },                     default: '' },
   // Explicit only — never inherited from the environment. See DEFAULT_UPSTREAM.
   { key: 'upstream',   flags: ['--upstream'],      kind: { type: 'string' },                     default: DEFAULT_UPSTREAM },
+  // Empty default = disabled. A tier name pins the Claude Code coordinator session.
+  { key: 'sessionModel', flags: ['--session-model'], kind: { type: 'enum', values: ['haiku', 'sonnet', 'opus', 'fable'] }, default: '' },
 ];
 
 /** Validate and convert a flag's raw argument per its declared kind. */

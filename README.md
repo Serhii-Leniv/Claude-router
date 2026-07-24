@@ -112,6 +112,7 @@ claude
 For each request the proxy classifies the task, routes to the right tier, calls the API, and returns the response plus `x-router-*` headers:
 
 - **Route** — `model: "auto"` (or omitted) is classified and routed. An explicit model passes through unchanged **unless** `--force-route` is set.
+- **Coordinator pin** *(optional)* — with `--session-model <tier>`, the Claude Code **main session** is pinned to that tier (e.g. `opus` for a large context window and no early compaction) while subagents still route by evidence. It keys off the gateway protocol's `x-claude-code-agent-id` header, which Claude Code sets only on subagent requests — so a request without it is the coordinator. Needs `--force-route` (otherwise the client's pinned model already passes through). See [Pin the coordinator session](#pin-the-coordinator-session).
 - **Sonnet by default** — leaving it needs positive evidence. Gates are *conjunctive*, so coincidental keyword matches can't sum into an expensive verdict.
 - **Loop-position aware** — a turn answering a `tool_result` is a mid-loop step, and those are largely tier-insensitive. Agentic turns never reach Haiku unless `routing.allowHaikuInAgentic: true`.
 - **Auto-retry** — a truncated or refused response escalates one tier and retries.
@@ -128,6 +129,17 @@ For each request the proxy classifies the task, routes to the right tier, calls 
 
 Every decision carries a `reason` (e.g. `agentic:mid-loop`), so routing is auditable. **Fable** is opt-in (`routing.allowFable`). AI classification is resilient by design — results are cached (LRU 500), calls time out at 1.5s, and any failure falls back to the heuristic, so a Haiku outage never blocks a request.
 
+### Pin the coordinator session
+
+Claude Code's main interactive session is your coordinator — it holds the growing plan and delegates work to subagents. If it routes to Sonnet, its 200k context window fills fast and compaction kicks in early. `--session-model opus` keeps that one session on Opus (large window, no early compaction) while everything the router does for **subagents** stays intact:
+
+```bash
+claude-router start --force-route --session-model opus
+# or in ~/.claude-router/config.json:  "sessionModel": "opus"
+```
+
+How it tells them apart: Claude Code sets the `x-claude-code-agent-id` header **only** on requests from a subagent it spawned ([gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)). A request without it is the coordinator, so it gets pinned (classifier skipped, `x-router-classifier: pinned`); a request with it routes by evidence as usual. To route subagents down to cheaper tiers, give them lower models in their `.claude/agents/*.md` frontmatter — the pin never touches them. Only takes effect under `--force-route`; without it, the client's explicit model already passes through untouched.
+
 ---
 
 ## Configuration
@@ -140,6 +152,7 @@ Set defaults once in `~/.claude-router/config.json` instead of passing flags. **
   "classifier": "hybrid",
   "forceRoute": true,
   "verbose": false,
+  "sessionModel": "opus",
   "tiers": {
     "haiku": "claude-haiku-4-5",
     "sonnet": "claude-sonnet-5",
@@ -159,6 +172,7 @@ Set defaults once in `~/.claude-router/config.json` instead of passing flags. **
 }
 ```
 
+- **`sessionModel`** — pin the Claude Code coordinator session to a tier (subagents still route). See [Pin the coordinator session](#pin-the-coordinator-session).
 - **`tiers`** — override which model ID each tier maps to.
 - **`pricing`** — override `$/1M` token rates used for savings math (handy for enterprise/negotiated rates).
 - **`routing`** — tune the classifier. `allowHaikuInAgentic: true` lets clearly-trivial tool-using turns reach Haiku (off by default — see the [agentic floor](#how-it-works)).
@@ -185,6 +199,7 @@ Options (install / start / restart / status / doctor):
   --port, -p <number>    Port (default: 4000)
   --host <address>       Bind address (default: 127.0.0.1 — local only)
   --force-route          Route every request, ignoring the client's model (needed for Claude Code)
+  --session-model <tier> Pin the Claude Code coordinator session to a tier (haiku|sonnet|opus|fable); subagents still route. Needs --force-route
   --verbose, -v          Log routing decisions
   --classifier <mode>    heuristic | ai | hybrid (default: hybrid)
   --provider <mode>      anthropic | bedrock | vertex (default: anthropic)
