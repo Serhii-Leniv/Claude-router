@@ -1,17 +1,11 @@
 #!/usr/bin/env bash
-# Claude Code statusline — shows last routed tier from claude-router proxy
-# Usage: add to Claude Code settings.json statusLine.command
+# Claude Code statusline — shows last routed tier from claude-router proxy.
+# This mirrors what `claude-router install` writes into ~/.claude/settings.json.
+# The proxy serves a preformatted line at /statusline, so no JSON parsing is
+# needed here — just curl.
+#
+# Usage: set as statusLine.command in Claude Code settings.json, e.g.
+#   curl -sf --max-time 0.3 http://127.0.0.1:4000/statusline || echo [auto:off]
 
 PORT="${CLAUDE_ROUTER_PORT:-4000}"
-URL="http://localhost:${PORT}/health"
-
-result=$(curl -sf --max-time 0.3 "$URL" 2>/dev/null)
-if [ -z "$result" ]; then
-  echo "[auto:off]"
-  exit 0
-fi
-
-tier=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('lastTier') or 'ready')" 2>/dev/null)
-requests=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('requests', 0))" 2>/dev/null)
-
-echo "[auto:${tier:-ready} #${requests:-0}]"
+curl -sf --max-time 0.3 "http://127.0.0.1:${PORT}/statusline" || echo "[auto:off]"

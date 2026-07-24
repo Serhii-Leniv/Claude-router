@@ -38,3 +38,13 @@ export function buildHealth(
     lastModel: last?.model ?? null,
   };
 }
+
+/**
+ * The Claude Code statusline text, e.g. `[auto:sonnet #42]`. Kept here so the
+ * `/health` contract module stays the one owner of these fields — the shell
+ * statusline fetches this preformatted string (via `GET /statusline`) instead
+ * of parsing JSON, so the installed command is plain `curl`, no `jq`/`python`.
+ */
+export function formatStatusLine(info: HealthInfo): string {
+  return `[auto:${info.lastTier ?? 'ready'} #${info.requests}]`;
+}

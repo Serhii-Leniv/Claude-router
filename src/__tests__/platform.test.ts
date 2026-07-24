@@ -83,27 +83,35 @@ describe('rc block', () => {
 });
 
 describe('statusline', () => {
-  it('uses 127.0.0.1 with the given port and node (no curl/python)', () => {
+  it('uses a curl one-liner to 127.0.0.1 /statusline (no node/python/jq)', () => {
     const cmd = buildStatuslineCommand(4321);
-    assert.ok(cmd.startsWith('node -e'));
-    assert.ok(cmd.includes('http://127.0.0.1:4321/health'));
-    assert.ok(!cmd.includes('curl'));
+    assert.ok(cmd.startsWith('curl'));
+    assert.ok(cmd.includes('http://127.0.0.1:4321/statusline'));
+    assert.ok(cmd.includes('[auto:off]')); // down-daemon fallback
+    assert.ok(!cmd.includes('node'));
     assert.ok(!cmd.includes('python'));
+    assert.ok(!cmd.includes('jq'));
   });
 
-  it('is JSON-embedding safe (single outer double-quote pair)', () => {
+  it('is JSON-embedding safe (no double quotes, round-trips)', () => {
     const cmd = buildStatuslineCommand(4000);
-    // Exactly two double quotes: around the -e script
-    assert.equal((cmd.match(/"/g) ?? []).length, 2);
+    // No double quotes to escape when it lives in settings.json.
+    assert.equal((cmd.match(/"/g) ?? []).length, 0);
     // Round-trips through JSON (as it will live in settings.json)
     assert.equal(JSON.parse(JSON.stringify(cmd)), cmd);
   });
 
-  it('recognizes both current and legacy installed commands', () => {
+  it('recognizes current and both legacy installed commands', () => {
     assert.ok(isOurStatusline(buildStatuslineCommand(4000)));
+    // Legacy curl+python form (predates the node version).
     const legacyCurl =
       `curl -sf --max-time 0.3 http://localhost:4000/health | python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('lastTier') or 'ready'; r=d.get('requests',0); print(f'[auto:{t} #{r}]')" 2>/dev/null || echo '[auto:off]'`;
     assert.ok(isOurStatusline(legacyCurl));
+    // Legacy node form — users who installed before the shell switch must still
+    // be recognized so `uninstall` can remove it.
+    const legacyNode =
+      `node -e "fetch('http://127.0.0.1:4000/health',{signal:AbortSignal.timeout(300)}).then(r=>r.json()).then(d=>console.log('[auto:'+(d.lastTier??'ready')+' #'+d.requests+']')).catch(()=>console.log('[auto:off]'))"`;
+    assert.ok(isOurStatusline(legacyNode));
     assert.ok(!isOurStatusline('my-custom-statusline --fancy'));
   });
 });
