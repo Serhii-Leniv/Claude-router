@@ -76,6 +76,14 @@ describe('createProxyApp', () => {
     assert.equal(body.classifier, 'heuristic');
   });
 
+  it('GET /statusline returns preformatted text/plain for the shell statusline', async () => {
+    const res = await app.request('/statusline');
+    assert.equal(res.status, 200);
+    assert.ok(res.headers.get('content-type')?.startsWith('text/plain'));
+    const body = await res.text();
+    assert.match(body, /^\[auto:.+ #\d+\]$/);
+  });
+
   it('does not serve CORS headers — cross-origin browser reads stay blocked', async () => {
     // Pins the security posture: a wildcard CORS header would let any webpage
     // in the operator's browser read responses from this local proxy.

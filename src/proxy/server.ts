@@ -3,7 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { handleMessages, handlePassthrough, routeHistory, type HandlerConfig } from './handler.js';
 import { renderDashboard } from './dashboard.js';
 import { readLifetimeStats } from './history.js';
-import { buildHealth } from './health.js';
+import { buildHealth, formatStatusLine } from './health.js';
 
 export function createProxyApp(
   config: HandlerConfig,
@@ -19,6 +19,10 @@ export function createProxyApp(
   // cross-origin reads IS the security boundary; do not add cors() back.
 
   app.get('/health', (c) => c.json(buildHealth(config, routeHistory)));
+
+  // Preformatted statusline text for the shell statusline command — plain text,
+  // so the installed `curl` one-liner needs no JSON parsing (no jq/python).
+  app.get('/statusline', (c) => c.text(formatStatusLine(buildHealth(config, routeHistory))));
 
   app.get('/api/last-route', (c) => {
     const last = routeHistory[routeHistory.length - 1] ?? null;

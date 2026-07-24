@@ -119,15 +119,23 @@ export function removeRcBlock(content: string): string {
   return out.join('\n');
 }
 
-/** Statusline command for ~/.claude/settings.json — node is guaranteed present. */
+/**
+ * Statusline command for ~/.claude/settings.json. A shell `curl` one-liner —
+ * Claude Code spawns this on every prompt render, so avoiding a per-render node
+ * interpreter boot (~tens–100ms) is the whole point. The server hands back a
+ * preformatted line via `/statusline`, so no JSON parsing (no jq/python) is
+ * needed — just curl.
+ *
+ * Portability: curl is required. macOS/Linux ship it; Windows 10 1803+/11 ship
+ * curl.exe. Older Windows without curl falls through to `[auto:off]` (degraded,
+ * not broken) — the tradeoff for dropping node startup.
+ */
 export function buildStatuslineCommand(port: number): string {
   // 127.0.0.1, not localhost: localhost can resolve to ::1 first on Windows.
-  // Outer double quotes + inner single quotes work under cmd, PowerShell, and sh.
-  return (
-    `node -e "fetch('http://127.0.0.1:${port}/health',{signal:AbortSignal.timeout(300)})` +
-    `.then(r=>r.json()).then(d=>console.log('[auto:'+(d.lastTier??'ready')+' #'+d.requests+']'))` +
-    `.catch(()=>console.log('[auto:off]'))"`
-  );
+  // -f: curl exits non-zero on HTTP error / connection refused → the `|| echo`
+  // fallback fires when the daemon is down. `[auto:off]` unquoted stays literal
+  // under both cmd.exe and sh (single quotes would print verbatim in cmd).
+  return `curl -sf --max-time 0.3 http://127.0.0.1:${port}/statusline || echo [auto:off]`;
 }
 
 /** Matches any statusline command this tool has ever installed. */
