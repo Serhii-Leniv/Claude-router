@@ -382,8 +382,12 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
     });
 
     assert.equal(res.status, 200);
+    // The invariant is "the classifier decided this, not the pin" — asserted
+    // positively so it can't pass by the header being absent. Which tier the
+    // evidence then picks is routing.ts's business, so only "not the pinned
+    // tier" is pinned here.
+    assert.equal(res.headers.get('x-router-classifier'), 'heuristic', 'classifier must still run');
     assert.notEqual(res.headers.get('x-router-tier'), 'opus', 'meta-call must not reach the pinned tier');
-    assert.notEqual(res.headers.get('x-router-classifier'), 'pinned', 'classifier must still run');
     assert.notEqual(upstream.calls.at(-1)!.model, DEFAULT_MODELS.opus);
   });
 
