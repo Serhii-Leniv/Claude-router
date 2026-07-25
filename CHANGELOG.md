@@ -3,6 +3,11 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follows [SemVer](https://semver.org/) (pre-1.0: minor = features, patch = fixes).
 
+## [Unreleased]
+
+### Fixed
+- **`sessionModel` no longer pins Claude Code's meta-calls to the top tier.** The pin read "no `x-claude-code-agent-id` header" as "coordinator", but Claude Code's session-title and summary calls arrive without that header too — so `--session-model opus` sent them to Opus, paying the top tier to name a session (these were 29% of requests on the wire corpus). The pin now also requires the request to carry tools, which every real coordinator turn does and the meta-calls never do. Measured against live Claude Code v2.1.220: the title call was `opus (pinned)` before and `sonnet` after, with the coordinator still pinned and subagents still routed by evidence.
+
 ## [0.3.1] — 2026-07-25
 
 ### Added

@@ -312,10 +312,24 @@ export async function handleMessages(
   // config-file value is trusted like `classifier`/`provider`, but a typo'd tier
   // has no `models[tier]` entry, so we degrade to classification rather than send
   // `model: undefined` to the API.
+  //
+  // The pin needs a second condition: **the request must carry tools.** Absence of
+  // the agent-id header means "not a subagent", which is not the same as "the
+  // coordinator's agent turn". Claude Code's meta-calls — session title, summary —
+  // also arrive without it, and they are the `<session>…</session>` quoted-prompt
+  // shape the classifier already routes cheap (29% of requests on the wire corpus;
+  // see latestUserText in src/routing.ts). Pinning those charged opus rates to name
+  // a session: measured in the sandbox against live Claude Code v2.1.220, the title
+  // call went sonnet → opus the moment `--session-model opus` was on. Every real
+  // coordinator turn ships Claude Code's tool set (165–217 tools observed); the
+  // meta-calls ship none, so this is the same structural agentic/single-turn split
+  // routing.ts already makes — no text is parsed. A genuinely tool-less coordinator
+  // turn degrades to classification, which is the cheap path anyway.
   const isSubagent = c.req.header('x-claude-code-agent-id') != null;
+  const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
   const pinTier = config.sessionModel;
   const classifyResult: ClassifyResult =
-    pinTier && !isSubagent && config.models[pinTier]
+    pinTier && !isSubagent && hasTools && config.models[pinTier]
       ? { tier: pinTier, score: 0, method: 'pinned', ms: 0, confidence: 1, reason: 'session:coordinator-pinned' }
       : await classify(client, buildClassifyInput(body), config);
 
