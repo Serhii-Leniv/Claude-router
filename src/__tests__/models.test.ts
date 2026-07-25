@@ -111,6 +111,17 @@ describe('current-generation pricing (guards against drift)', () => {
     assert.deepEqual(FAMILY_PRICING.opus, { input: 5.0, output: 25.0 });
   });
 
+  it('Opus 5 prices like the rest of the Opus family — promotion is free', () => {
+    // The opus tier moved from 4.8 to Opus 5, which ships at the same rate. If a
+    // future Opus arrives at a different price, this fails rather than silently
+    // rebasing every historical savings figure against a new baseline.
+    assert.equal(DEFAULT_MODELS.opus, 'claude-opus-5');
+    assert.equal(familyForModel('claude-opus-5'), 'opus');
+    for (const id of ['claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6']) {
+      assert.deepEqual(priceForModel(id, DEFAULT_PRICING), FAMILY_PRICING.opus, id);
+    }
+  });
+
   it('Sonnet is $3/$15 per 1M', () => {
     assert.deepEqual(FAMILY_PRICING.sonnet, { input: 3.0, output: 15.0 });
   });

@@ -4,7 +4,7 @@ import type { ModelPricing, Tier } from './types.js';
 export const DEFAULT_MODELS: Record<Tier, string> = {
   haiku: 'claude-haiku-4-5',
   sonnet: 'claude-sonnet-5',
-  opus: 'claude-opus-4-8',
+  opus: 'claude-opus-5',
   fable: 'claude-fable-5',
 };
 
@@ -14,27 +14,29 @@ export const DEFAULT_MODELS: Record<Tier, string> = {
 export const BEDROCK_MODELS: Record<Tier, string> = {
   haiku:  'us.anthropic.claude-haiku-4-5-20251001-v1:0',
   sonnet: 'us.anthropic.claude-sonnet-5-v1:0',
-  opus:   'us.anthropic.claude-opus-4-8-v1:0',
+  opus:   'us.anthropic.claude-opus-5-v1:0',
   // Fable's availability and inference-profile ID on Bedrock are unverified, so
   // the fable tier resolves to Opus here rather than risking a 404. Fable
   // routing is opt-in and off by default, so this is inert unless enabled.
-  fable:  'us.anthropic.claude-opus-4-8-v1:0',
+  fable:  'us.anthropic.claude-opus-5-v1:0',
 };
 
 export const VERTEX_MODELS: Record<Tier, string> = {
   haiku:  'claude-haiku-4-5',
   sonnet: 'claude-sonnet-5',
-  opus:   'claude-opus-4-8',
+  opus:   'claude-opus-5',
   // Same reasoning as Bedrock above.
-  fable:  'claude-opus-4-8',
+  fable:  'claude-opus-5',
 };
 
 /**
  * Current-generation Claude pricing ($ per 1M tokens), keyed by tier/family.
- * Verified against platform.claude.com pricing (last checked 2026-07-17):
+ * Verified against platform.claude.com pricing (last checked 2026-07-25):
  *   Haiku 4.5 — $1.00 / $5.00
  *   Sonnet 5  — $3.00 / $15.00 standard (intro $2.00 / $10.00 through 2026-08-31)
- *   Opus 4.6/4.7/4.8 — $5.00 / $25.00  (note: NOT the old $15/$75 of Opus 4.0/4.1)
+ *   Opus 5 / 4.6 / 4.7 / 4.8 — $5.00 / $25.00  (note: NOT the old $15/$75 of
+ *     Opus 4.0/4.1. Opus 5 ships at the same rate as 4.8, so promoting the opus
+ *     tier to it changes no cost figure — only the model ID.)
  *
  *   Fable 5  — $10.00 / $50.00 (2x Opus; the most expensive routable tier)
  *
@@ -89,6 +91,7 @@ const FAMILY_DERIVED_PRICING: Record<string, ModelPricing> = {
   'claude-haiku-4-5-20251001': FAMILY_PRICING.haiku,
   'claude-sonnet-5': FAMILY_PRICING.sonnet,
   'claude-sonnet-4-6': FAMILY_PRICING.sonnet,
+  'claude-opus-5': FAMILY_PRICING.opus,
   'claude-opus-4-8': FAMILY_PRICING.opus,
   'claude-opus-4-7': FAMILY_PRICING.opus,
   'claude-opus-4-6': FAMILY_PRICING.opus,

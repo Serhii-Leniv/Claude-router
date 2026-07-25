@@ -158,10 +158,10 @@ Set defaults once in `~/.claude-router/config.json` instead of passing flags. **
   "tiers": {
     "haiku": "claude-haiku-4-5",
     "sonnet": "claude-sonnet-5",
-    "opus": "claude-opus-4-8"
+    "opus": "claude-opus-5"
   },
   "pricing": {
-    "claude-opus-4-8": { "input": 5.0, "output": 25.0 }
+    "claude-opus-5": { "input": 5.0, "output": 25.0 }
   },
   "routing": {
     "haikuMax": 30,
@@ -227,7 +227,7 @@ Pricing tracks the **current Claude generation**; unknown/dated/Bedrock/Vertex I
 
 | Model | ID | Input $/1M | Output $/1M |
 |-------|-----|-----------:|------------:|
-| Claude Opus 4.8 | `claude-opus-4-8` | $5.00 | $25.00 |
+| Claude Opus 5 | `claude-opus-5` | $5.00 | $25.00 |
 | Claude Sonnet 5 | `claude-sonnet-5` | $3.00 | $15.00 |
 | Claude Haiku 4.5 | `claude-haiku-4-5` | $1.00 | $5.00 |
 
@@ -335,7 +335,7 @@ const router = createRouter({
   tiers: {                         // override model IDs per tier
     haiku: 'claude-haiku-4-5',
     sonnet: 'claude-sonnet-5',
-    opus: 'claude-opus-4-8',
+    opus: 'claude-opus-5',
   },
   pricing: {                       // override $/1M token pricing
     'claude-sonnet-5': { input: 3.0, output: 15.0 },
