@@ -141,6 +141,17 @@ describe('current-generation pricing (guards against drift)', () => {
     });
   });
 
+  it('Opus 5 prices like the rest of the Opus family — promotion is free', () => {
+    // The opus tier moved from 4.8 to Opus 5, which ships at the same rate. If a
+    // future Opus arrives at a different price, this fails rather than silently
+    // rebasing every historical savings figure against a new baseline.
+    assert.equal(DEFAULT_MODELS.opus, 'claude-opus-5');
+    assert.equal(familyForModel('claude-opus-5'), 'opus');
+    for (const id of ['claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6']) {
+      assert.deepEqual(priceForModel(id, DEFAULT_PRICING), FAMILY_PRICING.opus, id);
+    }
+  });
+
   it('legacy Sonnet (4, 4.5, 4.6) keeps $3/$15 after the family rate dropped', () => {
     // These were free-riding on the family fallback while it said $3/$15. Sonnet
     // 5's price cut made the whole prior generation divergent in one move —

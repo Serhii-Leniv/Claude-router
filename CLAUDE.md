@@ -117,7 +117,8 @@ Hybrid mode defers to the AI classifier exactly when no gate fired and routing f
 
 `src/params.ts` — `normalizeParamsForTier(params, tier)` is applied immediately before **every** routed `messages.create`/`stream` in both the library (`src/index.ts`) and the proxy (`src/proxy/handler.ts`), including escalated-retry calls. The router picks the model, so it must also strip/adapt model-coupled params or the request 400s on the routed model:
 - **haiku** (Haiku 4.5): delete `thinking` (no adaptive support) and `output_config.effort` (unsupported). Sampling params kept.
-- **sonnet/opus** (Sonnet 5 / Opus 4.8): delete `temperature`/`top_p`/`top_k`; rewrite `thinking:{type:'enabled',budget_tokens}` → `{type:'adaptive'}`.
+- **sonnet/opus** (Sonnet 5 / Opus 5): delete `temperature`/`top_p`/`top_k`; rewrite `thinking:{type:'enabled',budget_tokens}` → `{type:'adaptive'}`.
+- **opus** additionally: drop `thinking:{type:'disabled'}` when `output_config.effort` is `xhigh`/`max` — Opus 5 rejects that pair (Opus 4.8 accepted it, so the rule arrived with the tier's promotion, not with the router). The *thinking* param is what gets dropped, never the effort: thinking depth is the model's call, effort is the caller's. Same shape as the fable rule below, which is the unconditional case.
 
 Never touches `messages`/`system`/`tools`/`max_tokens`. This is what makes `--force-route` work with Claude Code (which sends adaptive thinking + effort, which Haiku rejects). The AI classifier builds its own clean request and is not normalized.
 

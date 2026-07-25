@@ -37,7 +37,7 @@ describe('normalizeParamsForTier — haiku (Haiku 4.5)', () => {
   });
 });
 
-describe('normalizeParamsForTier — sonnet/opus (Sonnet 5 / Opus 4.8)', () => {
+describe('normalizeParamsForTier — sonnet/opus (Sonnet 5 / Opus 5)', () => {
   for (const tier of ['sonnet', 'opus'] as const) {
     it(`${tier}: strips temperature/top_p/top_k`, () => {
       const out = normalizeParamsForTier(
@@ -74,6 +74,56 @@ describe('normalizeParamsForTier — sonnet/opus (Sonnet 5 / Opus 4.8)', () => {
       assert.deepEqual(out.output_config, { effort: 'xhigh' });
     });
   }
+});
+
+describe('normalizeParamsForTier — disabled thinking (Opus 5 effort cap)', () => {
+  // Opus 5 rejects `thinking: {type: "disabled"}` above effort `high`. Opus 4.8
+  // accepted the pair, so a request that worked before the tier moved to Opus 5
+  // would start 400ing without this.
+  for (const effort of ['xhigh', 'max'] as const) {
+    it(`opus: drops disabled thinking at effort ${effort}, keeping the effort`, () => {
+      const out = normalizeParamsForTier(
+        { max_tokens: 100, thinking: { type: 'disabled' }, output_config: { effort } },
+        'opus',
+      ) as any;
+      assert.ok(!('thinking' in out), 'disabled thinking would 400 at this effort');
+      assert.deepEqual(out.output_config, { effort }, 'the caller keeps the effort it asked for');
+    });
+  }
+
+  for (const effort of ['high', 'medium', 'low'] as const) {
+    it(`opus: keeps disabled thinking at effort ${effort}`, () => {
+      const out = normalizeParamsForTier(
+        { max_tokens: 100, thinking: { type: 'disabled' }, output_config: { effort } },
+        'opus',
+      ) as any;
+      assert.deepEqual(out.thinking, { type: 'disabled' });
+    });
+  }
+
+  it('opus: keeps disabled thinking when no effort is set (default is high)', () => {
+    const out = normalizeParamsForTier(
+      { max_tokens: 100, thinking: { type: 'disabled' } },
+      'opus',
+    ) as any;
+    assert.deepEqual(out.thinking, { type: 'disabled' });
+  });
+
+  it('sonnet: keeps disabled thinking even at xhigh (Sonnet 5 accepts the pair)', () => {
+    const out = normalizeParamsForTier(
+      { max_tokens: 100, thinking: { type: 'disabled' }, output_config: { effort: 'xhigh' } },
+      'sonnet',
+    ) as any;
+    assert.deepEqual(out.thinking, { type: 'disabled' });
+  });
+
+  it('fable: drops disabled thinking at any effort', () => {
+    const out = normalizeParamsForTier(
+      { max_tokens: 100, thinking: { type: 'disabled' }, output_config: { effort: 'low' } },
+      'fable',
+    );
+    assert.ok(!('thinking' in out));
+  });
 });
 
 describe('normalizeParamsForTier — invariants', () => {
