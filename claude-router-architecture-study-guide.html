@@ -1,0 +1,895 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>claude-router — Architecture Study Guide</title>
+<style>
+  :root {
+    --bg: #faf9f7; --panel: #ffffff; --panel2: #f0eee9;
+    --text: #2a2f36; --dim: #6b7480; --accent: #2563c4;
+    --good: #1a7f37; --good-bg: #f0f9f1; --bad: #c03030; --bad-bg: #fdf2f2;
+    --warn: #9a6700; --code-bg: #f6f4ef; --border: #ddd8cf; --heading: #1a1f26;
+    --k: #a12b6e; --s: #1a7f37; --c: #8a919c; --f: #6f42c1; --code-text: #33383f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14181d; --panel: #1b2129; --panel2: #232b35;
+      --text: #d3dae2; --dim: #8a96a3; --accent: #6cb0ff;
+      --good: #56d364; --good-bg: #17251b; --bad: #f08080; --bad-bg: #2a1b1d;
+      --warn: #e3b341; --code-bg: #10151a; --border: #323d49; --heading: #f0f4f8;
+      --k: #ff7b9d; --s: #a5d6a5; --c: #7d8896; --f: #d2a8ff; --code-text: #c9d6e3;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 0 90px;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    background: var(--bg); color: var(--text);
+    font-size: 17px; line-height: 1.7;
+  }
+  .wrap { max-width: 72ch; margin: 0 auto; padding: 0 24px; }
+
+  header.hero {
+    border-bottom: 1px solid var(--border);
+    background: var(--panel); padding: 44px 0 24px;
+  }
+  h1 { font-size: 1.75em; line-height: 1.25; margin: 0 0 10px; color: var(--heading); }
+  .subtitle { color: var(--dim); font-size: 0.95em; }
+  .subtitle a { color: var(--accent); text-decoration: none; }
+
+  nav.parts {
+    position: sticky; top: 0; z-index: 10;
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 8px 0; margin-bottom: 30px;
+  }
+  nav.parts .wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+  nav.parts a {
+    font-size: 0.8em; color: var(--dim); text-decoration: none;
+    border: 1px solid var(--border); border-radius: 14px; padding: 3px 12px;
+    background: var(--bg);
+  }
+  nav.parts a:hover { color: var(--accent); border-color: var(--accent); }
+
+  h2 {
+    font-size: 1.4em; color: var(--heading); margin: 52px 0 4px;
+    padding-top: 10px; line-height: 1.3;
+  }
+  h2 .num {
+    display: inline-block; background: var(--accent); color: var(--panel);
+    border-radius: 6px; font-size: 0.7em; padding: 2px 10px;
+    vertical-align: middle; margin-right: 10px;
+  }
+  .lead { color: var(--dim); font-style: italic; margin: 2px 0 18px; }
+  h3 { font-size: 1.1em; color: var(--accent); margin: 30px 0 8px; }
+  p { margin: 13px 0; }
+
+  code {
+    font-family: Consolas, "Cascadia Code", monospace; font-size: 0.87em;
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px; color: var(--code-text);
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px 18px; overflow-x: auto;
+    font-size: 0.84em; line-height: 1.6;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--code-text); }
+  .k { color: var(--k); } .s { color: var(--s); }
+  .c { color: var(--c); font-style: italic; } .f { color: var(--f); }
+  .plain { margin: -4px 0 20px; }
+  .plain strong { color: var(--good); }
+
+  .box {
+    border: 1px solid var(--border); border-left: 4px solid var(--accent);
+    background: var(--panel); border-radius: 8px; padding: 14px 18px; margin: 18px 0;
+  }
+  .box.good { border-left-color: var(--good); background: var(--good-bg); }
+  .box.bad { border-left-color: var(--bad); background: var(--bad-bg); }
+  .box .title { font-weight: 600; display: block; margin-bottom: 6px; color: var(--heading); }
+  .box.good .title { color: var(--good); }
+  .box.bad .title { color: var(--bad); }
+
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 0.92em; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel2); color: var(--heading); }
+  td { background: var(--panel); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 18px 0; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 15px; font-size: 0.92em;
+  }
+  .card .term { font-weight: 700; color: var(--accent); display: block; margin-bottom: 4px; }
+  .card .why { color: var(--dim); font-size: 0.9em; display: block; margin-top: 6px; }
+
+  .diagram {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; margin: 18px 0; font-size: 0.88em;
+  }
+  .diagram .nodebox {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 14px; text-align: center;
+  }
+  .diagram .nodebox.hot { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent); }
+  .diagram .arr { color: var(--dim); font-weight: 700; }
+  .diagram .lbl { display: block; font-size: 0.8em; color: var(--dim); }
+
+  details.qa {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 4px 18px; margin: 10px 0;
+  }
+  details.qa summary { cursor: pointer; font-weight: 600; padding: 10px 0; color: var(--heading); }
+  details.qa[open] { border-left: 3px solid var(--accent); }
+
+  .badge {
+    display: inline-block; border-radius: 12px; padding: 2px 12px; font-size: 0.8em;
+    border: 1px solid var(--border); background: var(--panel2); margin: 2px;
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <h1>🧭 Own it: the architecture of <code>claude-router</code></h1>
+    <div class="subtitle">
+      A cost router for the Claude API — how the whole thing is put together,
+      and why each seam is where it is. Branch <code>fix/readme-real-log-output</code>,
+      ~4,000 lines of TypeScript in <code>src/</code>.
+    </div>
+  </div>
+</header>
+
+<nav class="parts">
+  <div class="wrap">
+    <a href="#p0">0 · Intuition</a>
+    <a href="#p1">1 · Know first</a>
+    <a href="#p2">2 · The design</a>
+    <a href="#p3">3 · The twist</a>
+    <a href="#p4">4 · The code</a>
+    <a href="#p5">5 · Glossary</a>
+    <a href="#p6">6 · Defend it</a>
+  </div>
+</nav>
+
+<div class="wrap">
+
+<h2 id="p0"><span class="num">Part 0</span>The intuition</h2>
+<p class="lead">In this part: what this program does, what it is trying to win, and the one thing that nearly broke it.</p>
+
+<h3>What we HAVE</h3>
+
+<p>
+Anthropic sells three model sizes. Haiku is cheap, Sonnet is the middle,
+Opus is expensive. You pay per token, so the size you pick on each request
+is the size you pay for.
+</p>
+
+<p>
+Most callers pick one model and use it for everything. That means simple
+requests — reformat this, translate that, count these — get billed at the
+price of hard ones.
+</p>
+
+<p>
+<code>claude-router</code> puts a decision in front of every request. It reads the
+request, guesses how hard the task is, and sends it to the cheapest model
+that can do the job. It ships in two forms that share one engine:
+</p>
+
+<ul>
+  <li>a <strong>library</strong> — <code>createRouter({apiKey}).send(params)</code>, a drop-in
+      for the Anthropic SDK's <code>messages.create</code>;</li>
+  <li>a <strong>local HTTP proxy</strong> — you point <code>ANTHROPIC_BASE_URL</code> at
+      <code>127.0.0.1:8787</code> and existing clients route with zero code changes.</li>
+</ul>
+
+<div class="box">
+  <span class="title">The load-bearing fact</span>
+  Once the router chooses the model, it owns everything that depends on the
+  model. Not just the price — also which <em>parameters</em> that model accepts,
+  which <em>tier</em> a failure escalates to, and which <em>baseline</em> the savings
+  are measured against. A caller that hands over model choice hands over all
+  four. Nearly every design decision below follows from this one sentence.
+</div>
+
+<h3>What we WANT</h3>
+
+<p>
+The same answers, at a lower bill, with nothing changed on the caller's side —
+and an honest number telling you how much you saved. If the router silently
+made things worse, you should be able to see that in the logs.
+</p>
+
+<h3>What's IN THE WAY</h3>
+
+<p>
+The headline use case is Claude Code, and it is exactly the case where naive
+routing fails. Here is the sequence that actually happened, found during an
+end-to-end pass against the live API:
+</p>
+
+<ol>
+  <li>Claude Code always pins a model in the request body, so it never routes —
+      you must run the proxy with <code>--force-route</code> to override that.</li>
+  <li>Every Claude Code request carries a large constant payload: a long system
+      prompt, roughly 15 tool definitions, and prior turns full of tool output.</li>
+  <li>The classifier scored the <em>whole payload</em>. Long system prompt: +10.
+      Expert words in it: +15. Tools defined: +8. Many tools: +7. Tool blocks
+      in flight: +10.</li>
+  <li>That is a fixed <strong>+40</strong> on a base of 35 — before the classifier reads
+      one word of the user's actual question. The Opus threshold is 70.</li>
+  <li>So every request tripped it. Including <code>"what is 2+2?"</code>.</li>
+</ol>
+
+<div class="box bad">
+  <span class="title">The user-visible damage</span>
+  A cost router that made things <em>more</em> expensive. Trivial turns went to
+  Opus at $5/$25 per million tokens while the Sonnet baseline was $3/$15 —
+  so <code>savedCents</code> came out <strong>negative</strong> and the log printed
+  <code>extra: $…</code> instead of <code>saved: $…</code>. The one thing the
+  product exists to do, it did backwards.
+</div>
+
+<h2 id="p1"><span class="num">Part 1</span>What you need to know first</h2>
+<p class="lead">In this part: six terms and one map — after this, nothing in the code will be unfamiliar.</p>
+
+<div class="cards">
+  <div class="card">
+    <span class="term">Tier</span>
+    One of <code>'haiku' | 'sonnet' | 'opus'</code>. Not a model ID — a slot that a
+    model ID is looked up in.
+    <span class="why">The whole system routes on tiers and resolves IDs at the last
+    moment, which is why Bedrock and Vertex work with no extra branching.</span>
+  </div>
+  <div class="card">
+    <span class="term">Score</span>
+    A number 0–100 produced by the heuristic classifier. Under 30 → haiku,
+    over 70 → opus, otherwise sonnet.
+    <span class="why">Every weight that moves this number lives in one exported
+    block, <code>HEURISTIC_WEIGHTS</code>, so tuning is one file.</span>
+  </div>
+  <div class="card">
+    <span class="term">Agentic session</span>
+    A request carrying tool definitions, or <code>tool_use</code> / <code>tool_result</code>
+    blocks. Detected by <code>isAgentic()</code>.
+    <span class="why">Coding-loop turns are floored at sonnet — a trivial-looking
+    step in a loop can still be hard to execute.</span>
+  </div>
+  <div class="card">
+    <span class="term">Passthrough</span>
+    A request that bypasses routing entirely and is forwarded byte-for-byte to
+    <code>api.anthropic.com</code>.
+    <span class="why">Happens when the body pins a real model and
+    <code>--force-route</code> is off. It is why the raw body is read as text, once.</span>
+  </div>
+  <div class="card">
+    <span class="term">RouteMeta / RouteEvent</span>
+    The receipt for one routed call: tier, model, tokens, cost, savings, whether
+    it was retried.
+    <span class="why">Two names for near-identical data — library vs proxy. They
+    are never unified into one type; see Part 2.</span>
+  </div>
+  <div class="card">
+    <span class="term">Escalation</span>
+    Re-running a completed response one tier higher because it was cut off or
+    was a refusal.
+    <span class="why">Distinct from rate-limit fallback, which walks up for a
+    completely different reason. Confusing the two is the bug in Part 4.</span>
+  </div>
+</div>
+
+<h3>The system map</h3>
+
+<div class="diagram">
+  <div class="nodebox">Claude Code<span class="lbl">or any SDK client</span></div>
+  <span class="arr">→</span>
+  <div class="nodebox">server.ts<span class="lbl">Hono, /v1/messages</span></div>
+  <span class="arr">→</span>
+  <div class="nodebox">handler.ts<span class="lbl">auth, passthrough</span></div>
+  <span class="arr">→</span>
+  <div class="nodebox hot">classifier.ts<span class="lbl">→ a Tier</span></div>
+  <span class="arr">→</span>
+  <div class="nodebox hot">route.ts<span class="lbl">executeRoute</span></div>
+  <span class="arr">→</span>
+  <div class="nodebox">Anthropic SDK<span class="lbl">api.anthropic.com</span></div>
+</div>
+
+<div class="diagram">
+  <div class="nodebox">index.ts<span class="lbl">ClaudeRouter.send</span></div>
+  <span class="arr">↘</span>
+  <div class="nodebox hot">route.ts + classifier.ts<span class="lbl">shared kernel</span></div>
+  <span class="arr">↙</span>
+  <div class="nodebox">handler.ts<span class="lbl">proxy</span></div>
+</div>
+
+<div class="diagram">
+  <div class="nodebox">a finished call</div>
+  <span class="arr">→</span>
+  <div class="nodebox">models.ts<span class="lbl">computeRouteCost</span></div>
+  <span class="arr">→</span>
+  <div class="nodebox hot">totals.ts<span class="lbl">foldOutcome</span></div>
+  <span class="arr">→</span>
+  <div class="nodebox">tracker · history · dashboard<span class="lbl">three sinks, one fold</span></div>
+</div>
+
+<p>
+Read those three rows as: <strong>two front doors</strong> (library, proxy),
+<strong>one middle</strong> (classify then execute), <strong>one money path</strong>
+(price it, then fold it). Everything else in <code>src/</code> — the CLI, the daemon,
+the dashboard, the platform integration — hangs off the edges of that picture
+and does not participate in routing.
+</p>
+
+<h2 id="p2"><span class="num">Part 2</span>The idea of the design</h2>
+<p class="lead">In this part: the whole architecture in one sentence, and the rule that decides what gets shared.</p>
+
+<div class="box good">
+  <span class="title">The architecture, in one sentence</span>
+  One classifier turns a request into a tier, one kernel executes that tier
+  (including every retry), and one fold turns finished calls into money — the
+  library and the proxy are two thin callers of those three, and nothing else
+  is allowed to re-implement them.
+</div>
+
+<p>Why that's the right shape here:</p>
+
+<ul>
+  <li><strong>The two front doors are genuinely different, but only at the edges.</strong>
+      The library returns an object; the proxy returns an HTTP response. Their
+      routing semantics must be identical. So the split is drawn exactly there:
+      shared execution, separate presentation.</li>
+  <li><strong>Duplication had already caused a real bug.</strong> Before
+      <code>route.ts</code> existed, <code>send()</code> and <code>handleNonStreaming</code>
+      each had their own retry loop, and the two had silently drifted on the
+      escalation condition. Unifying them was a bug fix, not tidying.</li>
+  <li><strong>Sharing is by <em>behaviour</em>, not by <em>type</em>.</strong>
+      <code>foldOutcome</code> reads a five-field structural shape
+      (<code>RouteOutcomeLike</code>), so <code>RouteMeta</code> and <code>RouteEvent</code>
+      both satisfy it without either module adopting the other's record. The
+      fold is shared; the records stay independent.</li>
+  <li><strong>Tier-to-model resolution is deferred to the last moment.</strong>
+      That single indirection is what lets Bedrock's
+      <code>us.anthropic.claude-opus-5-v1:0</code> and a plain
+      <code>claude-opus-5</code> flow through the same code and price the same —
+      as does yesterday's <code>claude-opus-4-8</code>, which is what let the opus
+      tier move to Opus 5 without touching the pricing table.</li>
+</ul>
+
+<h3>The key distinction: the two callers of the same kernel</h3>
+
+<p>
+The library and the proxy differ in exactly three settings. Everything else
+about how a route executes is identical, by construction.
+</p>
+
+<table>
+  <tr><th></th><th>Library (<code>index.ts</code>)</th><th>Proxy (<code>handler.ts</code>)</th></tr>
+  <tr>
+    <td><strong>Rate-limit 429</strong></td>
+    <td><code>fallbackOnRateLimit: true</code> — walks up the tiers and returns an answer</td>
+    <td><code>false</code> — the 429 surfaces to the client, which owns its own backoff</td>
+  </tr>
+  <tr>
+    <td><strong>Where results go</strong></td>
+    <td><code>CostTracker</code>, in memory, O(1)</td>
+    <td><code>RouteEvent</code> → capped array + append-only JSONL file</td>
+  </tr>
+  <tr>
+    <td><strong>Client</strong></td>
+    <td>One client built from the config's API key</td>
+    <td>One client <em>per credential</em>, from the request headers, LRU-cached at 100</td>
+  </tr>
+</table>
+
+<p>
+The third row is not a detail. The proxy sees many callers' keys, so it cannot
+hold a single client — but rebuilding one per request would throw away HTTP
+keep-alive to the API on every call. An LRU keyed on the credential is the
+whole answer.
+</p>
+
+<h2 id="p3"><span class="num">Part 3</span>The twist</h2>
+<p class="lead">In this part: the subtlety that separates "score the request" from routing that actually saves money.</p>
+
+<p>
+The naive classifier is the obvious one, and it is what shipped first: flatten
+the whole request to text, count complexity signals, add up weights, pick a
+tier. It scores well on isolated prompts. It fails completely on the product's
+main customer.
+</p>
+
+<p>
+The reason is that an agentic client's request is mostly <em>not the task</em>. It
+is scaffolding: the harness's system prompt, its tool definitions, the tool
+output from previous steps. That scaffolding is nearly identical on every
+request in a session. A classifier that scores it is measuring the client, not
+the question.
+</p>
+
+<div class="box bad">
+  <span class="title">Why that's poisonous</span>
+  A constant signal in a scoring function is not noise — it is a bias, and it
+  points one way. The harness signals sum to about <strong>+40</strong>, always. Add
+  the base of 35 and you are at 75, past the Opus threshold of 70, before
+  reading the user's words. The classifier's <em>discriminating</em> signals —
+  the verbs, the math, the code — could then only move the score within
+  Opus territory. Routing became a constant function that returned
+  <code>opus</code>, wearing the costume of a classifier.
+</div>
+
+<p>
+The repair is three rules, and each one addresses a different way the constant
+leaks in. Removing any one of them leaves the bug partly alive.
+</p>
+
+<div class="box good">
+  <span class="title">The rule</span>
+  <strong>1. Score the task, not the payload.</strong> Complexity signals are read
+  from the <em>latest user turn</em> only — that is where the discriminating
+  information lives.<br>
+  <strong>2. Cap the scaffolding.</strong> The harness signals are summed and clamped
+  to <code>HARNESS_SIGNAL_CAP = 15</code>. Base 35 + 15 = 50, which sits mid-Sonnet.
+  The harness can nudge a borderline call upward; it can never on its own
+  reach Opus.<br>
+  <strong>3. Floor agentic sessions at sonnet.</strong> With tools present, haiku is
+  off the table by default — a trivial-looking step inside a coding loop can be
+  hard to execute, and a wrong cheap step cascades into more turns, which
+  costs more than the step saved.
+</div>
+
+<p>
+Rules 2 and 3 look like they conflict, and that tension is the thing worth
+understanding. Rule 2 says the harness must not push you <em>up</em>. Rule 3 says
+the harness must stop you going <em>down</em>. Both are true because they answer
+different questions. Rule 2 is about <em>difficulty</em>: the presence of tools
+tells you nothing about how hard this turn is. Rule 3 is about <em>the cost of
+being wrong</em>: inside a loop, a bad cheap answer is not cheap, because the
+loop pays for it again. Difficulty and blast radius are separate axes, and the
+scoring function is only allowed to model the first one.
+</p>
+
+<p>
+One more constant leaks in through a side door: prompt length. Tool output can
+be enormous, so <code>extraChars</code> — the character volume inside
+<code>tool_result</code> blocks — counts toward the token estimate but is
+deliberately <em>not</em> fed to keyword matching. Big tool output means "big
+context", not "hard question".
+</p>
+
+<h2 id="p4"><span class="num">Part 4</span>The details: reading the code</h2>
+<p class="lead">In this part: five blocks of shipped code — the score, the floor, the kernel, the parameters, and the money.</p>
+
+<h3>1 · Scoring the task, and capping the harness</h3>
+
+<pre><code><span class="c">// src/classifier.ts — heuristicScoreDetailed</span>
+<span class="k">const</span> taskText = <span class="f">extractLatestUserText</span>(input.messages);  <span class="c">// ← Part-3 rule 1</span>
+<span class="k">let</span> score = W.BASE;                                       <span class="c">// 35, mid-Sonnet</span>
+
+score += <span class="f">countMatches</span>(taskText, SIMPLE_RE)  * W.SIMPLE_VERB;   <span class="c">// −12 each</span>
+score += <span class="f">countMatches</span>(taskText, MEDIUM_RE)  * W.MEDIUM_VERB;   <span class="c">// +5</span>
+score += <span class="f">countMatches</span>(taskText, COMPLEX_RE) * W.COMPLEX_VERB;  <span class="c">// +15</span>
+
+<span class="c">// --- Harness / scaffolding signals (CAPPED) ---</span>
+<span class="k">let</span> harness = <span class="s">0</span>;
+<span class="k">if</span> (toolBlockCount &gt; <span class="s">0</span>)      harness += W.TOOL_BLOCKS_PRESENT;  <span class="c">// +10</span>
+<span class="k">if</span> (toolCount &gt; <span class="s">0</span>)           harness += W.TOOLS_DEFINED;        <span class="c">// +8</span>
+<span class="k">if</span> (toolCount &gt; <span class="s">8</span>)           harness += W.MANY_TOOLS;          <span class="c">// +7</span>
+<span class="k">if</span> (systemText.length &gt; <span class="s">500</span>) harness += W.LONG_SYSTEM;         <span class="c">// +10</span>
+<span class="k">if</span> (expertHits &gt; <span class="s">0</span>)          harness += W.EXPERT_SYSTEM;       <span class="c">// +15</span>
+score += Math.<span class="f">min</span>(harness, HARNESS_SIGNAL_CAP);      <span class="c">// ← 50 max, never Opus</span></code></pre>
+
+<p class="plain"><strong>Plain English:</strong> difficulty is measured only on what the
+user just said; everything the harness contributes is summed to at most 15, so
+35 + 15 = 50 and the scaffolding alone can never reach the Opus threshold of 70.</p>
+
+<p>
+Two ordering constraints hide in that block. <code>taskText</code> must be extracted
+<em>before</em> any keyword matching, or the harness's own words ("expert",
+"comprehensive", "analyze") count as task signal. And the cap must be applied to
+the <em>sum</em>, not to each term — capping each signal individually would still
+let five of them add up to 40.
+</p>
+
+<p>
+Note also that the image signal is deliberately outside the cap. An image block
+is a genuine task signal — the request needs vision — not scaffolding.
+</p>
+
+<h3>2 · The agentic floor</h3>
+
+<pre><code><span class="c">// src/classifier.ts — applied to EVERY classification method</span>
+<span class="k">function</span> <span class="f">applyAgenticFloor</span>(result, input, opts) {
+  <span class="k">if</span> (result.tier !== <span class="s">'haiku'</span> || opts?.allowHaikuInAgentic || !<span class="f">isAgentic</span>(input)) {
+    <span class="k">return</span> result;                       <span class="c">// ← no-op unless all three hold</span>
+  }
+  <span class="k">const</span> score = Math.<span class="f">max</span>(result.score, opts?.haikuMax ?? <span class="s">30</span>);
+  <span class="k">return</span> { ...result, tier: <span class="s">'sonnet'</span>, score, floored: <span class="k">true</span> };
+}
+
+<span class="k">export async function</span> <span class="f">classify</span>(client, input, mode, haikuModel, opts) {
+  <span class="k">const</span> result = <span class="k">await</span> (mode === <span class="s">'heuristic'</span> || !client
+    ? <span class="f">classifyHeuristic</span>(input, opts)
+    : mode === <span class="s">'ai'</span> ? <span class="f">classifyAICached</span>(...) : <span class="f">classifyHybrid</span>(...));
+  <span class="k">return</span> <span class="f">applyAgenticFloor</span>(result, input, opts);   <span class="c">// ← after ALL methods</span>
+}</code></pre>
+
+<p class="plain"><strong>Plain English:</strong> if tools are in play and any classifier said
+haiku, promote it to sonnet — and record <code>floored: true</code> so the decision
+is visible rather than silent.</p>
+
+<p>
+The placement matters more than the body. The floor sits in <code>classify()</code>,
+the single unified entry point, <em>after</em> the method switch — so it applies to
+heuristic, AI, and hybrid alike. Put it inside <code>classifyHeuristic</code> and the
+AI path would quietly keep routing coding turns to haiku.
+</p>
+
+<h3>3 · The execution kernel</h3>
+
+<pre><code><span class="c">// src/route.ts — the one retry loop in the codebase</span>
+<span class="k">for</span> (<span class="k">let</span> i = startIndex; i &lt; TIER_ORDER.length; i++) {
+  <span class="k">const</span> tier = TIER_ORDER[i]!;
+  <span class="k">const</span> fallbackUsed = i !== startIndex;      <span class="c">// we already walked up</span>
+
+  <span class="k">try</span> {
+    <span class="k">const</span> response = <span class="k">await</span> client.messages.<span class="f">create</span>(
+      <span class="f">normalizeParamsForTier</span>({ ...apiParams, model: models[tier] }, tier),
+      opts.requestOptions,
+    );
+
+    <span class="k">const</span> decision = <span class="f">shouldRetry</span>(response, tier);
+    <span class="k">if</span> (decision.retry &amp;&amp; !fallbackUsed) {   <span class="c">// ← escalate ONCE, and only</span>
+      <span class="k">const</span> escalated = <span class="f">nextTier</span>(tier);       <span class="c">//   from the classified tier</span>
+      <span class="c">/* … one re-run at `escalated`, then return … */</span>
+    }
+    <span class="k">return</span> { response, tier, model, fallbackUsed, retried: <span class="k">false</span>, ... };
+
+  } <span class="k">catch</span> (err) {
+    <span class="k">if</span> (opts.fallbackOnRateLimit &amp;&amp;
+        err <span class="k">instanceof</span> Anthropic.RateLimitError &amp;&amp;
+        i &lt; TIER_ORDER.length - <span class="s">1</span>) <span class="k">continue</span>;   <span class="c">// walk up a tier</span>
+    <span class="k">throw</span> err;
+  }
+}</code></pre>
+
+<p class="plain"><strong>Plain English:</strong> try the chosen tier; on a rate limit walk up
+the ladder (library only); if the answer comes back truncated or refusing,
+re-run it one tier higher — but only if this was still the tier the classifier
+originally picked.</p>
+
+<p>
+<code>!fallbackUsed</code> is the load-bearing condition. Two different mechanisms can
+move you up the ladder, and they must not compose. A rate-limit walk-up has
+already spent a tier upgrade you did not ask for; letting a truncation
+escalation stack on top means one request could burn haiku, then sonnet, then
+opus, and bill you for all three. The rule is: <strong>at most one deliberate
+escalation, from the tier the classifier chose.</strong>
+</p>
+
+<p>
+This loop is also why streaming does not retry. Once bytes are on the wire the
+client has already seen the beginning of the answer; you cannot un-send it and
+try again at a higher tier. <code>handleStreaming</code> therefore calls
+<code>messages.stream</code> directly and only sets the headers it knows before the
+stream finishes — tier, model, classifier, confidence, but not cost.
+</p>
+
+<h3>4 · Reconciling parameters with the routed model</h3>
+
+<pre><code><span class="c">// src/params.ts — applied before EVERY routed create/stream, retries included</span>
+<span class="k">if</span> (tier === <span class="s">'haiku'</span>) {
+  <span class="k">if</span> (<span class="s">'thinking'</span> <span class="k">in</span> out) <span class="k">delete</span> out[<span class="s">'thinking'</span>];  <span class="c">// Haiku 4.5: no adaptive</span>
+  <span class="k">if</span> (out[<span class="s">'output_config'</span>]) { <span class="c">/* strip .effort, drop if now empty */</span> }
+} <span class="k">else</span> {
+  <span class="k">delete</span> out[<span class="s">'temperature'</span>]; <span class="k">delete</span> out[<span class="s">'top_p'</span>]; <span class="k">delete</span> out[<span class="s">'top_k'</span>];
+  <span class="k">if</span> (thinking?.type === <span class="s">'enabled'</span>) {
+    out[<span class="s">'thinking'</span>] = { type: <span class="s">'adaptive'</span> };  <span class="c">// Sonnet 5 / Opus 5 form</span>
+  } <span class="k">else if</span> (thinking?.type === <span class="s">'disabled'</span> &amp;&amp; !<span class="f">acceptsDisabledThinking</span>(tier, out)) {
+    <span class="k">delete</span> out[<span class="s">'thinking'</span>];              <span class="c">// Opus 5 above 'high' effort; Fable always</span>
+  }
+}</code></pre>
+
+<p class="plain"><strong>Plain English:</strong> the router changed the model, so it also has
+to fix up the parameters that model would reject — otherwise the request
+400s purely because it was routed.</p>
+
+<p>
+This is the load-bearing fact from Part 0 made executable. Claude Code sends
+adaptive thinking plus an effort setting; Haiku 4.5 rejects both. Without this
+function, <code>--force-route</code> would fail on every request that landed on haiku —
+not with a routing error, but with a confusing upstream 400. And note what it
+does <em>not</em> touch: <code>messages</code>, <code>system</code>, <code>tools</code>,
+<code>max_tokens</code>. Rewriting any of those would change what the user asked for,
+which is beyond a router's mandate.
+</p>
+
+<p>
+The second branch is the same idea arriving from a different direction, and it
+shows why this function is permanent rather than a one-off patch. When the opus
+tier was promoted from Opus 4.8 to Opus 5, the models' rules diverged: Opus 4.8
+accepted <code>thinking: {type: 'disabled'}</code> at any effort, Opus 5 accepts it
+only at <code>high</code> or below. Nothing about the router changed — a request
+that worked yesterday would 400 today purely because the tier now resolves to a
+different model. <em>Tier indirection creates this obligation.</em> The moment you
+decide the model on the user's behalf, you own every parameter that model
+rejects, including the ones it started rejecting after you shipped.
+</p>
+
+<p>
+Note <em>which</em> parameter gets dropped when the two conflict. The request asks
+for no thinking and for <code>xhigh</code> effort; only one of them can survive.
+The router drops the thinking parameter and keeps the effort, because thinking
+depth is the model's own judgement call — the models that reject
+<code>disabled</code> all default to adaptive, so omitting it is the closest legal
+version of the request — while effort is a deliberate cost-and-quality choice the
+caller made. Quietly downgrading <code>xhigh</code> to <code>high</code> would be
+the router editing the user's intent rather than reconciling it.
+</p>
+
+<h3>5 · Turning a response into money</h3>
+
+<pre><code><span class="c">// src/models.ts — one pricing path for both callers</span>
+<span class="k">export function</span> <span class="f">priceForModel</span>(model, pricing) {
+  <span class="k">if</span> (pricing[model]) <span class="k">return</span> pricing[model];        <span class="c">// user override wins</span>
+  <span class="k">const</span> fam = <span class="f">familyForModel</span>(model);                <span class="c">// 'opus' from any ID</span>
+  <span class="k">return</span> fam ? (pricing[DEFAULT_MODELS[fam]] ?? FAMILY_PRICING[fam]) : <span class="k">undefined</span>;
+}
+
+<span class="k">const</span> cacheCost =
+  (cache?.readTokens ?? <span class="s">0</span>)     * p.input * CACHE_READ_RATE +   <span class="c">// 10%</span>
+  (cache?.creationTokens ?? <span class="s">0</span>) * p.input * CACHE_WRITE_RATE;  <span class="c">// 125%</span>
+
+<span class="c">// src/totals.ts — the one fold, used by three sinks</span>
+<span class="k">export function</span> <span class="f">foldOutcome</span>(acc: RouteTotals, e: RouteOutcomeLike): <span class="k">void</span> {
+  acc.requests++;
+  acc.costCents  += e.costCents;
+  acc.savedCents += e.savedCents;                <span class="c">// baseline − actual; can be &lt; 0</span>
+  <span class="k">if</span> (e.retried) acc.retried++;
+  acc.tiers[e.tier] = (acc.tiers[e.tier] ?? <span class="s">0</span>) + <span class="s">1</span>;
+  <span class="c">/* … plus a per-day bucket keyed off the ISO timestamp … */</span>
+}</code></pre>
+
+<p class="plain"><strong>Plain English:</strong> price by model family so any dated or
+cloud-provider ID still prices correctly, count prompt-cache tokens at their
+real rates, and fold every finished call through one function no matter which
+of the three places is doing the counting.</p>
+
+<p>
+Two traps are closed here. First, pricing is resolved by <em>family</em>, not by
+exact ID — so a new dated snapshot, or Bedrock's
+<code>us.anthropic.claude-sonnet-5-v1:0</code>, prices right with no code change,
+while an explicit user override still wins because it is checked first. Second,
+prompt-cache tokens are billed at 10% (reads) and 125% (writes) of the input
+rate. Claude Code caches heavily; omitting those tokens understates every cost
+figure the tool reports.
+</p>
+
+<p>
+The three sinks differ only in <em>when</em> they fold. <code>CostTracker</code> folds one
+event at a time and keeps O(1) memory — no per-call array. <code>history.ts</code>
+folds newly appended JSONL lines behind an offset cache, because the file is
+append-only and a prefix once folded never needs re-reading. The dashboard
+reduces the live capped array on each render. Same arithmetic, three execution
+models.
+</p>
+
+<h3>The tests that lock this down</h3>
+
+<p>
+Tests use <code>node:test</code> with no external framework. The router tests replace
+the <code>_client</code> property directly, so classification and routing are exercised
+with zero network calls.
+</p>
+
+<ul>
+  <li><strong>Arrange</strong> — build a request that looks like Claude Code: long system
+      prompt, ~15 tool definitions, tool blocks in prior turns, and a trivial
+      final user turn.</li>
+  <li><strong>Act</strong> — classify it.</li>
+  <li><strong>Assert</strong> — the tier is sonnet, not opus. On the unpatched
+      classifier this same test produces <code>opus</code>, reproducing the exact
+      production symptom rather than a proxy for it.</li>
+</ul>
+
+<p>
+Beyond unit tests, a few suites bind an ephemeral <em>loopback</em> port
+(<code>serve({port: 0})</code>) to exercise the proxy over a real socket —
+<code>daemon.test.ts</code> for health polling and <code>integration.test.ts</code>
+end-to-end against a fake in-process upstream. Nothing reaches the public
+internet by default; the two passthrough tests that genuinely call
+<code>api.anthropic.com</code> are skipped unless <code>RUN_NETWORK_TESTS=1</code>.
+</p>
+
+<h3>What we deliberately did NOT touch</h3>
+
+<ul>
+  <li><strong>The request's meaning.</strong> <code>normalizeParamsForTier</code> only edits
+      model-coupled parameters. Messages, system, tools, and max_tokens pass
+      through unchanged.</li>
+  <li><strong>The passthrough body.</strong> It is read once as text and forwarded
+      verbatim, so a non-routed request is byte-identical to what the client
+      sent. Only <code>content-encoding</code> and <code>content-length</code> are stripped
+      on the way back, because fetch already decompressed.</li>
+  <li><strong>The default bind address.</strong> <code>127.0.0.1</code>. With Bedrock or
+      Vertex the proxy uses the operator's cloud credentials and does not
+      authenticate incoming requests — the loopback bind is the security
+      boundary, not a convenience.</li>
+  <li><strong>Streaming retries.</strong> Deliberately absent, per Part 4 block 3.</li>
+  <li><strong>Throwing from the classifier.</strong> The AI path has a 1.5s timeout and a
+      catch-all that falls back to the heuristic. A Haiku outage degrades
+      routing quality; it never breaks a request.</li>
+</ul>
+
+<h2 id="p5"><span class="num">Part 5</span>Mini-glossary</h2>
+<p class="lead">Only the terms used above, in plain words.</p>
+
+<details class="qa"><summary>Tier</summary>
+One of haiku, sonnet, opus. A slot, not a model ID — the ID is looked up per
+provider at the moment of the call.</details>
+
+<details class="qa"><summary>Hybrid classifier</summary>
+The default mode. Runs the fast heuristic first, and only asks Haiku for a
+second opinion when the score is ambiguous (40–60 by default) or when the text
+produced no keyword signals at all — which is what non-English prompts look
+like.</details>
+
+<details class="qa"><summary>HARNESS_SIGNAL_CAP</summary>
+The value 15. The ceiling on how much a client's constant scaffolding — system
+prompt, tool definitions, in-flight tool blocks — may contribute to the
+complexity score.</details>
+
+<details class="qa"><summary>Agentic floor</summary>
+The rule that a tool-using session never routes to haiku. Opt out with
+<code>routing.allowHaikuInAgentic</code>.</details>
+
+<details class="qa"><summary>Rate-limit fallback</summary>
+Walking up to the next tier when the API returns 429. Enabled in the library,
+disabled in the proxy — where the 429 is passed to the client instead.</details>
+
+<details class="qa"><summary>Escalation retry</summary>
+Re-running a response one tier higher because it hit <code>max_tokens</code> with
+real output, or because it was a short refusal. Happens at most once, and never
+after a rate-limit walk-up.</details>
+
+<details class="qa"><summary>savedCents</summary>
+Baseline cost minus actual cost, where the baseline is the configured default
+model (sonnet unless overridden). It can be negative — and when the Part-3 bug
+was live, it usually was.</details>
+
+<details class="qa"><summary>--force-route</summary>
+Ignore the model pinned in the request body and route anyway. Required for
+Claude Code, which always names a model, and therefore the flag that exposed
+the Part-3 bug.</details>
+
+<details class="qa"><summary>RouteOutcomeLike</summary>
+The five-field shape <code>foldOutcome</code> reads. Both <code>RouteMeta</code> and
+<code>RouteEvent</code> match it structurally, so the aggregation is shared without
+either module adopting the other's type.</details>
+
+<h2 id="p6"><span class="num">Part 6</span>Defend it</h2>
+<p class="lead">In this part: test yourself first, then the answers you'd give under pressure.</p>
+
+<h3>Check yourself</h3>
+
+<details class="qa"><summary>Why does capping the harness signals fix over-routing when lowering them would not?</summary>
+Lowering a constant just moves the constant. The signals are near-identical on
+every request in an agentic session, so whatever value they take, they shift
+the entire distribution by that amount rather than discriminating between
+requests. A cap bounds the shift: base 35 plus at most 15 is 50, which is
+inside the Sonnet band, so the scaffolding can influence a borderline call but
+can never on its own cross the Opus threshold at 70.</details>
+
+<details class="qa"><summary>Rule 2 says the harness must not raise the tier. Rule 3 says the harness must raise the floor. Why isn't that a contradiction?</summary>
+They model different things. Rule 2 is about difficulty — the presence of tools
+says nothing about how hard this particular turn is. Rule 3 is about the cost
+of being wrong — inside a coding loop, a bad cheap answer is not cheap, because
+the loop pays for it again in extra turns. The score models difficulty only;
+the floor is a separate risk policy applied afterwards.</details>
+
+<details class="qa"><summary>Why must escalation be blocked after a rate-limit walk-up?</summary>
+Because both mechanisms move you up the same ladder, and they would compose.
+A walk-up has already consumed a tier upgrade nobody asked for; stacking a
+truncation escalation on top could burn haiku, sonnet, and opus on a single
+request and bill for all three. The <code>!fallbackUsed</code> guard enforces at
+most one deliberate escalation, from the tier the classifier actually picked.</details>
+
+<details class="qa"><summary>Why is pricing resolved by family rather than by exact model ID?</summary>
+Because exact IDs multiply and drift. Dated snapshots, Bedrock's
+<code>us.anthropic.*</code> inference profiles, and Vertex IDs all name the same
+underlying model at the same price. Family resolution means a new snapshot
+prices correctly with no code change. An exact-ID lookup is still tried first,
+so an explicit user override always wins.</details>
+
+<details class="qa"><summary>Why does the proxy cache SDK clients per credential instead of building one per request?</summary>
+It serves many callers' keys, so a single shared client is impossible. But a
+fresh client per request discards the keep-alive connection to the API every
+time, adding a TLS handshake to every call. An LRU of 100 keyed on the
+credential preserves the connection pool without holding unbounded state.</details>
+
+<details class="qa"><summary>Why does the streaming path not retry, and what does it give up?</summary>
+Once the first bytes reach the client, the response cannot be withdrawn — there
+is nothing to escalate <em>from</em>. It gives up truncation and refusal recovery
+on streamed calls, and it means the streaming response can only carry headers
+known before the call finishes: tier, model, classifier, confidence, but not
+cost or savings.</details>
+
+<h3>Likely challenges</h3>
+
+<details class="qa"><summary>"A keyword-weight heuristic is crude. Why not just always ask a model?"</summary>
+Cost and latency — the two things the project exists to protect. An AI
+classification is an extra API call on every request, so it must earn its
+place. Hybrid mode spends it only where the heuristic is genuinely uncertain:
+inside the 40–60 band, or when the text produced zero keyword hits, which is
+the non-English case the keyword lists structurally cannot score. Genuine AI
+verdicts are LRU-cached on a SHA-1 of the full normalized text; heuristic
+fallbacks are not cached, so a transient Haiku outage cannot pin a bad tier in
+the cache.</details>
+
+<details class="qa"><summary>"The agentic floor throws away your biggest savings opportunity. Coding assistants are exactly where the cheap turns are."</summary>
+It is a default, not a law — <code>routing.allowHaikuInAgentic</code> turns it off.
+The default is set by expected cost, not sticker cost: a wrong haiku step in a
+loop is re-tried, re-prompted, and re-tooled, and those extra turns cost more
+than the one saved. Outside a loop, a bad cheap answer costs one retry, so
+haiku stays available there. And the floor is recorded as
+<code>floored: true</code>, so anyone can see when it fired and measure the tradeoff
+rather than argue it.</details>
+
+<details class="qa"><summary>"Why not unify RouteMeta and RouteEvent into one record instead of a structural shape?"</summary>
+They serve different consumers and have genuinely different fields — RouteMeta
+carries classifier timing and is attached to the returned message; RouteEvent
+carries a timestamp and a <code>'passthrough'</code> tier the library has no concept
+of. Unifying them would force each module to carry the other's concerns. What
+actually needed sharing was the arithmetic, not the record, so
+<code>foldOutcome</code> reads a five-field structural shape both already satisfy.
+Share behaviour, not types.</details>
+
+<details class="qa"><summary>"Isn't a local HTTP proxy holding cloud credentials a security problem?"</summary>
+It would be if it were reachable. It binds <code>127.0.0.1</code> by default and that
+is documented as a security boundary rather than a default to tune: with the
+Bedrock or Vertex providers the proxy authenticates upstream with the
+operator's cloud credentials and performs no authentication of incoming
+requests. Binding it to a routable interface would expose those credentials to
+anything that can reach the port. On the Anthropic provider the caller's own
+key is still required and is what the per-credential client cache is keyed on.</details>
+
+<details class="qa"><summary>"How do you know the fix works, rather than that the test was written to pass?"</summary>
+Three layers. The regression test reproduces the production symptom exactly —
+a Claude Code-shaped request with a trivial final turn routes to opus on the
+unpatched classifier and sonnet on the patched one. Integration tests exercise
+the proxy over a real loopback socket against an in-process upstream. And the
+fix was verified against the live API: trivial Claude Code turns landed on
+Sonnet where they had been landing on Opus, and a genuine "architect this and
+prove it correct" prompt still reached Opus — confirming the classifier still
+discriminates rather than having merely been clamped downward.</details>
+
+<h3>The 30-second version</h3>
+
+<div class="box">
+  "claude-router routes each Claude API call to the cheapest tier that can
+  handle it — as a drop-in library or a local proxy, sharing one classifier,
+  one execution kernel, and one aggregation fold. The hard part wasn't
+  classification, it was that our main client is Claude Code, whose requests
+  are mostly constant scaffolding: a long system prompt and fifteen tool
+  definitions summed to a fixed +40 on a base of 35, so every request cleared
+  the Opus threshold and 'what is 2+2?' cost more than the baseline. The fix is
+  three rules — score only the latest user turn, cap the scaffolding's total
+  contribution at 15 so base-plus-harness lands mid-Sonnet, and floor
+  tool-using sessions at Sonnet because a wrong cheap step in a loop cascades.
+  It's locked by a regression test that returns Opus on the unpatched
+  classifier, and it was confirmed live: trivial Claude Code turns dropped to
+  Sonnet while a genuine architecture prompt still reached Opus."
+</div>
+
+<div class="box good" style="margin-top:36px">
+  <span class="title">Status</span>
+  Shipped. The routing fix landed as PR #18 (<code>5557d2c</code>) with 233 tests —
+  231 passing, 2 network-gated skips; current branch
+  <code>fix/readme-real-log-output</code> is documentation-only on top of it.
+</div>
+
+</div>
+</body>
+</html>
