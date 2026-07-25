@@ -191,6 +191,16 @@ async function setup(
   return { upstream, base: proxy.base };
 }
 
+/**
+ * Stand-in for the tool set every real Claude Code turn ships (165–217 tools
+ * observed on the wire). Presence — not contents — is what separates a
+ * coordinator agent turn from a tool-less meta-call for the sessionModel pin.
+ */
+const CODER_TOOLS = [
+  { name: 'Read', description: 'read a file', input_schema: { type: 'object', properties: {} } },
+  { name: 'Bash', description: 'run a command', input_schema: { type: 'object', properties: {} } },
+];
+
 function post(base: string, body: unknown): Promise<Response> {
   return fetch(`${base}/v1/messages`, {
     method: 'POST',
@@ -274,6 +284,7 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
     const res = await post(base, {
       model: 'claude-opus-4-8',
       messages: [{ role: 'user', content: 'translate hello to French' }],
+      tools: CODER_TOOLS,
       max_tokens: 100,
     });
 
@@ -293,6 +304,7 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
     const res = await post(base, {
       model: 'claude-opus-4-8',
       messages: [{ role: 'user', content: 'translate hello to French' }],
+      tools: CODER_TOOLS,
       max_tokens: 100,
       stream: true,
     });
@@ -337,12 +349,69 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
     const res = await post(base, {
       model: 'claude-opus-4-8',
       messages: [{ role: 'user', content: 'translate hello to French' }],
+      tools: CODER_TOOLS,
       max_tokens: 100,
     });
 
     assert.equal(res.status, 200);
-    assert.equal(res.headers.get('x-router-tier'), 'haiku', 'bad pin ignored, request still routed');
-    assert.equal(upstream.calls.at(-1)!.model, DEFAULT_MODELS.haiku);
+    assert.equal(res.headers.get('x-router-tier'), 'sonnet', 'bad pin ignored, request still routed');
+    assert.equal(upstream.calls.at(-1)!.model, DEFAULT_MODELS.sonnet);
+  });
+
+  it('does not pin a tool-less Claude Code meta-call (session title / summary)', async () => {
+    // The regression this guards: "no agent-id header" is not the same as "the
+    // coordinator's agent turn". Claude Code's title/summary calls also arrive
+    // without the header, carry no tools, and quote the conversation in
+    // <session>…</session> with the real instruction after it. Measured against
+    // live Claude Code v2.1.220: with --session-model opus these went to opus,
+    // charging the top tier to name a session (29% of requests on the wire
+    // corpus). They must keep routing by evidence.
+    const { upstream, base } = await setup({ config: { sessionModel: 'opus' } });
+
+    const res = await post(base, {
+      model: 'claude-opus-4-8',
+      messages: [
+        {
+          role: 'user',
+          content:
+            '<session>\nUser: refactor the auth module and add retries\nAssistant: done\n</session>\n\n' +
+            'Write a 5-word title for the conversation above.',
+        },
+      ],
+      max_tokens: 100,
+    });
+
+    assert.equal(res.status, 200);
+    // The invariant is "the classifier decided this, not the pin" — asserted
+    // positively so it can't pass by the header being absent. Which tier the
+    // evidence then picks is routing.ts's business, so only "not the pinned
+    // tier" is pinned here.
+    assert.equal(res.headers.get('x-router-classifier'), 'heuristic', 'classifier must still run');
+    assert.notEqual(res.headers.get('x-router-tier'), 'opus', 'meta-call must not reach the pinned tier');
+    assert.notEqual(upstream.calls.at(-1)!.model, DEFAULT_MODELS.opus);
+  });
+
+  it('still pins the coordinator when a subagent header is absent and tools are present', async () => {
+    // The other side of the same boundary: a real coordinator turn mid-tool-loop
+    // (tool_result last, tools defined) would route to sonnet by evidence — the
+    // pin is what keeps it on opus.
+    const { upstream, base } = await setup({ config: { sessionModel: 'opus' } });
+
+    const res = await post(base, {
+      model: 'claude-opus-4-8',
+      messages: [
+        { role: 'user', content: 'read hello.js' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_1', name: 'Read', input: {} }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: 'ok' }] },
+      ],
+      tools: CODER_TOOLS,
+      max_tokens: 100,
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'opus');
+    assert.equal(res.headers.get('x-router-classifier'), 'pinned');
+    assert.equal(upstream.calls.at(-1)!.model, DEFAULT_MODELS.opus);
   });
 
   it('escalates haiku→sonnet on truncation, end-to-end', async () => {

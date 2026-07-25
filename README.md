@@ -140,6 +140,8 @@ claude-router start --force-route --session-model opus
 
 How it tells them apart: Claude Code sets the `x-claude-code-agent-id` header **only** on requests from a subagent it spawned ([gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)). A request without it is the coordinator, so it gets pinned (classifier skipped, `x-router-classifier: pinned`); a request with it routes by evidence as usual. To route subagents down to cheaper tiers, give them lower models in their `.claude/agents/*.md` frontmatter — the pin never touches them. Only takes effect under `--force-route`; without it, the client's explicit model already passes through untouched.
 
+The pin also requires the request to **carry tools**, which every real coordinator turn does. Claude Code's own meta-calls — generating a session title, summarising a conversation — arrive without the agent-id header too, but with no tools and the conversation quoted in `<session>…</session>`. Those keep routing by evidence, so pinning `opus` doesn't pay Opus rates to name a session.
+
 ---
 
 ## Configuration
