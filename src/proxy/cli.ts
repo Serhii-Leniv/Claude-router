@@ -28,6 +28,7 @@ import {
   readDaemonState,
   resolveStatusPort,
   startDaemon,
+  statusPid,
   stoppedStatusDetail,
   stopDaemon,
   writeDaemonState,
@@ -302,8 +303,10 @@ async function cmdStatus(args: string[]): Promise<void> {
     return;
   }
 
+  // Only name a pid when the port that answered is the daemon's own (#52).
+  const pid = statusPid(check, daemon);
   const rows: Array<[string, string]> = [
-    ['Status', `${term.green('running')}${state ? term.dim(` (pid ${state.pid})`) : ''}`],
+    ['Status', `${term.green('running')}${pid !== null ? term.dim(` (pid ${pid})`) : ''}`],
     ['URL', `http://localhost:${check.port}`],
     ['Dashboard', `http://localhost:${check.port}/dashboard`],
     ['Provider', health.provider],
