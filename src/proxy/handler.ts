@@ -76,16 +76,27 @@ export interface RouteEvent {
   error?: string;
 }
 
-const MAX_HISTORY = 1000;
+export const MAX_HISTORY = 1000;
+// Overshoot before trimming so the amortized cost of bounding the array is O(1)
+// per event. `shift()` moved ~1000 elements on *every* request past the cap;
+// splicing a whole batch at a high-water mark makes it one O(n) move per
+// TRIM_BATCH inserts (~10x fewer element moves per event here). The array holds
+// the most recent MAX_HISTORY..MAX_HISTORY+TRIM_BATCH events — every consumer
+// (/health, /statusline, /dashboard, /api/last-route) reads it as a plain
+// chronological array and tolerates the small overshoot; the newest event is
+// always last.
+const TRIM_BATCH = 100;
 export const routeHistory: RouteEvent[] = [];
+
+/** Bound `routeHistory` to ~MAX_HISTORY, trimming the oldest in batches.
+ * Exported so the amortized-bound invariant can be tested directly. */
+export function boundHistory(history: RouteEvent[]): void {
+  if (history.length >= MAX_HISTORY + TRIM_BATCH) history.splice(0, TRIM_BATCH);
+}
 
 function recordEvent(event: RouteEvent, config?: HandlerConfig): void {
   routeHistory.push(event);
-  if (routeHistory.length > MAX_HISTORY) {
-    // shift() is O(n) at the cap; acceptable at n=1000 and keeps the
-    // plain-array shape that /health, /dashboard, and tests consume.
-    routeHistory.shift();
-  }
+  boundHistory(routeHistory);
   if (config?.historyFile) appendEvent(config.historyFile, event);
 }
 

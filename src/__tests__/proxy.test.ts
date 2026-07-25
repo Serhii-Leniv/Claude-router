@@ -2,7 +2,7 @@ import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { createProxyApp } from '../proxy/server.js';
-import { routeHistory, getAnthropicClient, clearClientCache } from '../proxy/handler.js';
+import { routeHistory, boundHistory, MAX_HISTORY, getAnthropicClient, clearClientCache } from '../proxy/handler.js';
 import { renderDashboard } from '../proxy/dashboard.js';
 import type { RouteEvent } from '../proxy/handler.js';
 
@@ -14,6 +14,55 @@ import { DEFAULT_MODELS } from '../models.js';
 const NETWORK_SKIP: string | false = process.env['RUN_NETWORK_TESTS'] === '1'
   ? false
   : 'network test — set RUN_NETWORK_TESTS=1 to run (reaches api.anthropic.com)';
+
+function statuslineEvent(tier: RouteEvent['tier'], i = 0): RouteEvent {
+  return {
+    timestamp: `2026-07-25T10:00:0${i}.000Z`,
+    tier,
+    model: `m${i}`,
+    costCents: 1,
+    savedCents: 0,
+    confidence: 1,
+    classifier: 'heuristic',
+    retried: false,
+    retryReason: null,
+    inputTokens: 10,
+    outputTokens: 10,
+  };
+}
+
+describe('boundHistory — amortized trim', () => {
+  it('does not touch the array below the high-water mark', () => {
+    const history: RouteEvent[] = [];
+    for (let i = 0; i < MAX_HISTORY + 99; i++) {
+      history.push(statuslineEvent('sonnet', i));
+      boundHistory(history);
+    }
+    assert.equal(history.length, MAX_HISTORY + 99, 'trimming early would cost an O(n) move per event');
+  });
+
+  it('trims a whole batch at the mark, keeping the newest events last', () => {
+    const history: RouteEvent[] = [];
+    for (let i = 0; i < MAX_HISTORY + 100; i++) {
+      history.push(statuslineEvent('sonnet', i));
+      boundHistory(history);
+    }
+    assert.equal(history.length, MAX_HISTORY);
+    assert.equal(history[0]!.model, 'm100', 'the oldest batch is the one dropped');
+    assert.equal(history[history.length - 1]!.model, `m${MAX_HISTORY + 99}`, 'newest event stays last');
+  });
+
+  it('stays bounded under sustained traffic', () => {
+    const history: RouteEvent[] = [];
+    for (let i = 0; i < 5000; i++) {
+      history.push(statuslineEvent('sonnet', i));
+      boundHistory(history);
+    }
+    assert.ok(history.length >= MAX_HISTORY, 'never drops below the retention target');
+    assert.ok(history.length < MAX_HISTORY + 100, 'overshoot is capped at one batch');
+    assert.equal(history[history.length - 1]!.model, 'm4999');
+  });
+});
 
 describe('getAnthropicClient — per-credential cache', () => {
   it('returns the same instance for the same api key', () => {
@@ -77,11 +126,21 @@ describe('createProxyApp', () => {
   });
 
   it('GET /statusline returns preformatted text/plain for the shell statusline', async () => {
-    const res = await app.request('/statusline');
-    assert.equal(res.status, 200);
-    assert.ok(res.headers.get('content-type')?.startsWith('text/plain'));
-    const body = await res.text();
-    assert.match(body, /^\[auto:.+ #\d+\]$/);
+    // Seeds the history rather than asserting a loose pattern: the original
+    // version needed a non-null lastTier and got one only because an earlier
+    // describe had already routed something into the module-global array.
+    routeHistory.length = 0;
+    try {
+      const res = await app.request('/statusline');
+      assert.equal(res.status, 200);
+      assert.ok(res.headers.get('content-type')?.startsWith('text/plain'));
+      assert.equal(await res.text(), '[auto:ready #0]', 'reads "ready" before any traffic');
+
+      routeHistory.push(statuslineEvent('sonnet'));
+      assert.equal(await (await app.request('/statusline')).text(), '[auto:sonnet #1]');
+    } finally {
+      routeHistory.length = 0;
+    }
   });
 
   it('does not serve CORS headers — cross-origin browser reads stay blocked', async () => {

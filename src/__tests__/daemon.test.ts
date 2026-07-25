@@ -11,6 +11,7 @@ import {
   isProcessAlive,
   readDaemonState,
   resolveStatusPort,
+  statusPid,
   stoppedStatusDetail,
   writeDaemonState,
 } from '../proxy/daemon.js';
@@ -89,6 +90,22 @@ describe('stoppedStatusDetail — #39', () => {
 
   it('drops the hint when the user already named the port', () => {
     assert.equal(stoppedStatusDetail({ port: 5000, source: 'flag' }), 'no proxy on port 5000');
+  });
+});
+
+describe('statusPid — #52', () => {
+  it('names the pid when the daemon owns the port that answered', () => {
+    assert.equal(statusPid({ port: 4300, source: 'daemon' }, { pid: 4242, port: 4300 }), 4242);
+  });
+
+  it('withholds the pid when another port was probed', () => {
+    // The bug: `status --port 5000` credited the 4300 daemon's pid to whatever
+    // answered on 5000.
+    assert.equal(statusPid({ port: 5000, source: 'flag' }, { pid: 4242, port: 4300 }), null);
+  });
+
+  it('has no pid to name without daemon state', () => {
+    assert.equal(statusPid({ port: 4000, source: 'default' }, null), null);
   });
 });
 

@@ -81,6 +81,21 @@ export function stoppedStatusDetail(check: StatusPortCheck): string {
   }
 }
 
+/**
+ * The pid `status` may show next to `running`, or null when the response cannot
+ * be attributed to the recorded daemon (#52). A live daemon.json is evidence
+ * only about its own port: `status --port 5000` while the daemon runs on 4300
+ * reached some other proxy, and printing the daemon's pid there names the wrong
+ * process. Caller passes the same live-daemon value it fed `resolveStatusPort`,
+ * so a stale record is already excluded.
+ */
+export function statusPid(
+  check: StatusPortCheck,
+  daemon: Pick<DaemonState, 'pid' | 'port'> | null,
+): number | null {
+  return daemon && daemon.port === check.port ? daemon.pid : null;
+}
+
 export function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
