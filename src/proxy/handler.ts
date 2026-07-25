@@ -8,6 +8,7 @@ import { LruCache } from '../cache.js';
 import {
   DEFAULT_PRICING,
   computeRouteCost,
+  priceForModel,
 } from '../models.js';
 import { executeRoute } from '../route.js';
 import { normalizeParamsForTier } from '../params.js';
@@ -100,11 +101,45 @@ function recordEvent(event: RouteEvent, config?: HandlerConfig): void {
   if (config?.historyFile) appendEvent(config.historyFile, event);
 }
 
+/**
+ * The model this request would have used if the router weren't here — i.e. the
+ * savings baseline.
+ *
+ * It is the model **the client asked for**, not a fixed config constant. Claude
+ * Code pins a model on every request (that is the whole reason `--force-route`
+ * exists), so the honest counterfactual for "what did routing save" is that
+ * pinned model. Using `defaultModel` (sonnet) instead compared opus-pinned
+ * traffic against sonnet and reported a *loss* on runs that genuinely saved
+ * money: a measured sandbox session spent $3.34 against a $4.23 all-opus
+ * counterfactual — a 21% saving that the ledger rendered as −$0.80.
+ *
+ * Falls back to `defaultModel` when the client named nothing usable:
+ *   - no `model` field at all (library-shaped callers),
+ *   - `"auto"` — an explicit "you pick", so there is no client intent to price,
+ *   - a model with no pricing entry, where a baseline would be invented rather
+ *     than measured. Keeping the fallback here (instead of letting it flow to
+ *     `priced: false`) means an exotic pinned model still counts as measured,
+ *     exactly as it did before this change.
+ */
+function resolveBaselineModel(
+  requestedModel: string | undefined,
+  config: HandlerConfig,
+): string {
+  if (!requestedModel || requestedModel === 'auto') return config.defaultModel;
+  const pricing = config.pricing ?? DEFAULT_PRICING;
+  return priceForModel(requestedModel, pricing) !== undefined ? requestedModel : config.defaultModel;
+}
+
 /** Cost + savings for a completed response, including prompt-cache tokens.
  * `usage` may be missing/partial on an unexpected response shape — computeRouteCost
  * guards every field so cost math (and the event record built from it) can't crash. */
-function computeCosts(model: string, usage: Anthropic.Usage | undefined, config: HandlerConfig) {
-  return computeRouteCost(model, usage, config.defaultModel, config.pricing ?? DEFAULT_PRICING);
+function computeCosts(
+  model: string,
+  usage: Anthropic.Usage | undefined,
+  config: HandlerConfig,
+  baselineModel: string,
+) {
+  return computeRouteCost(model, usage, baselineModel, config.pricing ?? DEFAULT_PRICING);
 }
 
 function buildClassifyInput(body: Record<string, unknown>): ClassifyInput {
@@ -355,11 +390,15 @@ export async function handleMessages(
   // (e.g. context_management → "Extra inputs are not permitted").
   const anthropicBeta = c.req.header('anthropic-beta');
 
+  // Resolved here because `apiParams` has `model` stripped below — this is the
+  // last point that still knows what the client actually asked for.
+  const baselineModel = resolveBaselineModel(requestedModel, config);
+
   if (isStreaming) {
-    return handleStreaming(c, client, apiParams, tier, model, classifyResult, config, anthropicBeta);
+    return handleStreaming(c, client, apiParams, tier, model, classifyResult, config, baselineModel, anthropicBeta);
   }
 
-  return handleNonStreaming(c, client, apiParams, tier, model, classifyResult, config, anthropicBeta);
+  return handleNonStreaming(c, client, apiParams, tier, model, classifyResult, config, baselineModel, anthropicBeta);
 }
 
 /** SDK request options that relay the client's anthropic-beta header, if any. */
@@ -375,6 +414,7 @@ async function handleNonStreaming(
   model: string,
   classifyResult: ClassifyResult,
   config: HandlerConfig,
+  baselineModel: string,
   anthropicBeta?: string,
 ): Promise<Response> {
   const reqOpts = betaRequestOptions(anthropicBeta);
@@ -388,10 +428,10 @@ async function handleNonStreaming(
     });
 
     const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens, priced } =
-      computeCosts(result.model, result.response.usage, config);
+      computeCosts(result.model, result.response.usage, config, baselineModel);
 
     if (config.verbose) {
-      log(result.tier, result.model, classifyResult, roundedCost, savedCents, config.defaultModel, result.retried, result.retryReason, priced);
+      log(result.tier, result.model, classifyResult, roundedCost, savedCents, baselineModel, result.retried, result.retryReason, priced);
     }
 
     recordEvent({
@@ -454,6 +494,7 @@ async function handleStreaming(
   model: string,
   classifyResult: ClassifyResult,
   config: HandlerConfig,
+  baselineModel: string,
   anthropicBeta?: string,
 ): Promise<Response> {
   // Pre-stream phase: everything before the Response is committed. The SDK
@@ -499,10 +540,10 @@ async function handleStreaming(
 
         const finalMessage = await stream.finalMessage();
         const { costCents: roundedCost, savedCents, cacheReadTokens, cacheCreationTokens, inputTokens, outputTokens, priced } =
-          computeCosts(model, finalMessage.usage, config);
+          computeCosts(model, finalMessage.usage, config, baselineModel);
 
         if (config.verbose) {
-          log(tier, model, classifyResult, roundedCost, savedCents, config.defaultModel, false, null, priced);
+          log(tier, model, classifyResult, roundedCost, savedCents, baselineModel, false, null, priced);
         }
 
         recordEvent({
