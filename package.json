@@ -1,6 +1,6 @@
 {
   "name": "@sheruq/claude-router",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "TypeScript-native Claude API cost router — routes each call to Haiku/Sonnet/Opus/Fable using evidence-based gates, not keyword guesswork, to cut your Anthropic/Bedrock/Vertex bill",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

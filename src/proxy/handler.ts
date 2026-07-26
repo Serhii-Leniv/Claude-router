@@ -77,16 +77,29 @@ export function boundHistory(history: RouteEvent[]): void {
 }
 
 /**
- * Report the delegation strip exactly once per process — including the case
- * where it matched nothing, because that is how a vendor payload change
- * surfaces. Silent success and silent failure would look identical otherwise.
+ * Report the delegation strip once per process — including the no-match case,
+ * because that is how a vendor payload change surfaces and silent success and
+ * silent failure would otherwise look identical.
+ *
+ * **The no-match report is gated on the request carrying tools**, and that gate
+ * is load-bearing rather than cosmetic. The injected section rides Claude Code's
+ * full agent prompt; its meta-calls (session title, summary) ship no tools and
+ * legitimately carry no payload. Reporting on the first request regardless of
+ * shape meant the very first line an operator saw was almost always "not
+ * present" — measured against live Claude Code 2.1.220, request #1 is a
+ * tool-less meta-call with a 1.3K system prompt and request #2 is the real
+ * coordinator turn with 31 tools and a 10.3K prompt that does carry both lines.
+ * A user turning the flag on would conclude it was broken while it worked. This
+ * is the same structural agentic/meta split the session pin already makes.
  */
 let delegationStripReported = false;
 export function resetDelegationReport(): void {
   delegationStripReported = false;
 }
-function noteDelegationStrip(removed: number): void {
+function noteDelegationStrip(removed: number, hasTools: boolean): void {
   if (delegationStripReported) return;
+  // A tool-less request that matched nothing proves nothing — stay quiet.
+  if (removed === 0 && !hasTools) return;
   delegationStripReported = true;
   console.warn(`${term.dim('[claude-router]')} ${describeStrip(removed)}`);
 }
@@ -348,13 +361,17 @@ export async function handleMessages(
     return proxyPassthrough(c, rawBody, config.upstream ?? DEFAULT_UPSTREAM);
   }
 
+  // Whether the request carries Claude Code's tool set. Separates a real agent
+  // turn from a meta-call, for both the delegation report and the session pin.
+  const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+
   // Restore delegation before anything reads `system`: the injected lines are not
   // the user's instruction and must not reach the model — nor influence routing.
   // Routed path only; passthrough forwards the client's exact bytes by contract.
   if (config.restoreDelegation) {
     const stripped = stripDelegationBlockers(body.system);
     if (stripped.removed > 0) body.system = stripped.system;
-    noteDelegationStrip(stripped.removed);
+    noteDelegationStrip(stripped.removed, hasTools);
   }
 
   // Coordinator-session pin (Claude Code): a request WITHOUT x-claude-code-agent-id
@@ -378,7 +395,6 @@ export async function handleMessages(
   // routing.ts already makes — no text is parsed. A genuinely tool-less coordinator
   // turn degrades to classification, which is the cheap path anyway.
   const isSubagent = c.req.header('x-claude-code-agent-id') != null;
-  const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
   const pinTier = config.sessionModel;
   const classifyResult: ClassifyResult =
     pinTier && !isSubagent && hasTools && config.models[pinTier]
