@@ -60,6 +60,12 @@ export interface FileConfig {
    * for it. Subagents still route by evidence. Only takes effect under forceRoute.
    */
   sessionModel?: Tier;
+  /**
+   * Remove Claude Code's injected anti-delegation lines from the system prompt so
+   * subagents can be spawned again. Off by default — this is the one place the
+   * proxy edits a prompt. Only takes effect under forceRoute.
+   */
+  restoreDelegation?: boolean;
   /** Override the model ID used for each tier. */
   tiers?: Partial<Record<Tier, string>>;
   /** Override pricing ($/1M tokens) for savings math, keyed by model ID. */
@@ -96,6 +102,8 @@ export interface ServeOptions {
   upstream: string;
   /** '' = disabled (classify every request); a tier name pins the coordinator. */
   sessionModel: string;
+  /** Strip the client's injected anti-delegation lines (routed path only). */
+  restoreDelegation: boolean;
   tiers?: Partial<Record<Tier, string>>;
   pricing?: Record<string, ModelPricing>;
   routing?: RoutingTuning;
@@ -120,7 +128,7 @@ type OptionKind =
  */
 interface OptionSpec {
   /** Corresponding key on ServeOptions / FileConfig. */
-  key: 'port' | 'host' | 'verbose' | 'classifier' | 'provider' | 'region' | 'forceRoute' | 'upstream' | 'sessionModel';
+  key: 'port' | 'host' | 'verbose' | 'classifier' | 'provider' | 'region' | 'forceRoute' | 'upstream' | 'sessionModel' | 'restoreDelegation';
   flags: string[];
   kind: OptionKind;
   default: string | number | boolean;
@@ -142,6 +150,8 @@ const OPTIONS: OptionSpec[] = [
   { key: 'upstream',   flags: ['--upstream'],      kind: { type: 'string' },                     default: DEFAULT_UPSTREAM },
   // Empty default = disabled. A tier name pins the Claude Code coordinator session.
   { key: 'sessionModel', flags: ['--session-model'], kind: { type: 'enum', values: ['haiku', 'sonnet', 'opus', 'fable'] }, default: '' },
+  // Off by default: the one place the proxy edits a prompt. See src/proxy/delegation.ts.
+  { key: 'restoreDelegation', flags: ['--restore-delegation'], kind: { type: 'boolean' }, default: false, configAlways: true },
 ];
 
 /** Validate and convert a flag's raw argument per its declared kind. */

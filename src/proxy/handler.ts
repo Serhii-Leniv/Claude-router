@@ -14,6 +14,7 @@ import { executeRoute, startRouteStream, type MessageStream } from '../route.js'
 import { term } from './term.js';
 import { appendEvent } from './history.js';
 import { buildRouteEvent, errorRouteEvent, type RouteEvent } from './route-event.js';
+import { stripDelegationBlockers, describeStrip } from './delegation.js';
 import type { ClassifyInput, ClassifyResult, ModelPricing, RoutingTuning, Tier } from '../types.js';
 
 export type Provider = 'anthropic' | 'bedrock' | 'vertex';
@@ -35,6 +36,14 @@ export interface HandlerConfig {
    * pinned model already passes through). Undefined = classify every request.
    */
   sessionModel?: Tier;
+  /**
+   * Remove the injected anti-delegation lines from the client's system prompt so
+   * subagents can be spawned again (Claude Code 2.1.219+ suppresses them for
+   * Opus 5 with no opt-out — see src/proxy/delegation.ts). Off by default: this
+   * is the one place the proxy edits a prompt. Only applies to routed requests,
+   * so it needs `forceRoute` — passthrough forwards the client's exact bytes.
+   */
+  restoreDelegation?: boolean;
   /** Pricing table for savings math (default: current-generation DEFAULT_PRICING) */
   pricing?: Record<string, ModelPricing>;
   /** Classifier thresholds/band/timeout/cache tuning */
@@ -65,6 +74,21 @@ export const routeHistory: RouteEvent[] = [];
  * Exported so the amortized-bound invariant can be tested directly. */
 export function boundHistory(history: RouteEvent[]): void {
   if (history.length >= MAX_HISTORY + TRIM_BATCH) history.splice(0, TRIM_BATCH);
+}
+
+/**
+ * Report the delegation strip exactly once per process — including the case
+ * where it matched nothing, because that is how a vendor payload change
+ * surfaces. Silent success and silent failure would look identical otherwise.
+ */
+let delegationStripReported = false;
+export function resetDelegationReport(): void {
+  delegationStripReported = false;
+}
+function noteDelegationStrip(removed: number): void {
+  if (delegationStripReported) return;
+  delegationStripReported = true;
+  console.warn(`${term.dim('[claude-router]')} ${describeStrip(removed)}`);
 }
 
 function recordEvent(event: RouteEvent, config?: HandlerConfig): void {
@@ -153,13 +177,14 @@ async function classify(
 function log(tier: Tier, model: string, classifyResult: ClassifyResult, costCents: number, savedCents: number, defaultModel: string, retried: boolean = false, retryReason: string | null = null, priced: boolean = true): void {
   // Without a price there is no cost figure to print — "$0.0000" would read as
   // a free call rather than an unmeasured one.
+  // `savedCents` is clamped at 0 by `countedSavings`, so there is no "extra"
+  // case to print: a route at or above the baseline saved nothing, it did not
+  // incur a debt.
   const money = !priced
     ? term.yellow(`cost: unknown (no pricing for ${model})`)
-    : `cost: $${(costCents / 100).toFixed(4)} | ${
-        savedCents >= 0
-          ? term.green(`saved: $${(savedCents / 100).toFixed(4)}`)
-          : term.red(`extra: $${(Math.abs(savedCents) / 100).toFixed(4)}`)
-      } ${term.dim(`vs ${defaultModel}`)}`;
+    : `cost: $${(costCents / 100).toFixed(4)} | ${term.green(
+        `saved: $${(savedCents / 100).toFixed(4)}`,
+      )} ${term.dim(`vs ${defaultModel}`)}`;
 
   const retryNote = retried ? term.yellow(` [retried: ${retryReason}]`) : '';
   const cachedNote = classifyResult.cached ? ', cached' : '';
@@ -321,6 +346,15 @@ export async function handleMessages(
   // Passthrough only for Anthropic provider with explicit model (not "auto"), unless --force-route
   if (!config.forceRoute && config.provider === 'anthropic' && requestedModel && requestedModel !== 'auto') {
     return proxyPassthrough(c, rawBody, config.upstream ?? DEFAULT_UPSTREAM);
+  }
+
+  // Restore delegation before anything reads `system`: the injected lines are not
+  // the user's instruction and must not reach the model — nor influence routing.
+  // Routed path only; passthrough forwards the client's exact bytes by contract.
+  if (config.restoreDelegation) {
+    const stripped = stripDelegationBlockers(body.system);
+    if (stripped.removed > 0) body.system = stripped.system;
+    noteDelegationStrip(stripped.removed);
   }
 
   // Coordinator-session pin (Claude Code): a request WITHOUT x-claude-code-agent-id
