@@ -345,7 +345,7 @@ describe('renderDashboard', () => {
     assert.ok(!html.includes('NaN'));
   });
 
-  it('handles negative savedCents', () => {
+  it('never reports a negative saving — an expensive route saved 0', () => {
     const events: RouteEvent[] = [
       {
         timestamp: '2026-05-01T12:00:00.000Z',
@@ -362,7 +362,9 @@ describe('renderDashboard', () => {
       },
     ];
     const html = renderDashboard(events);
-    assert.ok(html.includes('negative'), 'should have negative class for negative savings');
+    const card = html.slice(html.indexOf('Session Saved'), html.indexOf('Session Saved') + 220);
+    assert.ok(!card.includes('-$'), 'the Session Saved card must never show a negative figure');
+    assert.ok(card.includes('$0.0000'), 'a route above the baseline saved nothing');
   });
 
   it('handles passthrough tier', () => {

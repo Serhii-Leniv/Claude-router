@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   computeCostCents,
   computeRouteCost,
+  countedSavings,
   resetUnpricedWarnings,
   tierForModel,
   priceForModel,
@@ -172,6 +173,51 @@ describe('current-generation pricing (guards against drift)', () => {
     for (const id of ['claude-fable-5', 'claude-mythos-5']) {
       assert.deepEqual(priceForModel(id, DEFAULT_PRICING), { input: 10.0, output: 50.0 }, id);
     }
+  });
+});
+
+describe('savings are counted, not netted', () => {
+  const usage = { input_tokens: 1000, output_tokens: 500 } as never;
+
+  it('a cheaper route reports what it saved', () => {
+    const { savedCents } = computeRouteCost(
+      DEFAULT_MODELS.haiku,
+      usage,
+      DEFAULT_MODELS.sonnet,
+      DEFAULT_PRICING,
+    );
+    assert.ok(savedCents > 0);
+  });
+
+  it('a route above the baseline saved 0, it did not cost the user a saving', () => {
+    // Opus against a sonnet baseline: `baseline − actual` is negative, and
+    // reporting that made one opus call wipe out dozens of haiku wins.
+    for (const model of [DEFAULT_MODELS.opus, DEFAULT_MODELS.fable]) {
+      const { savedCents, costCents } = computeRouteCost(
+        model,
+        usage,
+        DEFAULT_MODELS.sonnet,
+        DEFAULT_PRICING,
+      );
+      assert.equal(savedCents, 0, model);
+      assert.ok(costCents > 0, `${model} still reports its real cost`);
+    }
+  });
+
+  it('the baseline routed against itself saves nothing', () => {
+    const { savedCents } = computeRouteCost(
+      DEFAULT_MODELS.sonnet,
+      usage,
+      DEFAULT_MODELS.sonnet,
+      DEFAULT_PRICING,
+    );
+    assert.equal(savedCents, 0);
+  });
+
+  it('countedSavings floors at zero and leaves a real saving alone', () => {
+    assert.equal(countedSavings(-7.5), 0);
+    assert.equal(countedSavings(0), 0);
+    assert.equal(countedSavings(3.25), 3.25);
   });
 });
 

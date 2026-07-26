@@ -73,7 +73,7 @@ describe('CostTracker', () => {
     const stats = tracker.stats();
     assert.equal(stats.callCount, 3);
     assert.equal(stats.totalCostCents, 14);
-    assert.equal(stats.totalSavedCents, -3);
+    assert.equal(stats.totalSavedCents, 2, 'the opus route saved 0, it did not undo the haiku win');
     assert.equal(stats.tierBreakdown.haiku, 1);
     assert.equal(stats.tierBreakdown.sonnet, 1);
     assert.equal(stats.tierBreakdown.opus, 1);
@@ -88,11 +88,12 @@ describe('CostTracker', () => {
     assert.equal(stats.totalCostCents, 0);
   });
 
-  it('savings = baseline - actual (can be negative)', () => {
+  it('savings are counted, never subtracted', () => {
     const tracker = new CostTracker();
-    // Opus costs more than sonnet baseline → negative savings
+    // A legacy record whose delta went negative (opus against a sonnet
+    // baseline) contributes 0 — the total is what routing saved, not a net.
     tracker.record(makeMeta({ savedCents: -7.5, tier: 'opus' }));
-    assert.equal(tracker.stats().totalSavedCents, -7.5);
+    assert.equal(tracker.stats().totalSavedCents, 0);
   });
 });
 

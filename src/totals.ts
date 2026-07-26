@@ -9,10 +9,19 @@
  * its own execution model and maps `RouteTotals` back to its own public shape.
  */
 
+import { countedSavings } from './models.js';
+
 /** Running aggregate of route events. `tiers` holds only the tiers actually seen. */
 export interface RouteTotals {
   requests: number;
   costCents: number;
+  /**
+   * Sum of what routing *saved*, never a net of savings against overspend:
+   * every event contributes `max(0, savedCents)` (see `countedSavings`). The
+   * clamp is here as well as at construction so a `history.jsonl` written
+   * before the rule existed — negative deltas and all — folds to the same
+   * figure as a fresh one.
+   */
   savedCents: number;
   retried: number;
   /**
@@ -42,6 +51,7 @@ export interface RouteTotals {
 export interface RouteOutcomeLike {
   tier: string;
   costCents: number;
+  /** What this call saved vs the baseline. A legacy record may be negative; the fold clamps it. */
   savedCents: number;
   retried?: boolean;
   /** ISO timestamp; when absent, the event is not bucketed by day. */
@@ -92,9 +102,11 @@ export function foldOutcome(acc: RouteTotals, e: RouteOutcomeLike): void {
     acc.errors++;
     return;
   }
+  const saved = countedSavings(e.savedCents);
+
   acc.requests++;
   acc.costCents += e.costCents;
-  acc.savedCents += e.savedCents;
+  acc.savedCents += saved;
   if (e.retried) acc.retried++;
   acc.tiers[e.tier] = (acc.tiers[e.tier] ?? 0) + 1;
   if (e.priced === false) {
@@ -107,6 +119,6 @@ export function foldOutcome(acc: RouteTotals, e: RouteOutcomeLike): void {
     const d = (acc.byDay[day] ??= { requests: 0, costCents: 0, savedCents: 0 });
     d.requests++;
     d.costCents += e.costCents;
-    d.savedCents += e.savedCents;
+    d.savedCents += saved;
   }
 }

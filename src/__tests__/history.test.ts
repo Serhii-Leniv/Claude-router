@@ -39,7 +39,7 @@ describe('history', () => {
     const stats = readLifetimeStats(file);
     assert.equal(stats.requests, 2);
     assert.equal(Math.round(stats.costCents * 100) / 100, 2.1);
-    assert.equal(Math.round(stats.savedCents * 100) / 100, -1.2);
+    assert.equal(Math.round(stats.savedCents * 100) / 100, 0.3, 'a legacy negative delta counts as 0 saved');
     assert.equal(stats.retried, 1);
     assert.deepEqual(stats.tiers, { haiku: 1, opus: 1 });
     assert.equal(stats.byDay['2026-07-02']!.requests, 2);

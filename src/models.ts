@@ -227,6 +227,21 @@ export function computeCostCents(
   return ((inputTokens * p.input + outputTokens * p.output + cacheCost) / 1_000_000) * 100;
 }
 
+/**
+ * Savings are counted, never subtracted. `baseline − actual` goes negative
+ * whenever routing lands *above* the baseline model — an opus route against a
+ * sonnet baseline — and summing that signed delta made the ledger read as if
+ * the router had spent the user's money: one opus call cancelled out dozens of
+ * haiku wins and the "saved" card went red. The figure the product reports is
+ * "how much did routing save", and a route that saved nothing contributes 0.
+ *
+ * Applied **per event**, never to a total: clamping only the sum would still
+ * let a single expensive route erase real savings before it got there.
+ */
+export function countedSavings(deltaCents: number): number {
+  return deltaCents > 0 ? deltaCents : 0;
+}
+
 export function tierForModel(
   model: string,
   tiers: Record<Tier, string>,
@@ -237,7 +252,7 @@ export function tierForModel(
   return undefined;
 }
 
-/** Cost of a routed call plus its savings vs a baseline model, rounded and cache-aware. */
+/** Cost of a routed call plus what it saved vs a baseline model, rounded and cache-aware. */
 export interface RouteCost {
   costCents: number;
   savedCents: number;
@@ -249,9 +264,10 @@ export interface RouteCost {
    * False when `costCents`/`savedCents` are placeholder zeros rather than
    * measured figures — i.e. the routed model, the baseline model, or both
    * resolved to no price. Both are included because an unpriced baseline makes
-   * `savedCents` just as wrong as an unpriced routed model (it reports the
-   * negative of the cost). Consumers must render these figures as "unknown",
-   * not as $0.00; see `RouteTotals.unpricedModels`.
+   * `savedCents` just as wrong as an unpriced routed model (it reports a saving
+   * of nothing on a call that may well have saved something). Consumers must
+   * render these figures as "unknown", not as $0.00; see
+   * `RouteTotals.unpricedModels`.
    */
   priced: boolean;
 }
@@ -259,7 +275,9 @@ export interface RouteCost {
 /**
  * Cost + savings for a completed response, including prompt-cache tokens. Shared
  * by the library (`RouteMeta`) and the proxy (`RouteEvent`) so both price a call
- * the same way. `savedCents` is `baseline − actual` and can be negative.
+ * the same way. `savedCents` is `baseline − actual` run through
+ * {@link countedSavings}, so it is never negative: a route at or above the
+ * baseline saved 0.
  *
  * `usage` may be missing/partial on an unexpected response shape — guard every
  * field so a routing proxy never crashes on cost math. The resolved token counts
@@ -288,7 +306,7 @@ export function computeRouteCost(
 
   return {
     costCents: Math.round(cost * 1000) / 1000,
-    savedCents: Math.round((baseline - cost) * 1000) / 1000,
+    savedCents: countedSavings(Math.round((baseline - cost) * 1000) / 1000),
     cacheReadTokens: cache.readTokens,
     cacheCreationTokens: cache.creationTokens,
     inputTokens,
