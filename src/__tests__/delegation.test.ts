@@ -110,6 +110,21 @@ describe('stripDelegationBlockers — does not damage content that merely mentio
   });
 });
 
+// Measured against live Claude Code 2.1.220: request #1 is a tool-less meta-call
+// with a 1.3K system prompt and no payload; request #2 is the coordinator turn,
+// 31 tools and 10.3K, carrying both lines. Reporting on whichever came first told
+// the operator "not present" while the feature was working.
+describe('the meta-call comes first — a tool-less miss must not be reported', () => {
+  it('a real meta-call system prompt legitimately carries no payload', () => {
+    const metaCall = '<session>\nuser: fix the bug\n</session>\n\nWrite a short title.';
+    assert.equal(stripDelegationBlockers(metaCall).removed, 0);
+  });
+
+  it('the coordinator turn that follows does carry it', () => {
+    assert.equal(stripDelegationBlockers(REAL_SYSTEM).removed, 2);
+  });
+});
+
 describe('describeStrip', () => {
   it('reports the no-match case as clearly as the match case', () => {
     // A vendor payload change must not read as success.

@@ -5,6 +5,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-07-26
+
+### Fixed
+- **`--restore-delegation` reported "not present" while it was working.** The one-per-process report fired on whichever request came first, and against live Claude Code 2.1.220 that is a tool-less meta-call with a ~1.3K system prompt which legitimately carries no payload — the real coordinator turn (31 tools, ~10.3K prompt, both lines present) arrives second. So the first and only line an operator saw was `the known injected lines were not present`, while the strip was in fact removing both lines from every coordinator turn. The no-match report is now gated on the request carrying tools, the same structural agentic/meta split the session pin already makes; a match is still reported the moment it happens. Verified on real traffic through the proxy, before and after. Behaviour of the strip itself is unchanged — only what gets printed.
+
 ## [0.3.2] — 2026-07-26
 
 ### Added
