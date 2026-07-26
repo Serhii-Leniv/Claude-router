@@ -170,6 +170,15 @@ export function startBanner(
       : term.yellow('(needs --force-route to take effect)');
     rows.push(['Session', `${term.tier(options.sessionModel as Tier)} pinned ${note}`]);
   }
+  // Editing the client's system prompt is the one thing the proxy otherwise never
+  // does, so it is never silent — and it is useless without --force-route, since
+  // passthrough forwards the client's exact bytes.
+  if (options.restoreDelegation) {
+    const note = options.forceRoute
+      ? term.dim('(removes injected anti-delegation lines)')
+      : term.yellow('(needs --force-route to take effect)');
+    rows.push(['Delegation', `${term.green('restored')} ${note}`]);
+  }
   // A redirected upstream means requests are NOT going to Anthropic. That is the
   // point when testing, and a silent disaster otherwise — so it is always on the
   // banner, never merely absent when default.
@@ -216,6 +225,7 @@ async function cmdStart(args: string[], paths: RouterPaths): Promise<CommandResu
     models,
     forceRoute: options.forceRoute,
     sessionModel: options.sessionModel ? (options.sessionModel as Tier) : undefined,
+    restoreDelegation: options.restoreDelegation,
     pricing: options.pricing,
     routing: options.routing,
     historyFile: paths.historyFile,
