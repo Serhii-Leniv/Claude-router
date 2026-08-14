@@ -36,9 +36,13 @@ export function createProxyApp(
 
   app.post('/v1/messages', (c) => handleMessages(c, config, providerClient));
 
-  // Everything else under /v1 (count_tokens, model listing, …) is not routable —
-  // forward it verbatim to Anthropic so the client doesn't 404 on count_tokens.
-  app.all('/v1/*', (c) => handlePassthrough(c, config));
+  // Registered LAST, so every route above still wins on first match. Everything
+  // else belongs to the origin, not to us: the non-routable /v1 endpoints
+  // (count_tokens, model listing, …) and the paths outside /v1 alike — Claude
+  // Code probes `HEAD /api/hello` on startup and also calls /api/organizations.
+  // Scoping this to /v1/* made the router answer 404 for endpoints the origin
+  // serves, which is a failure we invented rather than one the client would hit.
+  app.all('*', (c) => handlePassthrough(c, config));
 
   return app;
 }
