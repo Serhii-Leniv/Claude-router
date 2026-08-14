@@ -591,6 +591,86 @@ describe('catch-all passthrough (hermetic — stubbed upstream)', () => {
     assert.equal(captured(), undefined, 'no upstream to forward to');
   });
 });
+describe('the router surface is reserved on every method (hermetic — stubbed upstream)', () => {
+  // Route ordering protects each of the router's own paths only for the method it
+  // registers: `GET /dashboard` matches its route, `POST /dashboard` does not — it
+  // falls through to the catch-all and handlePassthrough forwards it to the origin
+  // with the operator's x-api-key attached. There is no CORS, so a webpage cannot
+  // read the reply, but a cross-site form POST is a simple request and still
+  // reaches the proxy. These paths are ours on every method: the wrong method is a
+  // 405 from us, never a hop to the origin carrying the operator's credentials.
+  //
+  // Hermetic twice over, like the catch-all suite above: `stubUpstream` replaces
+  // the single fetch the handler makes, and the app is pinned to an unroutable
+  // loopback upstream, so a stub that failed to install dies on connect instead of
+  // reaching a real vendor host.
+  const ROUTER_SURFACE = ['/health', '/statusline', '/api/last-route', '/dashboard'];
+
+  const app = createProxyApp({
+    classifier: 'heuristic',
+    defaultModel: 'claude-sonnet-4-6',
+    verbose: false,
+    provider: 'anthropic',
+    models: DEFAULT_MODELS,
+    forceRoute: false,
+    upstream: 'http://127.0.0.1:1',
+  });
+
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  function stubUpstream() {
+    let seen: { url: string; method: string } | undefined;
+    globalThis.fetch = (async (input: unknown, init?: { method?: string }) => {
+      seen = { url: String(input), method: init?.method ?? 'GET' };
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    return () => seen;
+  }
+
+  it('answers 405 to POST on every router path and forwards none of them', async () => {
+    // One loop over the surface, not one case per path: the invariant is "these
+    // paths are ours", not "this one path 405s on this one method".
+    const observed: { path: string; status: number; forwardedUpstream: boolean }[] = [];
+    for (const path of ROUTER_SURFACE) {
+      const captured = stubUpstream();
+      const res = await app.request(path, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-api-key': 'sk-ant-OPERATOR-SECRET' },
+        body: JSON.stringify({ hello: 'world' }),
+      });
+      observed.push({ path, status: res.status, forwardedUpstream: captured() !== undefined });
+    }
+    assert.deepEqual(
+      observed,
+      ROUTER_SURFACE.map((path) => ({ path, status: 405, forwardedUpstream: false })),
+      'a router path reached by an unregistered method is a 405 here, never a forwarded request',
+    );
+  });
+
+  it('still answers GET /dashboard locally', async () => {
+    // The reservation must not cost the registered method its own route.
+    const captured = stubUpstream();
+    const res = await app.request('/dashboard');
+    assert.equal(res.status, 200);
+    assert.ok((await res.text()).includes('claude-router dashboard'));
+    assert.equal(captured(), undefined, '/dashboard is answered here, never forwarded');
+  });
+
+  it('still forwards HEAD /api/hello, which is not ours', async () => {
+    // The reservation covers the router's own paths only; everything else still
+    // belongs to the origin, on every method.
+    const captured = stubUpstream();
+    const res = await app.request('/api/hello', { method: 'HEAD' });
+    assert.notEqual(res.status, 404, 'Claude Code probes this on startup and the origin serves it');
+    assert.equal(res.headers.get('x-router-tier'), 'passthrough');
+    assert.equal(captured()!.method, 'HEAD');
+    assert.match(captured()!.url, /\/api\/hello$/);
+  });
+});
 
 describe('proxy parameter normalization', () => {
   // Inject a mock client via the provider path so we can inspect the exact params

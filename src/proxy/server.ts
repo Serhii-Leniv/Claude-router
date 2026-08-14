@@ -42,7 +42,23 @@ export function createProxyApp(
   // Code probes `HEAD /api/hello` on startup and also calls /api/organizations.
   // Scoping this to /v1/* made the router answer 404 for endpoints the origin
   // serves, which is a failure we invented rather than one the client would hit.
-  app.all('*', (c) => handlePassthrough(c, config));
+
+  // The paths this proxy answers itself, reserved on *every* method. Route
+  // ordering only protects each one for the method it registers: `GET /dashboard`
+  // matches above, `POST /dashboard` does not — it reaches the catch-all, and
+  // handlePassthrough forwards it to api.anthropic.com with the operator's
+  // x-api-key attached. Reaching here on one of these means the method is wrong,
+  // not that the path belongs to the origin.
+  const routerSurface = new Set(['/health', '/statusline', '/api/last-route', '/dashboard']);
+  app.all('*', (c) => {
+    if (routerSurface.has(c.req.path)) {
+      return c.json(
+        { error: { type: 'invalid_request_error', message: `${c.req.method} ${c.req.path} is not allowed (GET only)` } },
+        405,
+      );
+    }
+    return handlePassthrough(c, config);
+  });
 
   return app;
 }
