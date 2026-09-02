@@ -13,6 +13,7 @@
   <img src="https://img.shields.io/node/v/@sheruq/claude-router?color=D97757" alt="node version">
   <img src="https://img.shields.io/npm/l/@sheruq/claude-router?color=D97757" alt="license">
   <img src="https://img.shields.io/badge/TypeScript-strict-D97757" alt="TypeScript">
+  <a href="https://send.monobank.ua/jar/3zo8nv9iuF"><img src="https://img.shields.io/badge/support-monobank_jar-D97757" alt="support: monobank jar"></a>
 </p>
 
 ---
