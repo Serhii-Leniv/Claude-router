@@ -7,6 +7,13 @@ export interface ModelPricing {
   input: number;
   /** $ per 1M output tokens */
   output: number;
+  /**
+   * Prompt-cache read multiplier on {@link input}, when the model does not use
+   * the standard 10% (`CACHE_READ_RATE`). Fable 5.1 / Mythos 5.1 read at 2.5%.
+   * Optional so every existing entry and every user `pricing` override keeps
+   * the default — absent means standard, never means free.
+   */
+  cacheRead?: number;
 }
 
 export interface RoutingTuning {

@@ -5,7 +5,10 @@ export const DEFAULT_MODELS: Record<Tier, string> = {
   haiku: 'claude-haiku-4-5',
   sonnet: 'claude-sonnet-5',
   opus: 'claude-opus-4-8',
-  fable: 'claude-fable-5',
+  // Fable 5.1 (2026-09-01) supersedes Fable 5, which is now a legacy model. Same
+  // $10/$50 base, cheaper cache reads — so this promotion *does* move a cost
+  // figure, downward, on the cache-read line.
+  fable: 'claude-fable-5-1',
 };
 
 // NOTE: Bedrock inference-profile IDs vary by account/region and Anthropic's
@@ -31,15 +34,21 @@ export const VERTEX_MODELS: Record<Tier, string> = {
 
 /**
  * Current-generation Claude pricing ($ per 1M tokens), keyed by tier/family.
- * Verified against platform.claude.com pricing (last checked 2026-07-17):
+ * Verified against platform.claude.com pricing (last checked 2026-09-02):
  *   Haiku 4.5 — $1.00 / $5.00
- *   Sonnet 5  — $3.00 / $15.00 standard (intro $2.00 / $10.00 through 2026-08-31)
- *   Opus 4.6/4.7/4.8 — $5.00 / $25.00  (note: NOT the old $15/$75 of Opus 4.0/4.1)
+ *   Sonnet 5  — $2.00 / $10.00
+ *   Opus 4.5/4.6/4.7/4.8 — $5.00 / $25.00  (note: NOT the old $15/$75 of Opus 4.0/4.1)
  *
- *   Fable 5  — $10.00 / $50.00 (2x Opus; the most expensive routable tier)
+ *   Fable 5 / 5.1 — $10.00 / $50.00 (2x Opus; the most expensive routable tier)
  *
- * We price Sonnet at the standard rate so savings math stays stable when the
- * intro discount ends.
+ * **Sonnet's $2/$10 is the standard rate, not a discount.** It shipped as an
+ * introductory rate through 2026-08-31, and we deliberately priced Sonnet at the
+ * announced $3/$15 successor so savings math would not jump when the intro
+ * expired. It never expired: Anthropic made $2/$10 standard and cancelled the
+ * 2026-09-01 increase. Guessing the *direction* of a scheduled change is the
+ * same bet as not tracking it — the sonnet tier is the savings baseline, so the
+ * whole ledger overstated every win for as long as the guess stood. Price what
+ * the table says today; there is no forward-looking rate.
  *
  * Pricing drift here silently corrupts every `savedCents` figure the router
  * reports — keep this in sync when a new generation ships, and rely on the
@@ -47,7 +56,7 @@ export const VERTEX_MODELS: Record<Tier, string> = {
  */
 export const FAMILY_PRICING: Record<Tier, ModelPricing> = {
   haiku:  { input: 1.00, output: 5.00 },
-  sonnet: { input: 3.00, output: 15.00 },
+  sonnet: { input: 2.00, output: 10.00 },
   opus:   { input: 5.00, output: 25.00 },
   fable:  { input: 10.00, output: 50.00 },
 };
@@ -56,16 +65,43 @@ export const FAMILY_PRICING: Record<Tier, ModelPricing> = {
 const LEGACY_OPUS: ModelPricing = { input: 15.00, output: 75.00 };
 
 /**
+ * Sonnet 4.x (4, 4.5, 4.6) — the generation before Sonnet 5's price cut, at 1.5x
+ * the current Sonnet family rate. These became divergent the moment Sonnet 5's
+ * $2/$10 became standard: until then the family default *was* $3/$15 and the
+ * fallback resolved them for free.
+ */
+const LEGACY_SONNET: ModelPricing = { input: 3.00, output: 15.00 };
+
+/**
+ * Fable 5.1 / Mythos 5.1 — same $10/$50 base as Fable 5, but cache reads bill at
+ * 2.5% of input rather than the usual 10% ($0.25/MTok). On a cache-heavy client
+ * like Claude Code the read line is most of the input bill, so treating it as
+ * 10% overstates a fable route's cost by ~4x on that component.
+ */
+const FABLE_5_1: ModelPricing = { input: 10.00, output: 50.00, cacheRead: 0.025 };
+
+/**
  * Models whose price does NOT follow their family default. Each exact entry is
  * the only thing standing between that model and a wrong cost figure — two
  * distinct failure modes:
  *
  *  - **Legacy Opus** (4.0, 4.1) family-matches to the *current* Opus price, so
  *    the fallback understates every call by 3x.
- *  - **Mythos 5** matches no family at all (`familyForModel` has no substring to
- *    key on), so the fallback prices it at *nothing* — see `warnIfUnpriced` for
- *    what happens when a model reaches that state. Fable 5 no longer needs an
+ *  - **Legacy Sonnet** (4, 4.5, 4.6) has the same shape one generation down: the
+ *    family default followed Sonnet 5 to $2/$10, so the fallback now understates
+ *    the whole prior generation by a third.
+ *  - **Mythos 5 / 5.1** match no family at all (`familyForModel` has no substring
+ *    to key on), so the fallback prices them at *nothing* — see `warnIfUnpriced`
+ *    for what happens when a model reaches that state. Fable 5 no longer needs an
  *    entry here: it is a tier now, so the family fallback resolves it.
+ *  - **Fable 5.1** diverges on `cacheRead` alone — the base $10/$50 is its
+ *    family's, but its cache reads bill at 2.5% instead of 10%.
+ *
+ * Enumerating a superseded generation is open-ended by nature: a dated snapshot
+ * ID that is not listed here still falls through to the (now cheaper) family
+ * rate. That is the accepted cost of a family fallback, and it is why the entries
+ * below cover the dateless IDs plus the dated snapshots we have actually seen on
+ * the wire, rather than pretending the list is exhaustive.
  *
  * Every entry here must genuinely diverge from its family (or have no family);
  * `models.test.ts` asserts that, so a redundant entry fails the build rather
@@ -78,8 +114,16 @@ export const DIVERGENT_PRICING: Record<string, ModelPricing> = {
   'claude-opus-4-1-20250805': LEGACY_OPUS,
   'claude-opus-4-0': LEGACY_OPUS,
   'claude-opus-4-20250514': LEGACY_OPUS,
+  'claude-sonnet-4-6': LEGACY_SONNET,
+  'claude-sonnet-4-5': LEGACY_SONNET,
+  'claude-sonnet-4-5-20250929': LEGACY_SONNET,
+  'claude-sonnet-4-0': LEGACY_SONNET,
+  'claude-sonnet-4-20250514': LEGACY_SONNET,
+  // Base price matches the fable tier; the cache-read rate does not.
+  'claude-fable-5-1': FABLE_5_1,
   // Same price as the fable tier, but no substring for familyForModel to match.
   'claude-mythos-5': FAMILY_PRICING.fable,
+  'claude-mythos-5-1': FABLE_5_1,
 };
 
 /** IDs that price at their family default. Listed for clarity, not necessity —
@@ -88,10 +132,10 @@ const FAMILY_DERIVED_PRICING: Record<string, ModelPricing> = {
   'claude-haiku-4-5': FAMILY_PRICING.haiku,
   'claude-haiku-4-5-20251001': FAMILY_PRICING.haiku,
   'claude-sonnet-5': FAMILY_PRICING.sonnet,
-  'claude-sonnet-4-6': FAMILY_PRICING.sonnet,
   'claude-opus-4-8': FAMILY_PRICING.opus,
   'claude-opus-4-7': FAMILY_PRICING.opus,
   'claude-opus-4-6': FAMILY_PRICING.opus,
+  'claude-opus-4-5': FAMILY_PRICING.opus,
   'claude-fable-5': FAMILY_PRICING.fable,
 };
 
@@ -152,9 +196,18 @@ export function priceForModel(
  * Prompt-cache pricing multipliers (fractions of the model's input rate):
  * cache reads bill at 10%, cache writes (5-minute TTL) at 125%.
  * Claude Code uses caching heavily — ignoring these understates every cost.
+ *
+ * `CACHE_READ_RATE` is the *default*, not a universal: a model may carry its own
+ * `ModelPricing.cacheRead` (Fable 5.1 / Mythos 5.1 read at 2.5%). Resolve it with
+ * {@link cacheReadRate}, never by reading this constant directly at a cost site.
  */
 export const CACHE_READ_RATE = 0.1;
 export const CACHE_WRITE_RATE = 1.25;
+
+/** The cache-read multiplier for a resolved price: its own, else the standard 10%. */
+export function cacheReadRate(price: ModelPricing): number {
+  return price.cacheRead ?? CACHE_READ_RATE;
+}
 
 export interface CacheTokens {
   readTokens?: number;
@@ -205,7 +258,7 @@ export function computeCostCents(
   const p = priceForModel(model, pricing);
   if (!p) return 0;
   const cacheCost =
-    (cache?.readTokens ?? 0) * p.input * CACHE_READ_RATE +
+    (cache?.readTokens ?? 0) * p.input * cacheReadRate(p) +
     (cache?.creationTokens ?? 0) * p.input * CACHE_WRITE_RATE;
   return ((inputTokens * p.input + outputTokens * p.output + cacheCost) / 1_000_000) * 100;
 }

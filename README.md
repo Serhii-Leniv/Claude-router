@@ -219,7 +219,7 @@ Install-only options:
 
 ## Pricing & savings
 
-Each response's `savedCents` is `(baseline cost − actual cost)` for the tokens used, where the baseline is your `defaultModel` (Sonnet by default). **Prompt-cache tokens are included** — reads bill at 10% of the input rate and writes at 125% — so figures stay accurate for cache-heavy clients like Claude Code. Every routed request is appended to `~/.claude-router/history.jsonl`, so savings survive restarts (`claude-router stats` / the dashboard's *Lifetime Saved* card).
+Each response's `savedCents` is `(baseline cost − actual cost)` for the tokens used, where the baseline is your `defaultModel` (Sonnet by default). **Prompt-cache tokens are included** — reads bill at 10% of the input rate (2.5% on Fable 5.1 / Mythos 5.1) and writes at 125% — so figures stay accurate for cache-heavy clients like Claude Code. Every routed request is appended to `~/.claude-router/history.jsonl`, so savings survive restarts (`claude-router stats` / the dashboard's *Lifetime Saved* card).
 
 `history.jsonl` is append-only by design and never rotated — it *is* the lifetime-savings ledger (~250 bytes/event; a million routed requests ≈ 250 MB). Archive or delete it anytime to start fresh; stats restart from zero. The daemon log (`~/.claude-router/proxy.log`) *does* rotate: past 5 MiB it rolls over to `proxy.log.1` on the next daemon start.
 
@@ -227,11 +227,14 @@ Pricing tracks the **current Claude generation**; unknown/dated/Bedrock/Vertex I
 
 | Model | ID | Input $/1M | Output $/1M |
 |-------|-----|-----------:|------------:|
+| Claude Fable 5.1 | `claude-fable-5-1` | $10.00 | $50.00 |
 | Claude Opus 4.8 | `claude-opus-4-8` | $5.00 | $25.00 |
-| Claude Sonnet 5 | `claude-sonnet-5` | $3.00 | $15.00 |
+| Claude Sonnet 5 | `claude-sonnet-5` | $2.00 | $10.00 |
 | Claude Haiku 4.5 | `claude-haiku-4-5` | $1.00 | $5.00 |
 
-> Sonnet 5 has an introductory rate of **$2.00 / $10.00** per 1M through 2026-08-31. Savings use the **standard** $3.00 / $15.00 so numbers stay stable when the intro ends — override via `pricing` to reflect the intro rate, or for negotiated/enterprise rates.
+> Sonnet 5's **$2.00 / $10.00** is the standard rate. It launched as introductory pricing through 2026-08-31, and this router used to price the announced $3.00 / $15.00 successor so savings would not jump when it expired — but the increase was cancelled and $2/$10 became standard. Since the sonnet tier is the savings baseline, that guess made every reported saving too high, and by more than the 50% rate error: a saving is a difference and only one side of it moved, so on a typical Claude Code turn a haiku route reported roughly **twice** what it actually saved. Override via `pricing` for negotiated or enterprise rates.
+>
+> **Cache reads are 10% of the input rate on every model except Fable 5.1 / Mythos 5.1, which read at 2.5%** ($0.25/1M). On a cache-heavy client like Claude Code the read line is most of the input bill, so the rate is per-model (`ModelPricing.cacheRead`), not a global constant. Cache writes are 125% everywhere.
 
 Every response also carries the decision as headers:
 
