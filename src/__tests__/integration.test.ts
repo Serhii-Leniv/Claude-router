@@ -526,4 +526,97 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
     const body = (await res.json()) as { error: { type: string } };
     assert.equal(body.error.type, 'authentication_error');
   });
+
+  // ── Savings baseline ───────────────────────────────────────────────────────
+  //
+  // The baseline is what the request would have cost WITHOUT the router, so it
+  // is the model the client pinned — not `defaultModel`. Claude Code pins a
+  // model on every request, so a fixed sonnet baseline priced opus-pinned
+  // traffic against sonnet and reported a loss on runs that actually saved.
+
+  const savedCents = (res: Response) => Number(res.headers.get('x-router-saved-cents'));
+
+  it('prices savings against the model the client pinned, not defaultModel', async () => {
+    // Client asked for opus, evidence routed it to haiku: the saving is real and
+    // must be positive. Against the old defaultModel (sonnet) baseline this same
+    // call still showed a saving, so the assertion that separates the two is the
+    // magnitude — it must exceed what a sonnet baseline could produce.
+    const { base } = await setup();
+
+    const res = await post(base, {
+      model: 'claude-opus-4-8',
+      messages: [{ role: 'user', content: 'translate hello to French' }],
+      max_tokens: 100,
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'haiku');
+
+    const cost = Number(res.headers.get('x-router-cost-cents'));
+    // opus is 5x haiku on input and output, sonnet only 3x — a sonnet baseline
+    // cannot produce a saving this large relative to the actual cost.
+    assert.ok(savedCents(res) > cost * 3, `saving ${savedCents(res)} priced against opus, not sonnet`);
+  });
+
+  it('reports zero saved when the routed tier is the model the client asked for', async () => {
+    // The coordinator pin sends opus for an opus-pinned request: nothing was
+    // saved and nothing was lost. Previously this read as a *loss* against the
+    // sonnet baseline, which is what made the dashboard show negative totals on
+    // a session that was actually 21% cheaper than unrouted.
+    const { base } = await setup({ config: { sessionModel: 'opus' } });
+
+    const res = await post(base, {
+      model: 'claude-opus-4-8',
+      messages: [{ role: 'user', content: 'translate hello to French' }],
+      tools: CODER_TOOLS,
+      max_tokens: 100,
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'opus', 'pinned to the requested model');
+    assert.equal(savedCents(res), 0, 'same model both sides — exactly zero, not negative');
+  });
+
+  it('reports a negative saving when routing lands above what the client asked for', async () => {
+    // Honest in the other direction too: asked for haiku, escalated to opus.
+    // A clamp to zero here would hide the router costing money.
+    const { base } = await setup({ config: { sessionModel: 'opus' } });
+
+    const res = await post(base, {
+      model: DEFAULT_MODELS.haiku,
+      messages: [{ role: 'user', content: 'translate hello to French' }],
+      tools: CODER_TOOLS,
+      max_tokens: 100,
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'opus');
+    assert.ok(savedCents(res) < 0, `overspend must stay visible, got ${savedCents(res)}`);
+  });
+
+  it('falls back to defaultModel when the client pinned nothing usable', async () => {
+    // "auto" is an explicit "you pick" — there is no client intent to price
+    // against, so the configured baseline stands. Same for an unpriced model ID,
+    // where a baseline would be invented rather than measured; the event must
+    // still count as priced rather than being voided.
+    const { base } = await setup();
+
+    for (const model of ['auto', 'some-unlisted-model-v9']) {
+      const res = await post(base, {
+        model,
+        messages: [{ role: 'user', content: 'translate hello to French' }],
+        max_tokens: 100,
+      });
+
+      assert.equal(res.status, 200, model);
+      assert.equal(res.headers.get('x-router-tier'), 'haiku', model);
+      // haiku against the sonnet default: a saving, but a modest one — nothing
+      // like the opus-baseline figure asserted above.
+      assert.ok(savedCents(res) > 0, `${model}: baseline still applied`);
+      assert.ok(
+        savedCents(res) < Number(res.headers.get('x-router-cost-cents')) * 3,
+        `${model}: priced against sonnet, not the unusable model`,
+      );
+    }
+  });
 });
