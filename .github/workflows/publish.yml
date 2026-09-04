@@ -55,7 +55,18 @@ jobs:
       - name: Tarball must match the previous release's shape
         run: npm pack --dry-run 2>&1 | tail -40
 
+      # Diagnostics for trusted publishing: the exact claims npm matches the
+      # publisher entry against, so a mismatch (owner casing, workflow file name,
+      # environment) is visible in the log rather than guessed at.
+      - name: OIDC claims npm will see
+        run: |
+          echo "npm $(npm --version)"
+          TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=npm:registry.npmjs.org" | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).value')
+          echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | node -pe 'const c=JSON.parse(require("fs").readFileSync(0,"utf8")); JSON.stringify({repository:c.repository, repository_owner:c.repository_owner, workflow_ref:c.workflow_ref, job_workflow_ref:c.job_workflow_ref, environment:c.environment ?? null, ref:c.ref}, null, 2)'
+
       - run: npm publish --provenance --access public
+        env:
+          NPM_CONFIG_LOGLEVEL: verbose
 
       - name: GitHub release from the CHANGELOG section
         env:
