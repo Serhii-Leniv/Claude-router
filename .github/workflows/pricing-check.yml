@@ -37,7 +37,11 @@ jobs:
         run: |
           TITLE="Pricing table is stale — re-verify src/models.ts"
           if [ -z "$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number')" ]; then
-            gh issue create --title "$TITLE" --label maintenance --body "$(cat age.txt)
-
-Verify \`FAMILY_PRICING\` and \`DIVERGENT_PRICING\` in \`src/models.ts\` against https://platform.claude.com/docs/en/about-claude/pricing, then bump \`PRICING_LAST_CHECKED\` (even if nothing changed). Every \`savedCents\` figure the router reports depends on this table."
+            {
+              cat age.txt
+              printf '\nVerify `FAMILY_PRICING` and `DIVERGENT_PRICING` in `src/models.ts` against '
+              printf 'https://platform.claude.com/docs/en/about-claude/pricing, then bump `PRICING_LAST_CHECKED` '
+              printf '(even if nothing changed). Every `savedCents` figure the router reports depends on this table.\n'
+            } > issue-body.md
+            gh issue create --title "$TITLE" --label maintenance --body-file issue-body.md
           fi
