@@ -34,7 +34,7 @@ export const VERTEX_MODELS: Record<Tier, string> = {
 
 /**
  * Current-generation Claude pricing ($ per 1M tokens), keyed by tier/family.
- * Verified against platform.claude.com pricing (last checked 2026-09-02):
+ * Verified against platform.claude.com pricing on PRICING_LAST_CHECKED:
  *   Haiku 4.5 — $1.00 / $5.00
  *   Sonnet 5  — $2.00 / $10.00
  *   Opus 5 / 4.5/4.6/4.7/4.8 — $5.00 / $25.00  (note: NOT the old $15/$75 of
@@ -56,6 +56,22 @@ export const VERTEX_MODELS: Record<Tier, string> = {
  * reports — keep this in sync when a new generation ships, and rely on the
  * family fallback in `priceForModel` to cover Bedrock/Vertex/dated IDs.
  */
+/**
+ * The date this table was last verified against platform.claude.com, ISO
+ * `YYYY-MM-DD`. Every savings figure the router reports is downstream of these
+ * constants, and nothing else notices when they drift. The weekly
+ * `pricing-check` workflow opens an issue once this is older than 60 days;
+ * `claude-router doctor` warns past 90. Bump it whenever you re-verify, even
+ * if nothing changed — the point is a dated claim, not a diff.
+ */
+export const PRICING_LAST_CHECKED = '2026-09-02';
+
+/** Whole days since {@link PRICING_LAST_CHECKED}. */
+export function pricingAgeDays(now: Date = new Date()): number {
+  const checked = Date.parse(`${PRICING_LAST_CHECKED}T00:00:00Z`);
+  return Math.floor((now.getTime() - checked) / 86_400_000);
+}
+
 export const FAMILY_PRICING: Record<Tier, ModelPricing> = {
   haiku:  { input: 1.00, output: 5.00 },
   sonnet: { input: 2.00, output: 10.00 },

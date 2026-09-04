@@ -16,6 +16,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 ### Added
 - **`x-router-reason`** — every routed response (streaming too) names the gate that decided the tier: `agentic:mid-loop`, `single-turn:short mechanical transform`, `session:coordinator-pinned`, `ai:level-2`. The same string lands in `history.jsonl` (`reason`), the verbose log, and a new dashboard column. It was computed on every request since 0.2.2 and reached none of them.
 - The `fable` tier shows in the startup banner (marked opt-in) and has its own terminal colour.
+- **Releases are published by CI, with provenance.** A `v*` tag on `master` whose version matches `package.json` runs the tests, publishes with `npm publish --provenance`, and creates the GitHub release from the CHANGELOG section. A tag on a side branch is refused — the failure mode that produced 0.3.2/0.3.3. `RELEASING.md` has the checklist.
+- **The pricing table has a dated claim.** `PRICING_LAST_CHECKED` in `src/models.ts` records when the table was last verified; a weekly workflow opens one issue once it is older than 60 days, and `claude-router doctor` warns past 90. Not a failing test, so it cannot go red on an unrelated PR.
 - **`claude-router help` is rendered from the options table.** `--session-model`, `--upstream` and `--restore-delegation` were live flags with no help line because the text was a second hand-written copy; a flag now cannot exist without one, and a test checks every flag appears.
 
 ### Fixed

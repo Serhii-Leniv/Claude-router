@@ -1,4 +1,5 @@
 import { term } from './term.js';
+import { PRICING_LAST_CHECKED, pricingAgeDays } from '../models.js';
 import { out, type OutputLine } from './command.js';
 import type { HealthInfo } from './health.js';
 import type { DaemonState } from './daemon.js';
@@ -34,6 +35,8 @@ export interface Diagnostic {
 export interface DoctorProbes {
   nodeVersion: string;
   platform: string;
+  /** The current time — injected so the pricing-age check is testable. */
+  now(): Date;
   loadConfig(): { loaded: boolean; error?: string };
   checkHealth(port: number): Promise<HealthInfo | null>;
   isEnvVarSet(port: number): boolean;
@@ -50,6 +53,9 @@ export interface DoctorOptions {
   configFile: string;
 }
 
+/** Past this many days the pricing table counts as unverified. */
+export const PRICING_STALE_DAYS = 90;
+
 export async function runDiagnostics(
   options: DoctorOptions,
   probes: DoctorProbes,
@@ -62,6 +68,20 @@ export async function runDiagnostics(
   diagnostics.push({
     ok: (major ?? 0) >= 20,
     label: `Node ${probes.nodeVersion} (need ≥ 20)`,
+  });
+
+  // Every savings figure is downstream of a hand-maintained pricing table, and
+  // nothing else in the product notices when it goes stale. Warn-only: a stale
+  // table is a reason to re-verify, not a broken install.
+  const age = pricingAgeDays(probes.now());
+  const fresh = age <= PRICING_STALE_DAYS;
+  diagnostics.push({
+    ok: fresh,
+    label: fresh
+      ? `Pricing table verified ${age} day${age === 1 ? '' : 's'} ago (${PRICING_LAST_CHECKED})`
+      : `Pricing table last verified ${age} days ago (${PRICING_LAST_CHECKED}) — savings figures may be off`,
+    hint: 'Verify src/models.ts against platform.claude.com pricing and bump PRICING_LAST_CHECKED',
+    warnOnly: true,
   });
 
   const config = probes.loadConfig();

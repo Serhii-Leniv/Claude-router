@@ -1,0 +1,43 @@
+name: pricing-check
+
+# Every savings figure the router reports is downstream of the hand-maintained
+# pricing table in src/models.ts, and nothing notices when it goes stale. This
+# runs weekly, and once PRICING_LAST_CHECKED is more than 60 days old it opens
+# one issue (never a second while that one is open). It is deliberately not a
+# failing test: a test would go red on every contributor's PR on a date that
+# has nothing to do with their change.
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: age
+        run: |
+          if node scripts/check-pricing-age.mjs 60 | tee age.txt; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.age.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="Pricing table is stale — re-verify src/models.ts"
+          if [ -z "$(gh issue list --state open --search "\"$TITLE\" in:title" --json number --jq '.[0].number')" ]; then
+            gh issue create --title "$TITLE" --label maintenance --body "$(cat age.txt)
+
+Verify \`FAMILY_PRICING\` and \`DIVERGENT_PRICING\` in \`src/models.ts\` against https://platform.claude.com/docs/en/about-claude/pricing, then bump \`PRICING_LAST_CHECKED\` (even if nothing changed). Every \`savedCents\` figure the router reports depends on this table."
+          fi

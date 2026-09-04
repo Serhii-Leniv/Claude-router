@@ -650,6 +650,7 @@ function liveProbes(paths: RouterPaths): DoctorProbes {
   return {
     nodeVersion: process.versions.node,
     platform: platformName(),
+    now: () => new Date(),
     loadConfig: () => loadFileConfig(paths.configFile),
     checkHealth: (port) => checkHealth(port),
     isEnvVarSet: (port) => isEnvVarSet(port),

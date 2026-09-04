@@ -11,6 +11,8 @@ import {
   DEFAULT_PRICING,
   DIVERGENT_PRICING,
   FAMILY_PRICING,
+  PRICING_LAST_CHECKED,
+  pricingAgeDays,
 } from '../models.js';
 
 describe('computeCostCents', () => {
@@ -361,5 +363,22 @@ describe('tierForModel', () => {
 
   it('returns undefined for unknown model', () => {
     assert.equal(tierForModel('unknown', DEFAULT_MODELS), undefined);
+  });
+});
+
+describe('PRICING_LAST_CHECKED', () => {
+  it('is a real ISO date no later than today', () => {
+    // The freshness guards (weekly workflow, doctor) compute from this string;
+    // a typo would make the table look freshly verified forever.
+    assert.match(PRICING_LAST_CHECKED, /^\d{4}-\d{2}-\d{2}$/);
+    const parsed = Date.parse(`${PRICING_LAST_CHECKED}T00:00:00Z`);
+    assert.ok(Number.isFinite(parsed), 'parses');
+    assert.ok(parsed <= Date.now(), 'not in the future');
+  });
+
+  it('pricingAgeDays counts whole days from the checked date', () => {
+    const checked = new Date(`${PRICING_LAST_CHECKED}T00:00:00Z`);
+    assert.equal(pricingAgeDays(checked), 0);
+    assert.equal(pricingAgeDays(new Date(checked.getTime() + 90 * 86_400_000 + 1)), 90);
   });
 });

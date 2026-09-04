@@ -85,6 +85,8 @@ Common types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `perf`. Scope 
 3. Fill out the PR template — link the issue it fixes (`Fixes #NN`), say what you changed and why, and how you verified it.
 4. Make sure `npm test` passes locally and CI is green.
 5. Update `CHANGELOG.md` under `## [Unreleased]` if your change is user-visible.
+
+Maintainers cut releases by the checklist in [RELEASING.md](RELEASING.md).
 6. A maintainer reviews before merge. **`master` is protected** — PRs merge by **squash** after an approving review and green CI. No direct pushes.
 
 > CI runs automatically on every PR, including your first one from a fork — no maintainer approval needed. A quick typecheck job reports within a minute; the full OS × Node matrix follows. Your PR will also be auto-labelled by touched area (`area:proxy`, `area:routing`, …), and first-time contributors get a short welcome comment with the essentials — both are automated, nothing for you to do.
