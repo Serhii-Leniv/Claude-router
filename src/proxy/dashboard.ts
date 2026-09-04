@@ -1,5 +1,5 @@
 import { emptyTotals, foldOutcome, tierBreakdown } from '../totals.js';
-import { DISPLAY_TIERS, type DisplayTier } from '../models.js';
+import { DISPLAY_TIERS, DEFAULT_MODELS, DEFAULT_PRICING, counterfactualCents, type DisplayTier } from '../models.js';
 import { savedCentsDisplay } from './format.js';
 import type { RouteEvent } from './route-event.js';
 import type { LifetimeStats } from './history.js';
@@ -28,6 +28,29 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
   const totalCost = totals.costCents;
   const totalSaved = totals.savedCents;
   const retried = totals.retried;
+  // Orchestration cards render only once there is a coordinator turn to count.
+  const { turns, dispatched, nested } = totals.dispatch;
+  const dispatchCard = turns > 0
+    ? `<div class="stat-card card">
+      <div class="label">Dispatch Rate</div>
+      <div class="value">${((dispatched / turns) * 100).toFixed(0)}%</div>
+      <div class="sub">${dispatched} of ${turns} coordinator turns${nested > 0 ? ` · <span class="negative">${nested} nested</span>` : ''}</div>
+    </div>`
+    : '';
+  const allOpus = totals.tokens.input + totals.tokens.output > 0
+    ? counterfactualCents(totals.tokens, DEFAULT_MODELS.opus, DEFAULT_PRICING)
+    : 0;
+  const counterfactualCard = allOpus > 0
+    ? `<div class="stat-card card">
+      <div class="label">vs All-Opus</div>
+      <div class="value orange">$${(allOpus / 100).toFixed(4)}</div>
+      <div class="sub">same tokens on ${esc(DEFAULT_MODELS.opus)} · upper bound</div>
+    </div>`
+    : '';
+  const roleRows = Object.entries(totals.byRole)
+    .sort((a, b) => b[1].costCents - a[1].costCents)
+    .map(([name, r]) => `<div class="role-row"><span class="role-name">${esc(name)}</span><span>${r.requests} req</span><span>$${(r.costCents / 100).toFixed(4)}</span></div>`)
+    .join('');
 
   // DISPLAY_TIERS, not a hand-written list: the list here used to omit `fable`,
   // which both hid fable routes from the chart and left them out of its own
@@ -64,6 +87,7 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
         <td><span class="badge badge-${esc(String(e.tier))}">${esc(String(e.tier))}</span></td>
         <td>${esc(e.model)}</td>
         <td class="reason">${e.reason ? esc(e.reason) : '<span class="none">-</span>'}</td>
+        <td class="role">${e.role ? esc(e.role) : e.coordinator ? 'coordinator' : '<span class="none">-</span>'}${e.dispatched ? ' <span class="badge badge-retry" title="called the Agent tool">dispatched</span>' : ''}</td>
         <td>${e.priced === false ? '<span class="unknown" title="no pricing for this model">—</span>' : `$${(e.costCents / 100).toFixed(4)}`}</td>
         <td class="${e.priced === false ? 'unknown' : e.savedCents >= 0 ? 'positive' : 'negative'}">${e.priced === false ? '—' : `$${(e.savedCents / 100).toFixed(4)}`}</td>
         <td>${e.confidence.toFixed(2)}</td>
@@ -290,6 +314,12 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
     .badge-fable       { background: rgba(180, 124, 255, 0.1); color: var(--violet); border-color: rgba(180, 124, 255, 0.4); }
     .badge-passthrough { background: rgba(139, 149, 167, 0.1); color: var(--steel);  border-color: rgba(139, 149, 167, 0.35); }
     td.reason          { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--steel); }
+    td.role            { font-size: 12px; }
+    .stat-card .sub    { font-size: 11px; color: var(--steel); margin-top: 4px; }
+    .roles             { padding: 8px 16px; }
+    .role-row          { display: grid; grid-template-columns: 1fr auto auto; gap: 16px; padding: 6px 0; font-size: 13px; border-bottom: 1px solid rgba(139, 149, 167, 0.15); }
+    .role-row:last-child { border-bottom: 0; }
+    .role-name         { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .badge-retry       { background: rgba(246, 70, 93, 0.1);   color: var(--red);    border-color: rgba(246, 70, 93, 0.4); }
     .none { color: var(--ink-dim); }
     .unknown { color: var(--gold); }
@@ -354,6 +384,8 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
       <div class="label">Auto-retried</div>
       <div class="value">${retried}</div>
     </div>
+    ${dispatchCard}
+    ${counterfactualCard}
     ${lifetime ? (() => {
       const d = savedCentsDisplay(lifetime.savedCents);
       const toneClass = d.tone === 'neutral' ? '' : d.tone;
@@ -369,6 +401,9 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
     </div>`;
     })() : ''}
   </div>
+
+  ${roleRows ? `<div class="section-label">By Role</div>
+  <div class="card roles">${roleRows}</div>` : ''}
 
   <div class="section-label">Tier Distribution</div>
   <div class="tier-shell card">
@@ -387,6 +422,7 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
             <th>Tier</th>
             <th>Model</th>
             <th>Reason</th>
+            <th>Role</th>
             <th>Cost</th>
             <th>Saved</th>
             <th>Confidence</th>
@@ -396,7 +432,7 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
           </tr>
         </thead>
         <tbody>
-          ${rows || '<tr><td colspan="10" class="empty">No requests yet. Send requests to the proxy to see data here.</td></tr>'}
+          ${rows || '<tr><td colspan="11" class="empty">No requests yet. Send requests to the proxy to see data here.</td></tr>'}
         </tbody>
       </table>
     </div>

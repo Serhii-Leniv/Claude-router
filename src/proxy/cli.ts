@@ -5,7 +5,7 @@ import type { Hono } from 'hono';
 import fs from 'node:fs';
 import { createProxyApp } from './server.js';
 import { createProviderClient, DEFAULT_UPSTREAM, type Provider } from './handler.js';
-import { DEFAULT_MODELS, BEDROCK_MODELS, VERTEX_MODELS, DISPLAY_TIERS } from '../models.js';
+import { DEFAULT_MODELS, BEDROCK_MODELS, VERTEX_MODELS, DISPLAY_TIERS, DEFAULT_PRICING, counterfactualCents } from '../models.js';
 import { DEFAULT_ROLE_TIERS, ROLES } from '../roles.js';
 import { installPolicyPlugin, uninstallPolicyPlugin, policyPluginStatus, PLUGIN_ID } from './policy.js';
 import type { Tier } from '../types.js';
@@ -424,6 +424,26 @@ function cmdStats(args: string[], paths: RouterPaths): CommandResult {
   // counted apart from the money figures — shown only when there are any.
   if (stats.errors > 0) {
     rows.push(['Errors', term.red(String(stats.errors))]);
+  }
+
+  // Orchestration figures — observed, not promised. Shown only once there is
+  // something to observe, so a plain API user's stats stay as they were.
+  const { turns, dispatched, nested } = stats.dispatch;
+  if (turns > 0) {
+    const pct = ((dispatched / turns) * 100).toFixed(0);
+    rows.push(['Dispatch rate', `${pct}% ${term.dim(`(${dispatched} of ${turns} coordinator turns called an agent)`)}`]);
+  }
+  if (nested > 0) {
+    rows.push(['Nested dispatch', term.red(`${nested} ${term.dim('(a subagent delegated — roles are leaves)')}`)]);
+  }
+  const roles = Object.entries(stats.byRole).sort((a, b) => b[1].costCents - a[1].costCents);
+  if (roles.length > 0) {
+    rows.push(['By role', roles.map(([name, r]) => `${name} ${r.requests} ${term.dim(`($${(r.costCents / 100).toFixed(2)})`)}`).join(term.dim('  ·  '))]);
+  }
+  const tokens = stats.tokens;
+  if (tokens.input + tokens.output > 0) {
+    const allOpus = counterfactualCents(tokens, DEFAULT_MODELS.opus, DEFAULT_PRICING);
+    rows.push(['vs all-opus', `$${(allOpus / 100).toFixed(2)} ${term.dim(`(same tokens on ${DEFAULT_MODELS.opus}; an upper bound)`)}`]);
   }
 
   // The totals above exclude every unpriced call. Saying so is the difference

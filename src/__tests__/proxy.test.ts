@@ -4,6 +4,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { createProxyApp } from '../proxy/server.js';
 import { routeHistory, boundHistory, MAX_HISTORY, getAnthropicClient, clearClientCache, routeCounters } from '../proxy/handler.js';
 import { renderDashboard } from '../proxy/dashboard.js';
+import { emptyTotals } from '../totals.js';
 import type { RouteEvent } from '../proxy/route-event.js';
 
 import { DEFAULT_MODELS } from '../models.js';
@@ -194,6 +195,7 @@ describe('renderDashboard', () => {
 
   it('renders lifetime stats when provided', () => {
     const html = renderDashboard([], {
+      ...emptyTotals(),
       requests: 42,
       costCents: 100,
       savedCents: 4700,
@@ -252,6 +254,31 @@ describe('renderDashboard', () => {
     assert.ok(html.includes('<th>Reason</th>'), 'reason column exists');
     assert.ok(html.includes('agentic:mid-loop'), 'the gate name renders');
     assert.ok(html.includes('<td class="reason"><span class="none">-</span></td>'), 'a legacy row without a reason renders a dash');
+  });
+
+  it('renders dispatch, counterfactual and by-role once there is a coordinator turn', () => {
+    const events: RouteEvent[] = [
+      {
+        timestamp: '2026-05-01T12:00:00.000Z', tier: 'opus', model: 'claude-opus-5',
+        costCents: 3, savedCents: 0, confidence: 1, classifier: 'pinned',
+        retried: false, retryReason: null, inputTokens: 100, outputTokens: 50,
+        coordinator: true, dispatchable: true, dispatched: true,
+      },
+      {
+        timestamp: '2026-05-01T12:00:01.000Z', tier: 'haiku', model: 'claude-haiku-4-5',
+        costCents: 0.1, savedCents: 2, confidence: 1, classifier: 'role',
+        retried: false, retryReason: null, inputTokens: 100, outputTokens: 50,
+        subagent: true, role: 'recon', roleSource: 'marker',
+      },
+    ];
+    const html = renderDashboard(events);
+    assert.ok(html.includes('Dispatch Rate'), 'dispatch card');
+    assert.ok(html.includes('100%') && html.includes('1 of 1 coordinator turns'), 'rate and denominator');
+    assert.ok(html.includes('vs All-Opus'), 'counterfactual card');
+    assert.ok(html.includes('By Role') && html.includes('<span class="role-name">recon</span>'), 'role rows');
+    assert.ok(html.includes('<th>Role</th>') && html.includes('dispatched'), 'role column with dispatch badge');
+    const plain = renderDashboard([events[1]!]);
+    assert.ok(!plain.includes('Dispatch Rate'), 'no dispatch card without a coordinator turn');
   });
 
   it('renders with data', () => {

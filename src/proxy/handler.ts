@@ -146,6 +146,21 @@ export function clearAgentRegistry(): void {
   agentRegistry.clear();
 }
 
+const DISPATCH_TOOL_NAMES = new Set(['Agent', 'Task']);
+
+/** Was the Agent tool among the tools offered on this request? */
+function offersDispatch(tools: unknown): boolean {
+  return Array.isArray(tools) && tools.some((t) => DISPATCH_TOOL_NAMES.has(String((t as { name?: unknown })?.name)));
+}
+
+/**
+ * Did the response call the Agent tool? Read from the completed message's
+ * content — the SDK accumulates it for streams too, so no extra buffering.
+ */
+export function dispatchedIn(content: ReadonlyArray<{ type: string; name?: string }> | undefined): boolean {
+  return Array.isArray(content) && content.some((b) => b.type === 'tool_use' && DISPATCH_TOOL_NAMES.has(b.name ?? ''));
+}
+
 function recordEvent(event: RouteEvent, config?: HandlerConfig): void {
   routeCounters.recorded++;
   routeHistory.push(event);
@@ -472,9 +487,19 @@ export async function handleMessages(
     : pinTier && !isSubagent && hasTools && config.models[pinTier]
       ? { tier: pinTier, score: 0, method: 'pinned', ms: 0, confidence: 1, reason: 'session:coordinator-pinned' }
       : await classify(client, classifyInput, config);
-  // Facts about the request that belong on the ledger row whatever decided the tier.
+  // Facts about the request that belong on the ledger row whatever decided the
+  // tier. `coordinator` is the same structural test the session pin makes;
+  // `dispatchable` is whether this turn was even offered the Agent tool, so a
+  // dispatch *rate* has an honest denominator; `nested` is a subagent that
+  // itself carries a parent agent id — a leaf that delegated.
+  const sessionId = c.req.header('x-claude-code-session-id');
+  const coordinator = !isSubagent && hasTools;
   const context: RouteContext = {
+    ...(sessionId ? { sessionId } : {}),
     ...(isSubagent ? { subagent: true as const } : {}),
+    ...(isSubagent && c.req.header('x-claude-code-parent-agent-id') != null ? { nested: true as const } : {}),
+    ...(coordinator ? { coordinator: true as const } : {}),
+    ...(coordinator && offersDispatch(body.tools) ? { dispatchable: true as const } : {}),
     ...(roleDecision ? { role: roleDecision.role, roleSource: roleDecision.source } : {}),
   };
 
@@ -540,6 +565,7 @@ async function handleNonStreaming(
       cost,
       classifyResult,
       context,
+      dispatched: dispatchedIn(result.response.content),
       retried: result.retried,
       retryReason: result.retryReason,
     }), config);
@@ -642,7 +668,7 @@ async function handleStreaming(
           log(tier, model, classifyResult, cost.costCents, cost.savedCents, baselineModel, false, null, cost.priced);
         }
 
-        recordEvent(buildRouteEvent({ tier, model, cost, classifyResult, context }), config);
+        recordEvent(buildRouteEvent({ tier, model, cost, classifyResult, context, dispatched: dispatchedIn(finalMessage.content) }), config);
 
         controller.close();
       } catch (err) {

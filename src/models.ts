@@ -366,6 +366,25 @@ export function computeRouteCost(
   };
 }
 
+/**
+ * What a token total would have cost on one model — the "vs all-opus" figure.
+ * Cost is linear in tokens, so the totals fold once and price here. Same caveat
+ * as the research replay: tokens are held constant across models, which makes
+ * this an upper bound on what a single-model session would have cost, not a
+ * measurement of one. 0 (with no warning) when the model has no price; the
+ * caller decides how to render that.
+ */
+export function counterfactualCents(
+  tokens: { input: number; output: number; cacheRead: number; cacheCreation: number },
+  model: string,
+  pricing: Record<string, ModelPricing> = DEFAULT_PRICING,
+): number {
+  return computeCostCents(model, tokens.input, tokens.output, pricing, {
+    readTokens: tokens.cacheRead,
+    creationTokens: tokens.cacheCreation,
+  });
+}
+
 /** The cost and token fields a route outcome record carries, plus the `priced` flag. */
 export interface RouteCostFields {
   costCents: number;

@@ -93,6 +93,29 @@ describe('stats', () => {
     assert.match(shown, /fable 1/, 'a fable route must not vanish from the tier line');
   });
 
+  it('shows dispatch rate, by-role cost and the all-opus counterfactual once orchestration rows exist', async () => {
+    const paths = tempHome();
+    fs.mkdirSync(paths.configDir, { recursive: true });
+    const base = { confidence: 1, retried: false, retryReason: null, inputTokens: 1000, outputTokens: 100 };
+    const events = [
+      { ...base, timestamp: '2026-09-04T10:00:00.000Z', tier: 'opus', model: 'claude-opus-5', costCents: 3, savedCents: 0, classifier: 'pinned', coordinator: true, dispatchable: true, dispatched: true },
+      { ...base, timestamp: '2026-09-04T10:00:01.000Z', tier: 'opus', model: 'claude-opus-5', costCents: 3, savedCents: 0, classifier: 'pinned', coordinator: true, dispatchable: true },
+      { ...base, timestamp: '2026-09-04T10:00:02.000Z', tier: 'haiku', model: 'claude-haiku-4-5', costCents: 0.1, savedCents: 2, classifier: 'role', subagent: true, role: 'recon', roleSource: 'marker' },
+      { ...base, timestamp: '2026-09-04T10:00:03.000Z', tier: 'haiku', model: 'claude-haiku-4-5', costCents: 0.1, savedCents: 2, classifier: 'role', subagent: true, role: 'recon', roleSource: 'marker', nested: true },
+    ];
+    fs.writeFileSync(paths.historyFile, events.map((e) => JSON.stringify(e)).join('\n') + '\n', 'utf8');
+
+    const shown = text(await main(['stats'], paths));
+    assert.match(shown, /Dispatch rate\s+50% \(1 of 2 coordinator turns called an agent\)/);
+    assert.match(shown, /Nested dispatch\s+1/);
+    assert.match(shown, /By role\s+coordinator 2 \(\$0\.06\)\s+·\s+recon 2 \(\$0\.00\)/);
+    assert.match(shown, /vs all-opus\s+\$\d+\.\d{2} \(same tokens on claude-opus-5; an upper bound\)/);
+
+    const json = JSON.parse(text(await main(['stats', '--json'], paths))) as { dispatch: { turns: number }; byRole: Record<string, unknown> };
+    assert.equal(json.dispatch.turns, 2);
+    assert.ok('recon' in json.byRole);
+  });
+
   it('--json emits the raw totals', async () => {
     const result = await main(['stats', '--json'], tempHome());
     const parsed = JSON.parse(text(result)) as { requests: number };

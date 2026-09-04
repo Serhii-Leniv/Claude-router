@@ -32,6 +32,22 @@ export interface RouteTotals {
    * an undercount, and by how many calls — render it, don't drop it.
    */
   unpricedModels: Record<string, number>;
+  /**
+   * Cost per role label — the subagent roles from src/roles.ts plus
+   * `coordinator` for the main session's agent turns. Only labels seen appear.
+   * This is the axis a prompt-level policy can never produce: what did
+   * reconnaissance cost, what did review cost, what did the coordinator keep.
+   */
+  byRole: Record<string, { requests: number; costCents: number; savedCents: number }>;
+  /**
+   * Delegation, observed rather than promised. `turns` counts coordinator turns
+   * that *could* dispatch (the Agent tool was offered); `dispatched` those whose
+   * response actually called it; `nested` subagent requests that carried a
+   * parent agent id — a leaf that delegated, which the policy forbids.
+   */
+  dispatch: { turns: number; dispatched: number; nested: number };
+  /** Token totals across priced-or-not events; the counterfactual is linear in these. */
+  tokens: { input: number; output: number; cacheRead: number; cacheCreation: number };
 }
 
 /**
@@ -56,6 +72,20 @@ export interface RouteOutcomeLike {
   priced?: boolean;
   /** Set when the request failed mid-flight; the event counts only toward `errors`. */
   error?: string;
+  /** Subagent role (pinned or inferred); see src/roles.ts. */
+  role?: string;
+  /** The main session's agent turn (no agent id, tools present). */
+  coordinator?: true;
+  /** A coordinator turn that was offered the Agent tool. */
+  dispatchable?: true;
+  /** A dispatchable turn whose response called the Agent tool. */
+  dispatched?: true;
+  /** A subagent request carrying a parent agent id — a leaf that delegated. */
+  nested?: true;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 }
 
 export function emptyTotals(): RouteTotals {
@@ -68,6 +98,9 @@ export function emptyTotals(): RouteTotals {
     tiers: {},
     byDay: {},
     unpricedModels: {},
+    byRole: {},
+    dispatch: { turns: 0, dispatched: 0, nested: 0 },
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0 },
   };
 }
 
@@ -109,4 +142,21 @@ export function foldOutcome(acc: RouteTotals, e: RouteOutcomeLike): void {
     d.costCents += e.costCents;
     d.savedCents += e.savedCents;
   }
+
+  // Orchestration figures. Every field is optional on the event, so a record
+  // from before they existed (or the library's RouteMeta) folds to no change.
+  const roleLabel = e.role ?? (e.coordinator ? 'coordinator' : undefined);
+  if (roleLabel) {
+    const r = (acc.byRole[roleLabel] ??= { requests: 0, costCents: 0, savedCents: 0 });
+    r.requests++;
+    r.costCents += e.costCents;
+    r.savedCents += e.savedCents;
+  }
+  if (e.dispatchable) acc.dispatch.turns++;
+  if (e.dispatched) acc.dispatch.dispatched++;
+  if (e.nested) acc.dispatch.nested++;
+  acc.tokens.input += e.inputTokens ?? 0;
+  acc.tokens.output += e.outputTokens ?? 0;
+  acc.tokens.cacheRead += e.cacheReadTokens ?? 0;
+  acc.tokens.cacheCreation += e.cacheCreationTokens ?? 0;
 }

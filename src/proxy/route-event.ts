@@ -43,6 +43,12 @@ export interface RouteEvent {
    */
   role?: string;
   roleSource?: RoleSource;
+  sessionId?: string;
+  nested?: true;
+  coordinator?: true;
+  dispatchable?: true;
+  /** A dispatchable turn whose response called the Agent tool — delegation observed, not promised. */
+  dispatched?: true;
   retried: boolean;
   retryReason: string | null;
   inputTokens: number;
@@ -65,7 +71,15 @@ export interface RouteEvent {
 
 /** Request facts that are not a classification but belong on the record. Keys are set only when true/known. */
 export interface RouteContext {
+  /** Claude Code's `x-claude-code-session-id`, when sent. */
+  sessionId?: string;
   subagent?: true;
+  /** The subagent carried a parent agent id: a leaf that delegated. */
+  nested?: true;
+  /** The main session's agent turn (no agent id, tools present). */
+  coordinator?: true;
+  /** A coordinator turn that was offered the Agent tool. */
+  dispatchable?: true;
   role?: string;
   roleSource?: RoleSource;
 }
@@ -76,13 +90,15 @@ export interface RouteEventInput {
   cost: RouteCost;
   classifyResult: ClassifyResult;
   context?: RouteContext;
+  /** The response called the Agent tool. Recorded only on dispatchable turns. */
+  dispatched?: boolean;
   retried?: boolean;
   retryReason?: string | null;
 }
 
 /** Record of one completed routed call. */
 export function buildRouteEvent(input: RouteEventInput): RouteEvent {
-  const { tier, model, cost, classifyResult, context, retried = false, retryReason = null } = input;
+  const { tier, model, cost, classifyResult, context, dispatched, retried = false, retryReason = null } = input;
   return {
     timestamp: new Date().toISOString(),
     tier,
@@ -92,6 +108,7 @@ export function buildRouteEvent(input: RouteEventInput): RouteEvent {
     classifierMs: classifyResult.ms,
     ...(classifyResult.reason ? { reason: classifyResult.reason } : {}),
     ...(context ?? {}),
+    ...(dispatched && context?.dispatchable ? { dispatched: true as const } : {}),
     retried,
     retryReason,
     ...costFields(cost),

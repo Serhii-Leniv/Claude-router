@@ -50,9 +50,13 @@ interface FakeUpstream {
  * `dropMidStream` sends the opening SSE events then destroys the socket.
  */
 async function startFakeUpstream(
-  opts: { truncateModels?: string[]; streamAuthFail?: boolean; dropMidStream?: boolean } = {},
+  opts: { truncateModels?: string[]; streamAuthFail?: boolean; dropMidStream?: boolean; dispatchModels?: string[] } = {},
 ): Promise<FakeUpstream> {
   const truncate = new Set(opts.truncateModels ?? []);
+  // `dispatchModels` answer with a tool_use block calling the Agent tool, so
+  // the proxy's dispatch observation can be exercised on both paths.
+  const dispatch = new Set(opts.dispatchModels ?? []);
+  const agentCall = { type: 'tool_use', id: 'toolu_agent', name: 'Agent', input: { prompt: 'look' } };
   const calls: UpstreamCall[] = [];
 
   const server = http.createServer((req, res) => {
@@ -109,6 +113,11 @@ async function startFakeUpstream(
         }
         send('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } });
         send('content_block_stop', { type: 'content_block_stop', index: 0 });
+        if (dispatch.has(model)) {
+          send('content_block_start', { type: 'content_block_start', index: 1, content_block: { ...agentCall, input: {} } });
+          send('content_block_delta', { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"prompt":"look"}' } });
+          send('content_block_stop', { type: 'content_block_stop', index: 1 });
+        }
         send('message_delta', { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: outputTokens } });
         send('message_stop', { type: 'message_stop' });
         res.end();
@@ -120,7 +129,7 @@ async function startFakeUpstream(
         type: 'message',
         role: 'assistant',
         model,
-        content: [{ type: 'text', text }],
+        content: dispatch.has(model) ? [{ type: 'text', text }, agentCall] : [{ type: 'text', text }],
         stop_reason: stopReason,
         stop_sequence: null,
         usage: { input_tokens: 5, output_tokens: outputTokens },
@@ -182,6 +191,7 @@ async function setup(
     truncateModels?: string[];
     streamAuthFail?: boolean;
     dropMidStream?: boolean;
+    dispatchModels?: string[];
     config?: Partial<HandlerConfig>;
   } = {},
 ): Promise<{ upstream: FakeUpstream; base: string }> {
@@ -655,10 +665,11 @@ const WRITE_TOOLS = ['Read', 'Edit', 'Write', 'Bash'].map((name) => ({ name, des
 
 function subagentRequest(
   base: string,
-  opts: { body?: string; tools: unknown[]; model: string; prompt?: string; stream?: boolean; subagent?: boolean },
+  opts: { body?: string; tools: unknown[]; model: string; prompt?: string; stream?: boolean; subagent?: boolean; nested?: boolean },
 ): Promise<Response> {
   const headers: Record<string, string> = { 'content-type': 'application/json', 'x-claude-code-session-id': 'sess_1' };
   if (opts.subagent !== false) headers['x-claude-code-agent-id'] = 'agent_1';
+  if (opts.nested) headers['x-claude-code-parent-agent-id'] = 'agent_0';
   return fetch(`${base}/v1/messages`, {
     method: 'POST',
     headers,
@@ -763,5 +774,49 @@ describe('role routing (subagents)', () => {
     assert.equal(res.headers.get('x-router-tier'), 'opus');
     assert.equal(res.headers.get('x-router-classifier'), 'pinned', 'the session pin, not the marker, decided');
     assert.equal(res.headers.get('x-router-role'), null);
+  });
+});
+
+// ── Orchestration measurement ────────────────────────────────────────────────
+
+const AGENT_TOOL = { name: 'Agent', description: 'spawn a subagent', input_schema: { type: 'object', properties: {} } };
+
+describe('orchestration measurement', () => {
+  it('a coordinator turn offered the Agent tool that calls it is recorded as dispatched', async () => {
+    const { base } = await setup({ dispatchModels: [DEFAULT_MODELS.opus], config: { sessionModel: 'opus' } });
+    const res = await subagentRequest(base, { subagent: false, tools: [...CODER_TOOLS, AGENT_TOOL], model: 'claude-opus-4-8' });
+    assert.equal(res.status, 200);
+    const last = routeHistory[routeHistory.length - 1]!;
+    assert.equal(last.coordinator, true);
+    assert.equal(last.dispatchable, true);
+    assert.equal(last.dispatched, true);
+    assert.equal(last.sessionId, 'sess_1');
+    assert.equal(last.subagent, undefined);
+  });
+
+  it('a coordinator turn without the Agent tool is not dispatchable, so it cannot count as dispatched', async () => {
+    const { base } = await setup({ dispatchModels: [DEFAULT_MODELS.opus], config: { sessionModel: 'opus' } });
+    await subagentRequest(base, { subagent: false, tools: CODER_TOOLS, model: 'claude-opus-4-8' });
+    const last = routeHistory[routeHistory.length - 1]!;
+    assert.equal(last.coordinator, true);
+    assert.equal(last.dispatchable, undefined);
+    assert.equal(last.dispatched, undefined, 'the denominator rule: no Agent tool offered, no dispatch counted');
+  });
+
+  it('the streaming path observes dispatch from the accumulated final message', async () => {
+    const { base } = await setup({ dispatchModels: [DEFAULT_MODELS.opus], config: { sessionModel: 'opus' } });
+    const res = await subagentRequest(base, { subagent: false, tools: [...CODER_TOOLS, AGENT_TOOL], model: 'claude-opus-4-8', stream: true });
+    await readSse(res);
+    const last = routeHistory[routeHistory.length - 1]!;
+    assert.equal(last.dispatchable, true);
+    assert.equal(last.dispatched, true);
+  });
+
+  it('a subagent that carries a parent agent id is recorded as nested', async () => {
+    const { base } = await setup();
+    await subagentRequest(base, { tools: READ_ONLY_TOOLS, model: 'claude-haiku-4-5', nested: true });
+    const last = routeHistory[routeHistory.length - 1]!;
+    assert.equal(last.subagent, true);
+    assert.equal(last.nested, true);
   });
 });
