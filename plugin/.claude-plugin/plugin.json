@@ -1,9 +1,17 @@
 {
   "name": "claude-router",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Orchestration mode for Claude Code: role agents for reconnaissance, implementation and fresh-context review, with the claude-router proxy pinning each role's model and measuring what it saved.",
-  "author": { "name": "Serhii Leniv" },
+  "author": {
+    "name": "Serhii Leniv"
+  },
   "repository": "https://github.com/serhiileniv/claude-router",
   "license": "MIT",
-  "keywords": ["claude-code", "orchestration", "routing", "subagents", "cost"]
+  "keywords": [
+    "claude-code",
+    "orchestration",
+    "routing",
+    "subagents",
+    "cost"
+  ]
 }

@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-04
+
 ### Added
 - **Claude Fable 5.1 and Mythos 5.1** (released 2026-09-01). The `fable` tier now resolves to `claude-fable-5-1`, which supersedes Fable 5 (still priced, now a legacy model). The `fable` substring meant 5.1 family-resolved at the right $10/$50 base the day it shipped — the fallback doing its job — but two things still needed rows: `claude-mythos-5-1` matches no family and would have priced at *zero*, and both 5.1 models bill **cache reads at 2.5% of input**, not the standard 10%.
 - **Per-model cache-read rates** (`ModelPricing.cacheRead`, resolved via `cacheReadRate()`). `CACHE_READ_RATE` (10%) is now the default rather than a universal. On a cache-heavy client like Claude Code the cache-read line is most of the input bill, so applying 10% to Fable 5.1 overstated that component roughly 4x. The field is optional, so every existing pricing entry and every user `pricing` override keeps the standard rate — absent means standard, never free.
