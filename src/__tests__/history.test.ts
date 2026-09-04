@@ -118,3 +118,11 @@ describe('history', () => {
     assert.equal(stats.errors, 0);
   });
 });
+
+describe('file modes', () => {
+  it('creates the ledger owner-only', { skip: process.platform === 'win32' ? 'POSIX modes' : false }, () => {
+    const file = tempFile();
+    appendEvent(file, makeEvent());
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  });
+});

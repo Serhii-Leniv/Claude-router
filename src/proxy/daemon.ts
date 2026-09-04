@@ -22,8 +22,8 @@ export function readDaemonState(paths: RouterPaths = routerPaths()): DaemonState
 }
 
 export function writeDaemonState(state: DaemonState, paths: RouterPaths = routerPaths()): void {
-  fs.mkdirSync(paths.configDir, { recursive: true });
-  fs.writeFileSync(paths.daemonStateFile, JSON.stringify(state, null, 2), 'utf8');
+  fs.mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(paths.daemonStateFile, JSON.stringify(state, null, 2), { encoding: 'utf8', mode: 0o600 });
 }
 
 export function clearDaemonState(paths: RouterPaths = routerPaths()): void {
@@ -143,11 +143,11 @@ export async function startDaemon(
     return { ok: false, detail: `A proxy is already running on port ${port}` };
   }
 
-  fs.mkdirSync(paths.configDir, { recursive: true });
+  fs.mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
   // Keep proxy.log from growing without bound: roll it over to proxy.log.1
   // once it exceeds the size cap, before reopening for append.
   rotateLogIfLarge(paths.logFile);
-  const logFd = fs.openSync(paths.logFile, 'a');
+  const logFd = fs.openSync(paths.logFile, 'a', 0o600);
 
   const child = spawn(process.execPath, [process.argv[1]!, 'start', ...serveArgs], {
     detached: true,

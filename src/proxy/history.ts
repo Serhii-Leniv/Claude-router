@@ -23,7 +23,7 @@ let checkedHistorySize = false;
 
 export function appendEvent(file: string, event: RouteEvent): void {
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     if (!checkedHistorySize) {
       checkedHistorySize = true;
       try {
@@ -37,7 +37,9 @@ export function appendEvent(file: string, event: RouteEvent): void {
         // No file yet — nothing to nudge about.
       }
     }
-    fs.appendFileSync(file, JSON.stringify(event) + '\n', 'utf8');
+    // The ledger holds token counts, model IDs and timestamps of the operator's
+    // work; owner-only like the config dir. `mode` applies on creation.
+    fs.appendFileSync(file, JSON.stringify(event) + '\n', { encoding: 'utf8', mode: 0o600 });
   } catch {
     // History is best-effort — never let persistence break a request.
   }

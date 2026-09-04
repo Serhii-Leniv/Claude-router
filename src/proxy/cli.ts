@@ -712,8 +712,9 @@ function cmdInit(args: string[], paths: RouterPaths): CommandResult {
   const options = parseServeArgs(rest, {});
   const config = configFromOptions(options);
 
-  fs.mkdirSync(paths.configDir, { recursive: true });
-  fs.writeFileSync(paths.configFile, JSON.stringify(config, null, 2) + '\n', 'utf8');
+  fs.mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+  // config.json can hold pricing overrides and the upstream; owner-only.
+  fs.writeFileSync(paths.configFile, JSON.stringify(config, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
   return ok([
     out(`${term.ok()} Wrote ${paths.configFile}`),
     out(term.dim('  Edit it to add per-tier model overrides ("tiers") or pricing ("pricing").')),

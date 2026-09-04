@@ -147,3 +147,26 @@ export function errorRouteEvent(input: {
     error: String(error).slice(0, 200),
   };
 }
+
+/**
+ * Record of an explicit-model request the proxy forwarded untouched (no
+ * `--force-route`). Priced against the model the client named, so `savedCents`
+ * is 0 by construction: the router changed nothing, and the row exists so the
+ * ledger shows the traffic rather than an empty dashboard that reads as "the
+ * proxy is not working". Only `proxyPassthrough` records these — the
+ * catch-all for count_tokens and the non-/v1 paths never does.
+ */
+export function passthroughRouteEvent(input: { model: string; cost: RouteCost }): RouteEvent {
+  return {
+    timestamp: new Date().toISOString(),
+    tier: 'passthrough',
+    model: input.model,
+    confidence: 1,
+    classifier: 'passthrough',
+    classifierMs: 0,
+    reason: 'passthrough:explicit-model',
+    retried: false,
+    retryReason: null,
+    ...costFields(input.cost),
+  };
+}

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
 import { LruCache } from './cache.js';
-import { isAgentic, latestUserText, routeByEvidence } from './routing.js';
+import { isAgentic, latestUserText, routeByEvidence, systemText } from './routing.js';
 import type { ClassifyInput, ClassifyResult, Tier } from './types.js';
 
 export const DEFAULT_AI_TIMEOUT_MS = 1500;
@@ -56,16 +56,6 @@ function extractSignals(messages: Anthropic.MessageParam[]): ExtractedSignals {
   return { text: parts.join(' '), toolBlockCount, imageCount, extraChars };
 }
 
-function extractSystemText(
-  system: string | Anthropic.TextBlockParam[] | undefined,
-): string {
-  if (!system) return '';
-  if (typeof system === 'string') return system;
-  return system
-    .filter((b): b is Anthropic.TextBlockParam => b.type === 'text')
-    .map((b) => b.text)
-    .join(' ');
-}
 
 /**
  * Nominal score per tier, kept only so `RouteMeta.score`, the dashboard, and the
@@ -168,13 +158,13 @@ function buildAISnippet(input: ClassifyInput): string {
     text.length > AI_SNIPPET_HEAD + AI_SNIPPET_TAIL
       ? `${text.slice(0, AI_SNIPPET_HEAD)} … ${text.slice(-AI_SNIPPET_TAIL)}`
       : text;
-  const sysSnippet = extractSystemText(input.system).slice(0, AI_SYSTEM_SNIPPET);
+  const sysSnippet = systemText(input.system).slice(0, AI_SYSTEM_SNIPPET);
   return sysSnippet ? `System: ${sysSnippet}\nTask: ${snippet}` : `Task: ${snippet}`;
 }
 
 function cacheKey(input: ClassifyInput): string {
   const { text } = extractSignals(input.messages);
-  const sys = extractSystemText(input.system);
+  const sys = systemText(input.system);
   // Hash the FULL normalized text/system — a prefix slice (formerly 500/200
   // chars) collides for prompts that share a long preamble but diverge later
   // (common in agentic/Claude Code traffic), serving a stale tier for a
@@ -317,4 +307,28 @@ export async function classify(
       : classifyHybrid(client, input, haikuModel, opts));
   // Floor agentic sessions at sonnet (unless opted out) regardless of method.
   return applyAgenticFloor(result, input, opts);
+}
+
+/**
+ * The classifier's view of a request: messages, text-only system blocks, and
+ * the tool list (only its shape is inspected). One builder for the library and
+ * the proxy — they used to carry byte-identical copies that could drift.
+ */
+export function buildClassifyInput(params: {
+  messages?: unknown;
+  system?: unknown;
+  tools?: unknown;
+}): ClassifyInput {
+  const messages = (params.messages ?? []) as Anthropic.MessageParam[];
+  const system = params.system;
+  let systemInput: ClassifyInput['system'];
+  if (typeof system === 'string') {
+    systemInput = system;
+  } else if (Array.isArray(system)) {
+    systemInput = system.filter(
+      (b): b is Anthropic.TextBlockParam =>
+        typeof b === 'object' && b !== null && 'type' in b && (b as { type?: unknown }).type === 'text',
+    );
+  }
+  return { messages, system: systemInput, tools: Array.isArray(params.tools) ? params.tools : undefined };
 }

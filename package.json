@@ -18,7 +18,8 @@
     "test": "npm run build && node scripts/run-tests.mjs",
     "dev": "tsc --watch",
     "proxy": "node dist/proxy/cli.js",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test",
+    "test:coverage": "npm run build && COVERAGE=1 node scripts/run-tests.mjs"
   },
   "keywords": [
     "claude",

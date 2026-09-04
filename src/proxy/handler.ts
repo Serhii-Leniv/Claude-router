@@ -2,18 +2,18 @@ import type { Context } from 'hono';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   classify as classifyUnified,
-  DEFAULT_CLASSIFY_CACHE_SIZE,
-} from '../classifier.js';
+  DEFAULT_CLASSIFY_CACHE_SIZE, buildClassifyInput } from '../classifier.js';
 import { LruCache } from '../cache.js';
 import {
   DEFAULT_PRICING,
   computeRouteCost,
   priceForModel,
+  type RouteCost,
 } from '../models.js';
 import { executeRoute, startRouteStream, type MessageStream } from '../route.js';
 import { term } from './term.js';
 import { appendEvent } from './history.js';
-import { buildRouteEvent, errorRouteEvent, type RouteContext, type RouteEvent } from './route-event.js';
+import { buildRouteEvent, errorRouteEvent, passthroughRouteEvent, type RouteContext, type RouteEvent } from './route-event.js';
 import { resolveRole } from '../roles.js';
 import { stripDelegationBlockers, describeStrip } from './delegation.js';
 import type { ClassifyInput, ClassifyResult, ModelPricing, RoutingTuning, Tier } from '../types.js';
@@ -209,22 +209,6 @@ function computeCosts(
   return computeRouteCost(model, usage, baselineModel, config.pricing ?? DEFAULT_PRICING);
 }
 
-function buildClassifyInput(body: Record<string, unknown>): ClassifyInput {
-  const messages = (body.messages ?? []) as Anthropic.MessageParam[];
-  const system = body.system as string | Anthropic.TextBlockParam[] | undefined;
-
-  let systemInput: ClassifyInput['system'];
-  if (typeof system === 'string') {
-    systemInput = system;
-  } else if (Array.isArray(system)) {
-    systemInput = system.filter(
-      (b): b is Anthropic.TextBlockParam =>
-        typeof b === 'object' && b !== null && 'type' in b && b.type === 'text',
-    );
-  }
-
-  return { messages, system: systemInput, tools: body.tools as unknown[] | undefined };
-}
 
 // One classification cache per handler config (i.e. per proxy app instance)
 const classifyCaches = new WeakMap<HandlerConfig, LruCache<string, ClassifyResult>>();
@@ -301,9 +285,11 @@ function setRouterHeaders(
 export async function createProviderClient(provider: Provider): Promise<Anthropic | null> {
   if (provider === 'bedrock') {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mod = await import('@anthropic-ai/bedrock-sdk' as any);
-      const AnthropicBedrock = mod.default ?? mod.AnthropicBedrock;
+      // A variable specifier keeps the optional dependency out of type
+      // resolution — the package is not installed unless the operator wants it.
+      const spec = '@anthropic-ai/bedrock-sdk';
+      const mod = (await import(spec)) as { default?: unknown; AnthropicBedrock?: unknown };
+      const AnthropicBedrock = (mod.default ?? mod.AnthropicBedrock) as new (o: { timeout: number }) => unknown;
       return new AnthropicBedrock({ timeout: CLIENT_TIMEOUT_MS }) as unknown as Anthropic;
     } catch {
       throw new Error(
@@ -314,9 +300,9 @@ export async function createProviderClient(provider: Provider): Promise<Anthropi
   }
   if (provider === 'vertex') {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const mod = await import('@anthropic-ai/vertex-sdk' as any);
-      const AnthropicVertex = mod.AnthropicVertex ?? mod.default;
+      const spec = '@anthropic-ai/vertex-sdk';
+      const mod = (await import(spec)) as { default?: unknown; AnthropicVertex?: unknown };
+      const AnthropicVertex = (mod.AnthropicVertex ?? mod.default) as new (o: { projectId: string; region: string; timeout: number }) => unknown;
       return new AnthropicVertex({
         projectId: process.env['ANTHROPIC_VERTEX_PROJECT_ID'] ?? '',
         region: process.env['ANTHROPIC_VERTEX_REGION'] ?? 'us-east5',
@@ -422,7 +408,7 @@ export async function handleMessages(
 
   // Passthrough only for Anthropic provider with explicit model (not "auto"), unless --force-route
   if (!config.forceRoute && config.provider === 'anthropic' && requestedModel && requestedModel !== 'auto') {
-    return proxyPassthrough(c, rawBody, config.upstream ?? DEFAULT_UPSTREAM);
+    return proxyPassthrough(c, rawBody, requestedModel, isStreaming, config);
   }
 
   // Whether the request carries Claude Code's tool set. Separates a real agent
@@ -693,47 +679,135 @@ async function handleStreaming(
 }
 
 /**
- * Forward a non-routed endpoint (count_tokens, model listing, …) straight to the
- * Anthropic API, preserving the client's auth + beta headers. Routing only makes
- * sense for /v1/messages; every other endpoint the client needs must still reach
- * the origin, or Claude Code (and the VS Code extension) 404s on count_tokens.
+ * Headers that describe one hop, not the message. Forwarding them re-asserts a
+ * transport decision the origin did not make (`connection: keep-alive`,
+ * `transfer-encoding: chunked` for a body fetch re-frames) and, on the way
+ * back, describes bytes that undici has already transformed (it decompresses
+ * transparently, so `content-encoding`/`content-length` are wrong by the time
+ * we see them). `accept-encoding` is stripped so undici negotiates its own.
  */
-export async function handlePassthrough(
+const HOP_BY_HOP = new Set([
+  'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer',
+  'transfer-encoding', 'upgrade', 'host', 'content-length', 'accept-encoding',
+]);
+const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection']);
+
+/** One upstream call for both passthrough paths: hop-by-hop headers dropped both ways, tier tagged. */
+async function forwardUpstream(
+  url: string,
+  init: { method: string; headers: Headers; body?: string },
+): Promise<{ response: Response; headers: Headers }> {
+  for (const name of HOP_BY_HOP) init.headers.delete(name);
+  const response = await fetch(url, init);
+  const headers = new Headers();
+  response.headers.forEach((value, key) => {
+    if (!STRIP_RESPONSE.has(key)) headers.set(key, value);
+  });
+  headers.set('x-router-tier', 'passthrough');
+  return { response, headers };
+}
+
+/**
+ * Usage from a forwarded response, priced against the model the client named.
+ * A passthrough changed nothing, so the saving is 0 — the row exists so the
+ * ledger shows the traffic at all. Returns null when there is no usage to
+ * price (an error body, a stream that never sent message_start).
+ */
+function passthroughCost(model: string, usage: Anthropic.Usage | undefined, config: HandlerConfig): RouteCost | null {
+  if (!usage || typeof usage.input_tokens !== 'number') return null;
+  return computeRouteCost(model, usage, model, config.pricing ?? DEFAULT_PRICING);
+}
+
+/** Pull the usage (and model) out of a buffered SSE stream: message_start carries input, message_delta output. */
+export function usageFromSse(text: string): { model?: string; usage: Anthropic.Usage } | null {
+  let model: string | undefined;
+  let usage: Partial<Anthropic.Usage> | undefined;
+  for (const line of text.split('\n')) {
+    if (!line.startsWith('data:')) continue;
+    let event: { type?: string; message?: { model?: string; usage?: Partial<Anthropic.Usage> }; usage?: Partial<Anthropic.Usage> };
+    try {
+      event = JSON.parse(line.slice(5).trim()) as typeof event;
+    } catch {
+      continue;
+    }
+    if (event.type === 'message_start' && event.message) {
+      model = event.message.model;
+      usage = { ...event.message.usage };
+    } else if (event.type === 'message_delta' && event.usage && usage) {
+      usage = { ...usage, ...event.usage };
+    }
+  }
+  if (!usage || typeof usage.input_tokens !== 'number') return null;
+  return { ...(model ? { model } : {}), usage: usage as Anthropic.Usage };
+}
+
+async function proxyPassthrough(
   c: Context,
+  rawBody: string,
+  requestedModel: string,
+  isStreaming: boolean,
   config: HandlerConfig,
 ): Promise<Response> {
-  if (config.provider !== 'anthropic') {
-    // ponytail: bedrock/vertex have no HTTP passthrough target; count_tokens there is rare.
-    return c.json(
-      { error: { type: 'not_found_error', message: `${c.req.path} is only proxied for the anthropic provider` } },
-      404,
-    );
-  }
-
-  const url = new URL(c.req.url);
-  const headers = new Headers();
-  c.req.raw.headers.forEach((value, key) => {
-    // host/content-length are recomputed by fetch; forward everything else
-    // (x-api-key, authorization, anthropic-version, anthropic-beta, …).
-    if (key === 'host' || key === 'content-length') return;
-    headers.set(key, value);
-  });
-
-  const method = c.req.method;
-  const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text();
-
+  const upstream = config.upstream ?? DEFAULT_UPSTREAM;
   try {
-    const response = await fetch((config.upstream ?? DEFAULT_UPSTREAM) + url.pathname + url.search, {
-      method,
-      headers,
-      body,
+    // Forward original auth headers (x-api-key or Authorization: Bearer)
+    const headers = new Headers({
+      'content-type': 'application/json',
+      'anthropic-version': c.req.header('anthropic-version') ?? '2023-06-01',
     });
-    const outHeaders = new Headers();
-    response.headers.forEach((value, key) => outHeaders.set(key, value));
-    outHeaders.delete('content-encoding');
-    outHeaders.delete('content-length');
-    outHeaders.set('x-router-tier', 'passthrough');
-    return new Response(response.body, { status: response.status, headers: outHeaders });
+    const apiKey = c.req.header('x-api-key');
+    const authHeader = c.req.header('authorization');
+    if (apiKey) headers.set('x-api-key', apiKey);
+    if (authHeader) headers.set('authorization', authHeader);
+    // Relay anthropic-beta — a beta-dependent request (e.g. context-management)
+    // 400s upstream without it. The routed path and handlePassthrough both
+    // forward it; this path must too.
+    const anthropicBeta = c.req.header('anthropic-beta');
+    if (anthropicBeta) headers.set('anthropic-beta', anthropicBeta);
+
+    const { response, headers: outHeaders } = await forwardUpstream(`${upstream}/v1/messages`, {
+      method: 'POST',
+      headers,
+      body: rawBody,
+    });
+
+    // Record the traffic. A passthrough used to leave no trace, so a user
+    // running without --force-route saw an empty ledger and a permanently
+    // zero "passthrough" bar and concluded the proxy was not working.
+    if (response.status !== 200 || !response.body) {
+      return new Response(response.body, { status: response.status, headers: outHeaders });
+    }
+    if (!isStreaming) {
+      // Buffer: the body has to be parsed for usage, and it is one JSON document.
+      const text = await response.text();
+      try {
+        const message = JSON.parse(text) as { model?: string; usage?: Anthropic.Usage };
+        const cost = passthroughCost(message.model ?? requestedModel, message.usage, config);
+        if (cost) recordEvent(passthroughRouteEvent({ model: message.model ?? requestedModel, cost }), config);
+      } catch {
+        // Not a message document — forward it untouched, record nothing.
+      }
+      return new Response(text, { status: response.status, headers: outHeaders });
+    }
+    // Stream: pass every byte through as it arrives and keep a copy; parse the
+    // copy for usage once the origin closes. No event is held back.
+    let seen = '';
+    const decoder = new TextDecoder();
+    const tap = new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        seen += decoder.decode(chunk, { stream: true });
+        controller.enqueue(chunk);
+      },
+      flush() {
+        seen += decoder.decode();
+        const parsed = usageFromSse(seen);
+        if (!parsed) return;
+        const model = parsed.model ?? requestedModel;
+        const cost = passthroughCost(model, parsed.usage, config);
+        if (cost) recordEvent(passthroughRouteEvent({ model, cost }), config);
+      },
+    });
+    return new Response(response.body.pipeThrough(tap), { status: response.status, headers: outHeaders });
   } catch (err) {
     return c.json(
       { error: { type: 'proxy_error', message: `Failed to reach Anthropic API: ${String(err)}` } },
@@ -742,42 +816,35 @@ export async function handlePassthrough(
   }
 }
 
-async function proxyPassthrough(
+export async function handlePassthrough(
   c: Context,
-  rawBody: string,
-  upstream: string,
+  config: HandlerConfig,
 ): Promise<Response> {
+  if (config.provider !== 'anthropic') {
+    // bedrock/vertex have no HTTP passthrough target; count_tokens there is rare.
+    return c.json(
+      { error: { type: 'not_found_error', message: `${c.req.path} is only proxied for the anthropic provider` } },
+      404,
+    );
+  }
+
+  const url = new URL(c.req.url);
+  // Forward the client's headers (x-api-key, authorization, anthropic-version,
+  // anthropic-beta, …); forwardUpstream drops the hop-by-hop ones.
+  const headers = new Headers();
+  c.req.raw.headers.forEach((value, key) => headers.set(key, value));
+
+  const method = c.req.method;
+  const body = method === 'GET' || method === 'HEAD' ? undefined : await c.req.text();
+
   try {
-    // Forward original auth headers (x-api-key or Authorization: Bearer)
-    const passthroughHeaders: Record<string, string> = {
-      'content-type': 'application/json',
-      'anthropic-version': c.req.header('anthropic-version') ?? '2023-06-01',
-    };
-    const apiKey = c.req.header('x-api-key');
-    const authHeader = c.req.header('authorization');
-    if (apiKey) passthroughHeaders['x-api-key'] = apiKey;
-    if (authHeader) passthroughHeaders['authorization'] = authHeader;
-    // Relay anthropic-beta — a beta-dependent request (e.g. context-management)
-    // 400s upstream without it. The routed path and handlePassthrough both
-    // forward it; this path must too.
-    const anthropicBeta = c.req.header('anthropic-beta');
-    if (anthropicBeta) passthroughHeaders['anthropic-beta'] = anthropicBeta;
-
-    const response = await fetch(`${upstream}/v1/messages`, {
-      method: 'POST',
-      headers: passthroughHeaders,
-      body: rawBody,
-    });
-
-    const headers = new Headers();
-    response.headers.forEach((value, key) => headers.set(key, value));
-    // fetch already decompressed the body; origin encoding headers no longer apply
-    headers.delete('content-encoding');
-    headers.delete('content-length');
-    headers.set('x-router-tier', 'passthrough');
-
-    // Pipe the upstream body through without buffering
-    return new Response(response.body, { status: response.status, headers });
+    const { response, headers: outHeaders } = await forwardUpstream(
+      (config.upstream ?? DEFAULT_UPSTREAM) + url.pathname + url.search,
+      { method, headers, ...(body === undefined ? {} : { body }) },
+    );
+    // Never recorded: these are count_tokens, model listings and the paths
+    // outside /v1 — traffic the router neither prices nor routes.
+    return new Response(response.body, { status: response.status, headers: outHeaders });
   } catch (err) {
     return c.json(
       { error: { type: 'proxy_error', message: `Failed to reach Anthropic API: ${String(err)}` } },

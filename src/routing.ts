@@ -99,16 +99,8 @@ function blocksOf(msg: Anthropic.MessageParam): Array<Record<string, unknown>> {
     : [];
 }
 
-function textOf(content: Anthropic.MessageParam['content']): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .filter((b) => (b as { type?: string }).type === 'text')
-    .map((b) => (b as { text?: string }).text ?? '')
-    .join(' ');
-}
 
-function systemText(system: ClassifyInput['system']): string {
+export function systemText(system: ClassifyInput['system']): string {
   if (!system) return '';
   if (typeof system === 'string') return system;
   return system

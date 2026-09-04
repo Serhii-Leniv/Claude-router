@@ -144,3 +144,11 @@ describe('checkHealth', () => {
     assert.equal(dead, null);
   });
 });
+
+describe('daemon state file mode', () => {
+  it('is written owner-only', { skip: process.platform === 'win32' ? 'POSIX modes' : false }, () => {
+    const { paths } = tempPaths();
+    writeDaemonState({ pid: 1, port: 1, startedAt: new Date().toISOString(), args: [] }, paths);
+    assert.equal(fs.statSync(paths.daemonStateFile).mode & 0o777, 0o600);
+  });
+});

@@ -34,7 +34,10 @@ if (files.length === 0) {
 // terminal ran it — a contributor with FORCE_COLOR=1 in their profile gets a red
 // build from green code. Tests that care about colour opt in explicitly via
 // `createTerm({ forceColor: true })`, which reads no environment at all.
-const result = spawnSync(process.execPath, ['--test', ...files], {
+// COVERAGE=1 turns on node's built-in coverage (no dependency). Source maps
+// are on in tsconfig, so the report is attributed to the .ts files.
+const coverageFlags = process.env.COVERAGE ? ['--experimental-test-coverage', '--enable-source-maps'] : [];
+const result = spawnSync(process.execPath, ['--test', ...coverageFlags, ...files], {
   stdio: 'inherit',
   env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
 });

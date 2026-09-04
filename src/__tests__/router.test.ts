@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, mock } from 'node:test';
+import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { ClaudeRouter } from '../index.js';
 import { DEFAULT_MODELS } from '../models.js';

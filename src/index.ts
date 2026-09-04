@@ -1,8 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import {
   classify,
-  DEFAULT_CLASSIFY_CACHE_SIZE,
-} from './classifier.js';
+  DEFAULT_CLASSIFY_CACHE_SIZE, buildClassifyInput } from './classifier.js';
 import { LruCache } from './cache.js';
 import {
   DEFAULT_MODELS,
@@ -98,26 +97,6 @@ function forcedClassification(tier: Tier): ClassifyResult {
   return { tier, score: -1, method: 'heuristic', ms: 0, confidence: 1.0 };
 }
 
-function buildClassifyInput(
-  params: SendParams | StreamParams,
-): ClassifyInput {
-  const system = params.system;
-  let systemInput: ClassifyInput['system'];
-  if (typeof system === 'string') {
-    systemInput = system;
-  } else if (Array.isArray(system)) {
-    systemInput = system.filter(
-      (b): b is Anthropic.TextBlockParam =>
-        'type' in b && b.type === 'text',
-    );
-  }
-
-  return {
-    messages: params.messages,
-    system: systemInput,
-    tools: (params as { tools?: unknown[] }).tools,
-  };
-}
 
 export class ClaudeRouter {
   /** @internal Exposed for testing — do not depend on this. */

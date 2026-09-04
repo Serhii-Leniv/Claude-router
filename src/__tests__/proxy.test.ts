@@ -2,7 +2,7 @@ import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { createProxyApp } from '../proxy/server.js';
-import { routeHistory, boundHistory, MAX_HISTORY, getAnthropicClient, clearClientCache, routeCounters } from '../proxy/handler.js';
+import { routeHistory, boundHistory, MAX_HISTORY, getAnthropicClient, clearClientCache, routeCounters, usageFromSse } from '../proxy/handler.js';
 import { renderDashboard } from '../proxy/dashboard.js';
 import { emptyTotals } from '../totals.js';
 import type { RouteEvent } from '../proxy/route-event.js';
@@ -562,8 +562,8 @@ describe('proxy passthrough (hermetic — stubbed upstream)', () => {
     // upstream on the non-force-route path. It must forward it like the routed
     // path and handlePassthrough do.
     let seenHeaders: Record<string, string> = {};
-    globalThis.fetch = (async (_input: unknown, init?: { headers?: Record<string, string> }) => {
-      seenHeaders = (init?.headers ?? {}) as Record<string, string>;
+    globalThis.fetch = (async (_input: unknown, init?: { headers?: HeadersInit }) => {
+      seenHeaders = Object.fromEntries(new Headers(init?.headers).entries());
       return new Response(JSON.stringify({ id: 'msg', type: 'message' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
@@ -582,6 +582,117 @@ describe('proxy passthrough (hermetic — stubbed upstream)', () => {
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('x-router-tier'), 'passthrough');
     assert.equal(seenHeaders['anthropic-beta'], 'context-management-2025-06-27');
+  });
+});
+
+describe('passthrough recording (hermetic — stubbed upstream)', () => {
+  // A passthrough used to leave no trace: the dashboard's "passthrough" bar was
+  // permanently zero and a user without --force-route saw an empty ledger and
+  // concluded the proxy was not working. Explicit-model /v1/messages traffic is
+  // now priced against the model the client named (saved = 0 by construction).
+  const app = createProxyApp({
+    classifier: 'heuristic', defaultModel: 'claude-sonnet-5', verbose: false,
+    provider: 'anthropic', models: DEFAULT_MODELS, forceRoute: false,
+  });
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  const message = { id: 'msg', type: 'message', model: 'claude-sonnet-5', usage: { input_tokens: 1000, output_tokens: 100 } };
+
+  it('records a non-streaming passthrough with its real usage and zero saving', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify(message), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+    const before = routeHistory.length;
+    const res = await app.request('/v1/messages', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'k' },
+      body: JSON.stringify({ model: 'claude-sonnet-5', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), message, 'the body reaches the client unchanged');
+    assert.equal(routeHistory.length, before + 1);
+    const e = routeHistory[routeHistory.length - 1]!;
+    assert.equal(e.tier, 'passthrough');
+    assert.equal(e.classifier, 'passthrough');
+    assert.equal(e.reason, 'passthrough:explicit-model');
+    assert.equal(e.model, 'claude-sonnet-5');
+    assert.equal(e.inputTokens, 1000);
+    assert.equal(e.savedCents, 0, 'the router changed nothing');
+    assert.ok(e.costCents > 0, 'but the traffic is priced');
+    assert.ok(!('priced' in e));
+  });
+
+  it('records a streaming passthrough from the SSE usage without holding any event back', async () => {
+    const sse = [
+      `event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { ...message, usage: { input_tokens: 500, output_tokens: 0, cache_read_input_tokens: 2000 } } })}\n\n`,
+      `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hi' } })}\n\n`,
+      `event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 42 } })}\n\n`,
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ];
+    globalThis.fetch = (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of sse) controller.enqueue(new TextEncoder().encode(chunk));
+          controller.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+    const before = routeHistory.length;
+    const res = await app.request('/v1/messages', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'k' },
+      body: JSON.stringify({ model: 'claude-sonnet-5', stream: true, messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 }),
+    });
+    const text = await res.text();
+    assert.equal(text, sse.join(''), 'every byte passes through');
+    assert.equal(routeHistory.length, before + 1);
+    const e = routeHistory[routeHistory.length - 1]!;
+    assert.equal(e.tier, 'passthrough');
+    assert.equal(e.inputTokens, 500);
+    assert.equal(e.outputTokens, 42);
+    assert.equal(e.cacheReadTokens, 2000);
+  });
+
+  it('records nothing for an error response or a body without usage', async () => {
+    const before = routeHistory.length;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ error: { type: 'x' } }), { status: 400 })) as typeof fetch;
+    await app.request('/v1/messages', { method: 'POST', headers: { 'x-api-key': 'k' }, body: JSON.stringify({ model: 'claude-sonnet-5', messages: [], max_tokens: 1 }) });
+    globalThis.fetch = (async () => new Response('{"id":"msg"}', { status: 200 })) as typeof fetch;
+    await app.request('/v1/messages', { method: 'POST', headers: { 'x-api-key': 'k' }, body: JSON.stringify({ model: 'claude-sonnet-5', messages: [], max_tokens: 1 }) });
+    assert.equal(routeHistory.length, before);
+  });
+
+  it('the catch-all (count_tokens, non-/v1) never records', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ input_tokens: 5 }), { status: 200 })) as typeof fetch;
+    const before = routeHistory.length;
+    await app.request('/v1/messages/count_tokens', { method: 'POST', headers: { 'x-api-key': 'k' }, body: '{"model":"claude-sonnet-5","messages":[]}' });
+    await app.request('/api/hello');
+    assert.equal(routeHistory.length, before);
+  });
+
+  it('strips hop-by-hop headers in both directions', async () => {
+    let seen: Headers | undefined;
+    globalThis.fetch = (async (_input: unknown, init?: { headers?: HeadersInit }) => {
+      seen = new Headers(init?.headers);
+      return new Response('{}', { status: 200, headers: { 'content-encoding': 'gzip', 'transfer-encoding': 'chunked', connection: 'close', 'x-keep': 'yes' } });
+    }) as typeof fetch;
+    const res = await app.request('/v1/models', {
+      headers: { 'x-api-key': 'k', connection: 'keep-alive', 'transfer-encoding': 'chunked', 'accept-encoding': 'br', te: 'trailers', 'anthropic-version': '2023-06-01' },
+    });
+    assert.equal(seen!.get('connection'), null);
+    assert.equal(seen!.get('transfer-encoding'), null);
+    assert.equal(seen!.get('accept-encoding'), null);
+    assert.equal(seen!.get('te'), null);
+    assert.equal(seen!.get('anthropic-version'), '2023-06-01', 'end-to-end headers still forward');
+    assert.equal(res.headers.get('content-encoding'), null);
+    assert.equal(res.headers.get('transfer-encoding'), null);
+    assert.equal(res.headers.get('x-keep'), 'yes');
+  });
+});
+
+describe('usageFromSse', () => {
+  it('merges message_start and message_delta usage, ignores unparseable lines', () => {
+    const text = 'data: {"type":"message_start","message":{"model":"m","usage":{"input_tokens":3}}}\n\ndata: nope\n\ndata: {"type":"message_delta","usage":{"output_tokens":7}}\n';
+    assert.deepEqual(usageFromSse(text), { model: 'm', usage: { input_tokens: 3, output_tokens: 7 } });
+    assert.equal(usageFromSse('data: {"type":"message_delta","usage":{"output_tokens":7}}'), null, 'no message_start, no usage');
   });
 });
 
