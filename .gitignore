@@ -2,3 +2,8 @@ node_modules/
 dist/
 *.tsbuildinfo
 GROWTH.md
+sandbox/.state/
+sandbox/.wire/
+sandbox/.claude/
+sandbox/workspace/*
+!sandbox/workspace/.gitkeep

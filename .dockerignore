@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+sandbox/.state
+sandbox/.wire
+sandbox/.claude
+sandbox/workspace
+*.tsbuildinfo

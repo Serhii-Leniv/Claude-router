@@ -71,7 +71,14 @@ const server = http.createServer((req, res) => {
         const file = path.join(OUT_DIR, `${n}.json.gz`);
         // Record the request only. Responses would multiply the corpus size and
         // routing never sees them.
-        const gz = gzipSync(JSON.stringify({ seq, url: req.url, body: body.toString('utf8') }));
+        // Headers are recorded selectively: the gateway's structural ones
+        // (`x-claude-code-agent-id` etc.) are routing evidence; credentials are
+        // never written. `anthropic-beta` and `user-agent` date the capture.
+        const recordedHeaders = {};
+        for (const [k, v] of Object.entries(req.headers)) {
+          if (/^x-claude-code-|^anthropic-beta$|^user-agent$/.test(k)) recordedHeaders[k] = v;
+        }
+        const gz = gzipSync(JSON.stringify({ seq, url: req.url, headers: recordedHeaders, body: body.toString('utf8') }));
         writeFileSync(file, gz);
         bytes += gz.length;
         recorded++;
