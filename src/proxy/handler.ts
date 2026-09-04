@@ -190,14 +190,13 @@ async function classify(
 function log(tier: Tier, model: string, classifyResult: ClassifyResult, costCents: number, savedCents: number, defaultModel: string, retried: boolean = false, retryReason: string | null = null, priced: boolean = true): void {
   // Without a price there is no cost figure to print — "$0.0000" would read as
   // a free call rather than an unmeasured one.
-  // `savedCents` is clamped at 0 by `countedSavings`, so there is no "extra"
-  // case to print: a route at or above the baseline saved nothing, it did not
-  // incur a debt.
   const money = !priced
     ? term.yellow(`cost: unknown (no pricing for ${model})`)
-    : `cost: $${(costCents / 100).toFixed(4)} | ${term.green(
-        `saved: $${(savedCents / 100).toFixed(4)}`,
-      )} ${term.dim(`vs ${defaultModel}`)}`;
+    : `cost: $${(costCents / 100).toFixed(4)} | ${
+        savedCents >= 0
+          ? term.green(`saved: $${(savedCents / 100).toFixed(4)}`)
+          : term.red(`extra: $${(Math.abs(savedCents) / 100).toFixed(4)}`)
+      } ${term.dim(`vs ${defaultModel}`)}`;
 
   const retryNote = retried ? term.yellow(` [retried: ${retryReason}]`) : '';
   const cachedNote = classifyResult.cached ? ', cached' : '';
