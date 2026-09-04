@@ -562,7 +562,7 @@ describe('proxy passthrough (hermetic — stubbed upstream)', () => {
     // upstream on the non-force-route path. It must forward it like the routed
     // path and handlePassthrough do.
     let seenHeaders: Record<string, string> = {};
-    globalThis.fetch = (async (_input: unknown, init?: { headers?: HeadersInit }) => {
+    globalThis.fetch = (async (_input: unknown, init?: { headers?: ConstructorParameters<typeof Headers>[0] }) => {
       seenHeaders = Object.fromEntries(new Headers(init?.headers).entries());
       return new Response(JSON.stringify({ id: 'msg', type: 'message' }), {
         status: 200,
@@ -670,7 +670,7 @@ describe('passthrough recording (hermetic — stubbed upstream)', () => {
 
   it('strips hop-by-hop headers in both directions', async () => {
     let seen: Headers | undefined;
-    globalThis.fetch = (async (_input: unknown, init?: { headers?: HeadersInit }) => {
+    globalThis.fetch = (async (_input: unknown, init?: { headers?: ConstructorParameters<typeof Headers>[0] }) => {
       seen = new Headers(init?.headers);
       return new Response('{}', { status: 200, headers: { 'content-encoding': 'gzip', 'transfer-encoding': 'chunked', connection: 'close', 'x-keep': 'yes' } });
     }) as typeof fetch;
