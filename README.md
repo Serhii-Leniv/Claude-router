@@ -247,6 +247,7 @@ x-router-saved-cents: 1.200
 x-router-classifier: heuristic
 x-router-classifier-ms: 0.1
 x-router-confidence: 0.9
+x-router-reason: agentic:mid-loop
 ```
 
 ---

@@ -200,9 +200,10 @@ function log(tier: Tier, model: string, classifyResult: ClassifyResult, costCent
 
   const retryNote = retried ? term.yellow(` [retried: ${retryReason}]`) : '';
   const cachedNote = classifyResult.cached ? ', cached' : '';
+  const reasonNote = classifyResult.reason ? `, ${classifyResult.reason}` : '';
 
   console.log(
-    `${term.dim('[claude-router]')} → ${term.tier(tier)} ${term.dim(`(${classifyResult.method}, ${classifyResult.ms}ms, conf:${classifyResult.confidence}${cachedNote})`)}${retryNote} | ${money}`,
+    `${term.dim('[claude-router]')} → ${term.tier(tier)} ${term.dim(`(${classifyResult.method}, ${classifyResult.ms}ms, conf:${classifyResult.confidence}${reasonNote}${cachedNote})`)}${retryNote} | ${money}`,
   );
 }
 
@@ -223,6 +224,9 @@ function setRouterHeaders(
   headers.set('x-router-classifier', classifyResult.method);
   headers.set('x-router-classifier-ms', classifyResult.ms.toString());
   headers.set('x-router-confidence', classifyResult.confidence.toString());
+  // The gate that decided — what makes a routing decision auditable from the
+  // client side. It was computed on every request and reached nothing.
+  if (classifyResult.reason) headers.set('x-router-reason', classifyResult.reason);
   if (retried) {
     headers.set('x-router-retried', 'true');
     headers.set('x-router-retry-reason', retryReason ?? '');
@@ -540,6 +544,7 @@ async function handleStreaming(
     'x-router-classifier-ms': classifyResult.ms.toString(),
     'x-router-confidence': classifyResult.confidence.toString(),
   });
+  if (classifyResult.reason) headers.set('x-router-reason', classifyResult.reason);
 
   const encoder = new TextEncoder();
 

@@ -27,6 +27,12 @@ export interface RouteEvent {
   classifier: string;
   /** Classifier overhead in ms — the same figure `x-router-classifier-ms` reports. */
   classifierMs?: number;
+  /**
+   * Which gate (or pin, or AI verdict) decided the tier — `agentic:mid-loop`,
+   * `session:coordinator-pinned`, `ai:level-2`. The same string the
+   * `x-router-reason` header carries. Absent on lines written before 0.4.0.
+   */
+  reason?: string;
   retried: boolean;
   retryReason: string | null;
   inputTokens: number;
@@ -66,6 +72,7 @@ export function buildRouteEvent(input: RouteEventInput): RouteEvent {
     confidence: classifyResult.confidence,
     classifier: classifyResult.method,
     classifierMs: classifyResult.ms,
+    ...(classifyResult.reason ? { reason: classifyResult.reason } : {}),
     retried,
     retryReason,
     ...costFields(cost),
@@ -94,6 +101,7 @@ export function errorRouteEvent(input: {
     confidence: classifyResult.confidence,
     classifier: classifyResult.method,
     classifierMs: classifyResult.ms,
+    ...(classifyResult.reason ? { reason: classifyResult.reason } : {}),
     retried: false,
     retryReason: null,
     inputTokens: 0,

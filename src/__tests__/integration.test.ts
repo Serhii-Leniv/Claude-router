@@ -245,6 +245,7 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
 
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('x-router-tier'), 'haiku');
+    assert.match(res.headers.get('x-router-reason') ?? '', /^single-turn:/, 'the deciding gate rides a header');
     assert.equal(res.headers.get('x-router-model'), DEFAULT_MODELS.haiku);
     assert.ok(Number.isFinite(Number(res.headers.get('x-router-cost-cents'))));
 
@@ -292,6 +293,7 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
     assert.equal(res.headers.get('x-router-tier'), 'opus', 'coordinator pinned, not routed to haiku');
     assert.equal(res.headers.get('x-router-model'), DEFAULT_MODELS.opus);
     assert.equal(res.headers.get('x-router-classifier'), 'pinned', 'classifier bypassed');
+    assert.equal(res.headers.get('x-router-reason'), 'session:coordinator-pinned', 'the pin is auditable from the client side');
     assert.equal(upstream.calls.length, 1, 'no extra classifier call');
     assert.equal(upstream.calls[0]!.model, DEFAULT_MODELS.opus, 'pinned model reached the wire');
   });

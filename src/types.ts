@@ -93,6 +93,8 @@ export interface RouteMeta {
   classifierMethod: 'heuristic' | 'ai' | 'pinned';
   /** Routing overhead in milliseconds */
   classifierMs: number;
+  /** Which gate, pin or AI verdict decided the tier (e.g. `agentic:mid-loop`) */
+  reason?: string;
   /** True if original tier was rate-limited and a different tier was used */
   fallbackUsed: boolean;
   /** Classifier confidence 0–1 */

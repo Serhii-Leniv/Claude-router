@@ -28,7 +28,7 @@ export interface Term {
   magenta: (s: string) => string;
   dim: (s: string) => string;
   bold: (s: string) => string;
-  /** Consistent tier coloring: haiku=cyan, sonnet=yellow, opus=magenta */
+  /** Consistent tier coloring: haiku=cyan, sonnet=yellow, opus=magenta, fable=red */
   tier: (t: Tier | string) => string;
   ok: () => string;
   fail: () => string;
@@ -62,6 +62,7 @@ export function createTerm(opts?: { forceColor?: boolean }): Term {
     haiku: cyan,
     sonnet: yellow,
     opus: magenta,
+    fable: red,
   };
   const tier = (t: Tier | string) => (tierColors[t] ?? ((s: string) => s))(t);
 

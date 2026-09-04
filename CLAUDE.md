@@ -162,7 +162,7 @@ Passthrough: if `model` field is set and not `"auto"`, request bypasses routing 
 
 `routeHistory` is an in-memory capped array (max 1000 events) used by `/dashboard`.
 
-Streaming responses only set `x-router-tier/model/classifier/confidence` headers (cost/saved aren't known until the stream finishes); non-streaming sets the full `x-router-*` set including cost and savings.
+Streaming responses only set `x-router-tier/model/classifier/confidence/reason` headers (cost/saved aren't known until the stream finishes); non-streaming sets the full `x-router-*` set including cost and savings. `x-router-reason` is `ClassifyResult.reason` verbatim — the gate, pin or AI verdict that decided — and the same string is written to `RouteEvent.reason`/`RouteMeta.reason`, the verbose log and the dashboard's Reason column, so a routing decision is auditable from the client, the ledger and the terminal alike. Absent when no reason was recorded (never fabricated).
 
 **Streaming error contract** (`handleStreaming`): the first stream event is awaited **before** the Response is committed, so pre-stream failures (401 auth, 400 validation, connection refused → 502) return their real HTTP status via the shared `apiErrorResponse` mapper — never a `200` carrying an SSE error frame. Once headers are out, a mid-stream failure emits the SSE `event: error` frame *and* records a `RouteEvent` with `error` set so it lands in `RouteTotals.errors` instead of vanishing. `apiErrorResponse` gates on a **numeric** `status` — `APIConnectionError` is APIError-shaped with `status: undefined`, and passing that to `c.json` silently produced a 200.
 

@@ -13,6 +13,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 - **Savings can read negative again.** 0.3.2 clamped `savedCents` at zero (`countedSavings()`); that hid the turns routing lands *above* the baseline, which is exactly the signal [#61](https://github.com/Serhii-Leniv/claude-router/issues/61) fixed the baseline to expose. The clamp is gone; a sub-cent loss renders as a neutral `$0.00`, a real one as `extra`.
 - **0.3.2 and 0.3.3 were published from a side branch** and are now merged into `master` (tagged `v0.3.2`/`v0.3.3` at their published commits), so every npm version is reproducible from git again.
 
+### Added
+- **`x-router-reason`** — every routed response (streaming too) names the gate that decided the tier: `agentic:mid-loop`, `single-turn:short mechanical transform`, `session:coordinator-pinned`, `ai:level-2`. The same string lands in `history.jsonl` (`reason`), the verbose log, and a new dashboard column. It was computed on every request since 0.2.2 and reached none of them.
+- The `fable` tier shows in the startup banner (marked opt-in) and has its own terminal colour.
+
 ### Fixed
 - **A 429 on opus no longer walks the request onto Fable.** `executeRoute`'s rate-limit walk-up ran to the end of `TIER_ORDER`, past `ESCALATION_CEILING`, so a library caller on the default `fallback: true` could be moved from a rate-limited opus route onto a $10/$50 model without asking. The walk-up now stops where escalation stops; an explicit fable pin still runs once.
 - **`routing.haikuMax` / `opusMin` are now actually ignored.** The startup warning said they did nothing, but the AI classifier still mapped its 1–3 verdict through them, so removing "a no-op" from the config changed routing in `ai` and `hybrid` mode. The verdict maps to a tier directly (1→haiku, 2→sonnet, 3→opus) and carries a `reason` (`ai:level-N`, `ai:unparsed`), so AI decisions are as auditable as gate decisions.

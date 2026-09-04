@@ -161,6 +161,7 @@ export function startBanner(
     ['Tiers', `${term.tier('haiku')} ${term.dim('→')} ${models.haiku}`],
     ['', `${term.tier('sonnet')} ${term.dim('→')} ${models.sonnet}`],
     ['', `${term.tier('opus')} ${term.dim('→')} ${models.opus}`],
+    ['', `${term.tier('fable')} ${term.dim('→')} ${models.fable} ${term.dim('(opt-in: routing.allowFable)')}`],
   ];
   // A pinned coordinator changes routing meaningfully (the main session skips the
   // classifier), so surface it — and flag when it can't take effect.

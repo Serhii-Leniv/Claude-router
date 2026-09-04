@@ -227,6 +227,26 @@ describe('renderDashboard', () => {
     assert.ok(html.includes('badge-fable'), 'fable rows get a styled badge');
   });
 
+  it('shows which gate decided each row', () => {
+    const events: RouteEvent[] = [
+      {
+        timestamp: '2026-05-01T12:00:00.000Z', tier: 'sonnet', model: 'claude-sonnet-5',
+        costCents: 1, savedCents: 0, confidence: 0.9, classifier: 'heuristic',
+        retried: false, retryReason: null, inputTokens: 10, outputTokens: 10,
+        reason: 'agentic:mid-loop',
+      },
+      {
+        timestamp: '2026-05-01T12:01:00.000Z', tier: 'haiku', model: 'claude-haiku-4-5',
+        costCents: 1, savedCents: 1, confidence: 0.9, classifier: 'heuristic',
+        retried: false, retryReason: null, inputTokens: 10, outputTokens: 10,
+      },
+    ];
+    const html = renderDashboard(events);
+    assert.ok(html.includes('<th>Reason</th>'), 'reason column exists');
+    assert.ok(html.includes('agentic:mid-loop'), 'the gate name renders');
+    assert.ok(html.includes('<td class="reason"><span class="none">-</span></td>'), 'a legacy row without a reason renders a dash');
+  });
+
   it('renders with data', () => {
     const events: RouteEvent[] = [
       {

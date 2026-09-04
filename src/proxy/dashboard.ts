@@ -63,6 +63,7 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
         <td>${esc(e.timestamp.replace('T', ' ').slice(0, 19))}</td>
         <td><span class="badge badge-${esc(String(e.tier))}">${esc(String(e.tier))}</span></td>
         <td>${esc(e.model)}</td>
+        <td class="reason">${e.reason ? esc(e.reason) : '<span class="none">-</span>'}</td>
         <td>${e.priced === false ? '<span class="unknown" title="no pricing for this model">—</span>' : `$${(e.costCents / 100).toFixed(4)}`}</td>
         <td class="${e.priced === false ? 'unknown' : e.savedCents >= 0 ? 'positive' : 'negative'}">${e.priced === false ? '—' : `$${(e.savedCents / 100).toFixed(4)}`}</td>
         <td>${e.confidence.toFixed(2)}</td>
@@ -288,6 +289,7 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
     .badge-opus        { background: rgba(255, 209, 102, 0.1); color: var(--gold);   border-color: rgba(255, 209, 102, 0.4); }
     .badge-fable       { background: rgba(180, 124, 255, 0.1); color: var(--violet); border-color: rgba(180, 124, 255, 0.4); }
     .badge-passthrough { background: rgba(139, 149, 167, 0.1); color: var(--steel);  border-color: rgba(139, 149, 167, 0.35); }
+    td.reason          { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--steel); }
     .badge-retry       { background: rgba(246, 70, 93, 0.1);   color: var(--red);    border-color: rgba(246, 70, 93, 0.4); }
     .none { color: var(--ink-dim); }
     .unknown { color: var(--gold); }
@@ -384,6 +386,7 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
             <th>Time</th>
             <th>Tier</th>
             <th>Model</th>
+            <th>Reason</th>
             <th>Cost</th>
             <th>Saved</th>
             <th>Confidence</th>
@@ -393,7 +396,7 @@ export function renderDashboard(history: RouteEvent[], lifetime?: LifetimeStats)
           </tr>
         </thead>
         <tbody>
-          ${rows || '<tr><td colspan="9" class="empty">No requests yet. Send requests to the proxy to see data here.</td></tr>'}
+          ${rows || '<tr><td colspan="10" class="empty">No requests yet. Send requests to the proxy to see data here.</td></tr>'}
         </tbody>
       </table>
     </div>

@@ -165,6 +165,7 @@ export class ClaudeRouter {
       ...costFields(cost),
       classifierMethod: classifyResult.method,
       classifierMs: classifyResult.ms,
+      ...(classifyResult.reason ? { reason: classifyResult.reason } : {}),
       fallbackUsed,
       confidence: classifyResult.confidence,
       retried,
@@ -190,7 +191,7 @@ export class ClaudeRouter {
           } vs ${this.config.defaultModel}`;
 
     console.log(
-      `[claude-router] → ${meta.tier} (${meta.classifierMethod}, ${meta.classifierMs}ms${fallbackNote}) | ${money}`,
+      `[claude-router] → ${meta.tier} (${meta.classifierMethod}, ${meta.classifierMs}ms${meta.reason ? `, ${meta.reason}` : ''}${fallbackNote}) | ${money}`,
     );
   }
 

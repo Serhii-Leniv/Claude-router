@@ -72,6 +72,26 @@ describe('buildRouteEvent', () => {
     assert.equal(e.confidence, 0.8);
   });
 
+  it('carries the deciding gate as `reason`, and omits the field when there is none', () => {
+    // `reason` was computed on every request and reached nothing — not the
+    // headers, not history, not the dashboard — so the "auditable routing"
+    // claim had no evidence behind it.
+    const decided = buildRouteEvent({
+      tier: 'sonnet', model: 'm', cost: cost(),
+      classifyResult: { ...CLASSIFY, reason: 'agentic:mid-loop' },
+    });
+    assert.equal(decided.reason, 'agentic:mid-loop');
+
+    const undecided = buildRouteEvent({ tier: 'sonnet', model: 'm', cost: cost(), classifyResult: CLASSIFY });
+    assert.ok(!('reason' in undecided), 'no reason → no field, so legacy-shaped lines stay legacy-shaped');
+
+    const failed = errorRouteEvent({
+      tier: 'opus', model: 'm', error: new Error('boom'),
+      classifyResult: { ...CLASSIFY, reason: 'session:coordinator-pinned' },
+    });
+    assert.equal(failed.reason, 'session:coordinator-pinned');
+  });
+
   it('defaults to not-retried, and records an escalation when told', () => {
     const plain = buildRouteEvent({ tier: 'sonnet', model: 'm', cost: cost(), classifyResult: CLASSIFY });
     assert.equal(plain.retried, false);
