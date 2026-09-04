@@ -27,7 +27,9 @@
 
 ## Is this for you?
 
-**If you pay per token** (Anthropic API, Amazon Bedrock, or Google Vertex) **and your traffic is a mix of easy and hard requests.** The router skims the easy majority down to Haiku/Sonnet and reserves Opus for what actually needs it — **35% on agentic coding traffic**, [measured](research/2026-07-21-end-to-end-savings.md) by replaying 200 real turns through the published proxy.
+**If you pay per token** (Anthropic API, Amazon Bedrock, or Google Vertex) **and your traffic is a mix of easy and hard requests.** The router skims the easy majority down to Haiku/Sonnet and reserves Opus for what actually needs it.
+
+**Measured, not promised.** One live Claude Code session through the proxy spent $3.34 against a $4.23 all-Opus counterfactual — **21%** ([note](research/2026-07-25-live-session.md)). A 200-turn replay of the published 0.2.2 projected **35%** ([method](research/2026-07-21-end-to-end-savings.md)), an upper bound that assumes token counts do not change when the model does and that comes almost entirely from one rule: mid-loop tool steps go to Sonnet. Direct API (single-turn) traffic is **unmeasured**. See [What is measured vs assumed](#what-is-measured-vs-assumed).
 
 ## Contents
 
@@ -182,7 +184,9 @@ Configure in `~/.claude-router/config.json`:
 }
 ```
 
-Without a marker, a read-only agent Claude Code already runs on haiku (the built-in Explore) is confirmed at haiku instead of being floored to sonnet; the proxy never demotes an agent from tool shape alone. On SessionStart the plugin prints one line saying whether the proxy is actually enforcing (`claude-router: enforcing — session pinned to opus, subagent roles routed by the proxy`) or, if it is down, that the tiers are advisory. For development: `claude --plugin-dir ./plugin`.
+Without a marker, a read-only agent Claude Code already runs on haiku (the built-in Explore) is confirmed at haiku instead of being floored to sonnet; the proxy never demotes an agent from tool shape alone.
+
+**Coming from a prompt-only delegation policy?** Keep it if you like it — the proxy does not care where the instruction to delegate came from. What changes: `--session-model opus` holds the coordinator's tier whatever the client sends, `--restore-delegation` removes the injected lines that stop Claude Code spawning agents at all, and `claude-router stats` tells you the dispatch rate and what each role cost, which a prompt cannot. To pin agents from another plugin by name, map their agent type under `agents`. On SessionStart the plugin prints one line saying whether the proxy is actually enforcing (`claude-router: enforcing — session pinned to opus, subagent roles routed by the proxy`) or, if it is down, that the tiers are advisory. For development: `claude --plugin-dir ./plugin`.
 
 ## Configuration
 
@@ -204,15 +208,15 @@ Set defaults once in `~/.claude-router/config.json` instead of passing flags. **
     "claude-opus-5": { "input": 5.0, "output": 25.0 }
   },
   "routing": {
-    "haikuMax": 30,
-    "opusMin": 70,
-    "hybridBand": [40, 60],
     "aiTimeoutMs": 1500,
     "classifyCacheSize": 500,
-    "allowHaikuInAgentic": false
+    "allowHaikuInAgentic": false,
+    "allowFable": false
   }
 }
 ```
+
+`haikuMax`, `opusMin` and `hybridBand` are accepted but ignored since 0.2.2 — routing is gate-based and there is no score to threshold; the proxy warns once per key. `allowFable` lets classification reach the fable tier (off by default: it is $10/$50 and no measured signal predicts "super hard" from request text).
 
 - **`sessionModel`** — pin the Claude Code coordinator session to a tier (subagents still route). See [Pin the coordinator session](#pin-the-coordinator-session).
 - **`tiers`** — override which model ID each tier maps to.
@@ -288,6 +292,25 @@ x-router-classifier-ms: 0.1
 x-router-confidence: 0.9
 x-router-reason: agentic:mid-loop
 ```
+
+---
+
+## What is measured vs assumed
+
+Every number this project reports is downstream of a few measurements and a few assumptions. Which is which:
+
+| Claim | Status | Evidence |
+|---|---|---|
+| Mid-loop tool steps are tier-insensitive (Sonnet adequate 75%, zero clear losses); final synthesis is not (Opus won 10 of 11) | **Measured** | [tier ceiling](research/2026-07-21-tier-ceiling.md), 23 real turns, blind-judged |
+| Escalation triggers (truncation, refusal) never fire on real traffic | **Measured** | [detector measurement](research/2026-07-21-detector-measurement.md), 0 of 35,314 responses |
+| 21% saved on one live Claude Code session | **Measured**, n=1 | [live session](research/2026-07-25-live-session.md) |
+| 35% on agentic coding traffic | **Upper bound**, replay on a stub upstream, tokens held constant | [end-to-end savings](research/2026-07-21-end-to-end-savings.md) |
+| The single-turn haiku gate (short mechanical transforms) | **Unmeasured**, deliberately conservative | [failed experiment](research/2026-07-21-single-turn-failed.md) |
+| Fable promotion signals (depth + long horizon) | **Assumed** — nothing measured predicts "super hard" from text | off by default |
+| Bedrock / Vertex inference-profile IDs | **Unverified** against a console | `src/models.ts` |
+| Orchestration mode saves money over classifying subagents | **Unmeasured** — that is what `--role-routing off` and `stats` exist to compare | [sandbox](sandbox/README.md) |
+
+The standing caveats are in [research/README.md](research/README.md#standing-caveats).
 
 ---
 
@@ -382,14 +405,12 @@ const router = createRouter({
     opus: 'claude-opus-5',
   },
   pricing: {                       // override $/1M token pricing
-    'claude-sonnet-5': { input: 3.0, output: 15.0 },
+    'claude-sonnet-5': { input: 2.0, output: 10.0 },
   },
   fallback: true,                  // auto-fallback to next tier on rate limit (default: true)
   verbose: true,                   // log routing decisions (default: false)
   routing: {                       // classifier tuning (defaults shown)
-    haikuMax: 30,                  // score below this → haiku
-    opusMin: 70,                   // score above this → opus
-    hybridBand: [40, 60],          // hybrid confirms with AI inside this band
+    allowFable: false,             // let classification reach fable (depth AND long-horizon evidence required)
     aiTimeoutMs: 1500,             // AI classifier timeout → heuristic fallback
     classifyCacheSize: 500,        // LRU size for AI results (0 disables)
     allowHaikuInAgentic: false,    // let trivial tool-using turns reach haiku (default: floor at sonnet)

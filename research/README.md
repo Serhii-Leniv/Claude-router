@@ -9,6 +9,8 @@ this is deliberately outside it.
 
 ## Index
 
+- [`2026-07-25-live-session.md`](2026-07-25-live-session.md) — one live Claude Code session: $3.34 vs $4.23 all-Opus (21%). n=1, figures only.
+
 | Document | Date | What it establishes |
 |---|---|---|
 | [routing-architecture.md](2026-07-21-routing-architecture.md) | 2026-07-21 | Literature review: what measured comparisons say about heuristic vs semantic vs learned routers, and about routing vs cascading. 23 sources, adversarially verified. |

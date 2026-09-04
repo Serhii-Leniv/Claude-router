@@ -10,6 +10,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 - **Per-model cache-read rates** (`ModelPricing.cacheRead`, resolved via `cacheReadRate()`). `CACHE_READ_RATE` (10%) is now the default rather than a universal. On a cache-heavy client like Claude Code the cache-read line is most of the input bill, so applying 10% to Fable 5.1 overstated that component roughly 4x. The field is optional, so every existing pricing entry and every user `pricing` override keeps the standard rate — absent means standard, never free.
 
 ### Changed
+- **The README says what is measured and what is assumed.** The "35%" headline is now labelled the replay upper bound it is, next to the one live session's 21%, with a table of every claim's status and its research note. The landing page no longer describes the 0–100 scorer removed in 0.2.2. `haikuMax`/`opusMin`/`hybridBand` are gone from both config examples.
+- Thanks to @Nitjsefnie for four merged fixes in this cycle (#46, #48, #49, #64).
 - **Savings can read negative again.** 0.3.2 clamped `savedCents` at zero (`countedSavings()`); that hid the turns routing lands *above* the baseline, which is exactly the signal [#61](https://github.com/Serhii-Leniv/claude-router/issues/61) fixed the baseline to expose. The clamp is gone; a sub-cent loss renders as a neutral `$0.00`, a real one as `extra`.
 - **0.3.2 and 0.3.3 were published from a side branch** and are now merged into `master` (tagged `v0.3.2`/`v0.3.3` at their published commits), so every npm version is reproducible from git again.
 

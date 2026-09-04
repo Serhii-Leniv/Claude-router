@@ -32,7 +32,12 @@
     "haiku",
     "sonnet",
     "opus",
-    "proxy"
+    "proxy",
+    "claude-code",
+    "anthropic-proxy",
+    "llm-gateway",
+    "orchestration",
+    "subagents"
   ],
   "author": "Serhii Leniv",
   "license": "MIT",
