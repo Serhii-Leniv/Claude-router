@@ -10,6 +10,9 @@ const HEALTHY: HealthInfo = {
   classifier: 'hybrid',
   provider: 'anthropic',
   forceRoute: true,
+  sessionModel: null,
+  roleRouting: true,
+  version: '0.0.0-test',
   requests: 3,
   lastTier: 'sonnet',
   lastModel: 'claude-sonnet-5',
@@ -29,6 +32,7 @@ function probes(overrides: Partial<DoctorProbes> = {}): DoctorProbes {
     isProcessAlive: () => true,
     isAutostartRegistered: () => true,
     isStatuslineConfigured: () => true,
+    policyPluginInstalled: () => true,
     ...overrides,
   };
 }

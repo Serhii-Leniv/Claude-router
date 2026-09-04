@@ -125,6 +125,27 @@ function noteDelegationStrip(removed: number, hasTools: boolean): void {
  */
 export const routeCounters = { recorded: 0 };
 
+/**
+ * Claude Code agent id → agent type, fed by the plugin's SubagentStart hook
+ * through `POST /api/agents`. Lets an operator's `agents` mapping pin
+ * third-party agents by name; the agents this project ships are pinned by
+ * their marker and need no registry. Bounded like every other in-memory table.
+ */
+const agentRegistry = new LruCache<string, { agentType: string; sessionId?: string; at: number }>(500);
+
+export function registerAgent(agentId: string, agentType: string, sessionId?: string): void {
+  agentRegistry.set(agentId, { agentType, ...(sessionId ? { sessionId } : {}), at: Date.now() });
+}
+
+export function knownAgentType(agentId: string | undefined): string | undefined {
+  return agentId ? agentRegistry.get(agentId)?.agentType : undefined;
+}
+
+/** @internal Test hook */
+export function clearAgentRegistry(): void {
+  agentRegistry.clear();
+}
+
 function recordEvent(event: RouteEvent, config?: HandlerConfig): void {
   routeCounters.recorded++;
   routeHistory.push(event);
@@ -422,7 +443,8 @@ export async function handleMessages(
   // meta-calls ship none, so this is the same structural agentic/single-turn split
   // routing.ts already makes — no text is parsed. A genuinely tool-less coordinator
   // turn degrades to classification, which is the cheap path anyway.
-  const isSubagent = c.req.header('x-claude-code-agent-id') != null;
+  const agentId = c.req.header('x-claude-code-agent-id');
+  const isSubagent = agentId != null;
   const pinTier = config.sessionModel;
   const classifyInput = buildClassifyInput(body);
 
@@ -435,7 +457,12 @@ export async function handleMessages(
   // same as a typo'd sessionModel.
   const roleDecision = isSubagent && config.roleRouting !== false
     ? resolveRole(
-        { system: classifyInput.system, tools: body.tools as unknown[] | undefined, requestedModel },
+        {
+          system: classifyInput.system,
+          tools: body.tools as unknown[] | undefined,
+          requestedModel,
+          agentType: knownAgentType(agentId),
+        },
         { roles: config.roles, agents: config.agents },
       )
     : null;

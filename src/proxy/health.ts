@@ -16,6 +16,11 @@ export interface HealthInfo {
   classifier: string;
   provider: string;
   forceRoute: boolean;
+  /** The coordinator pin, if any — the plugin's SessionStart hook reports it. */
+  sessionModel: string | null;
+  /** Whether subagents are routed by role. */
+  roleRouting: boolean;
+  version: string;
   requests: number;
   lastTier: string | null;
   lastModel: string | null;
@@ -23,7 +28,14 @@ export interface HealthInfo {
 
 /** Build the `/health` payload from the current config and route history. */
 export function buildHealth(
-  config: { classifier: string; provider: string; forceRoute: boolean },
+  config: {
+    classifier: string;
+    provider: string;
+    forceRoute: boolean;
+    sessionModel?: string;
+    roleRouting?: boolean;
+    version?: string;
+  },
   history: RouteEvent[],
   // The lifetime count for this process. `history` is a bounded window, so its
   // length stops being a count after MAX_HISTORY events; callers pass the
@@ -37,6 +49,9 @@ export function buildHealth(
     classifier: config.classifier,
     provider: config.provider,
     forceRoute: config.forceRoute,
+    sessionModel: config.sessionModel ?? null,
+    roleRouting: config.roleRouting !== false,
+    version: config.version ?? 'unknown',
     requests: requestsServed,
     lastTier: last ? String(last.tier) : null,
     lastModel: last?.model ?? null,

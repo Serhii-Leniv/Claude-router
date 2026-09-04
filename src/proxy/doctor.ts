@@ -45,6 +45,7 @@ export interface DoctorProbes {
   isProcessAlive(pid: number): boolean;
   isAutostartRegistered(): boolean;
   isStatuslineConfigured(): boolean;
+  policyPluginInstalled(): boolean;
 }
 
 export interface DoctorOptions {
@@ -162,6 +163,14 @@ export async function runDiagnostics(
     ok: statusline,
     label: statusline ? 'Claude Code statusline configured' : 'Statusline not configured',
     hint: 'Add it: claude-router install',
+    warnOnly: true,
+  });
+
+  const plugin = probes.policyPluginInstalled();
+  diagnostics.push({
+    ok: plugin,
+    label: plugin ? 'Orchestration plugin installed' : 'Orchestration plugin not installed',
+    hint: 'Add it: claude-router policy install',
     warnOnly: true,
   });
 

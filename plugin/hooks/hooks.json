@@ -1,0 +1,20 @@
+{
+  "description": "Loads the orchestration policy on session start and tells the proxy which agent type each subagent is.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/sessionstart.js\"", "timeout": 5 }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/subagent-start.js\"", "timeout": 3 }
+        ]
+      }
+    ]
+  }
+}

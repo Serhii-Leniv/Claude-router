@@ -7,6 +7,7 @@ import { createProxyApp } from './server.js';
 import { createProviderClient, DEFAULT_UPSTREAM, type Provider } from './handler.js';
 import { DEFAULT_MODELS, BEDROCK_MODELS, VERTEX_MODELS, DISPLAY_TIERS } from '../models.js';
 import { DEFAULT_ROLE_TIERS, ROLES } from '../roles.js';
+import { installPolicyPlugin, uninstallPolicyPlugin, policyPluginStatus, PLUGIN_ID } from './policy.js';
 import type { Tier } from '../types.js';
 import { term } from './term.js';
 import { formatSavedCents } from './format.js';
@@ -64,7 +65,7 @@ import {
 
 const COMMANDS = [
   'start', 'stop', 'restart', 'status', 'stats', 'logs',
-  'install', 'uninstall', 'init', 'doctor', 'help',
+  'install', 'uninstall', 'init', 'doctor', 'policy', 'help',
 ];
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -537,7 +538,7 @@ export function readLogTail(
 // ── install / uninstall ────────────────────────────────────────────────────
 
 async function cmdInstall(args: string[], paths: RouterPaths): Promise<CommandResult> {
-  const { rest, found } = extractFlags(args, ['--no-autostart', '--no-env', '--no-statusline']);
+  const { rest, found } = extractFlags(args, ['--no-autostart', '--no-env', '--no-statusline', '--no-policy']);
   const { options, warnings } = resolveOptions(rest, paths);
   const serveArgs = serveArgsFrom(options);
 
@@ -605,6 +606,18 @@ async function cmdInstall(args: string[], paths: RouterPaths): Promise<CommandRe
     if (!result.ok && !result.skipped) failures++;
   }
 
+  // 5. Orchestration plugin: the role agents and session policy. Runs through
+  //    the claude CLI, so it is skipped (not failed) when that is not on PATH.
+  //    This step exists because a policy that is installed one step short of
+  //    working looks exactly like one that works — until the bill arrives.
+  let pluginInstalled = false;
+  if (!found.has('--no-policy')) {
+    const result = installPolicyPlugin();
+    lines.push(stepLine(result));
+    if (!result.ok && !result.skipped) failures++;
+    pluginInstalled = result.ok;
+  }
+
   if (failures > 0) {
     lines.push(out(`\n${term.fail()} Install finished with ${failures} failed step(s) — see above.`));
     return failed(lines);
@@ -617,7 +630,8 @@ async function cmdInstall(args: string[], paths: RouterPaths): Promise<CommandRe
 ${term.ok()} Done. Requests to ${term.accent(`http://localhost:${options.port}`)} are auto-routed.
 
   ${term.dim('→')} ${envNote}
-  ${term.dim('→')} Use ${term.accent('claude')} normally — calls route through the proxy
+  ${term.dim('→')} Use ${term.accent('claude')} normally — calls route through the proxy${pluginInstalled ? `
+  ${term.dim('→')} Restart Claude Code to load the orchestration plugin (role agents + policy)` : ''}
   ${term.dim('→')} Check anytime: ${term.accent('claude-router status')} · ${term.accent('claude-router doctor')}
 `));
   return ok(lines);
@@ -633,8 +647,38 @@ async function cmdUninstall(_args: string[], paths: RouterPaths): Promise<Comman
   lines.push(stepLine(uninstallAutostart(paths)));
   lines.push(stepLine(unsetEnvVar(paths)));
   lines.push(stepLine(removeStatusline(paths)));
+  lines.push(stepLine(uninstallPolicyPlugin()));
   lines.push(out(`\n${term.ok()} claude-router uninstalled.\n`));
   return ok(lines);
+}
+
+// ── policy ─────────────────────────────────────────────────────────────────
+
+/** `policy install|uninstall|status` — the orchestration plugin on its own, apart from `install`. */
+function cmdPolicy(args: string[]): CommandResult {
+  const [action = 'status'] = args;
+  switch (action) {
+    case 'install': {
+      const result = installPolicyPlugin();
+      return result.ok || result.skipped ? ok([stepLine(result)]) : failed([stepLine(result)]);
+    }
+    case 'uninstall': {
+      const result = uninstallPolicyPlugin();
+      return result.ok || result.skipped ? ok([stepLine(result)]) : failed([stepLine(result)]);
+    }
+    case 'status': {
+      const status = policyPluginStatus();
+      const roles = ROLES.map((r) => `${r}→${term.tier(DEFAULT_ROLE_TIERS[r])}`).join(term.dim(' · '));
+      return ok([
+        out(status.installed
+          ? `${term.ok()} Orchestration plugin installed: ${PLUGIN_ID} v${status.version ?? '?'}`
+          : `${term.warn()} Orchestration plugin not installed — add it: ${term.accent('claude-router policy install')}`),
+        out(term.dim(`  roles: ${roles}`)),
+      ]);
+    }
+    default:
+      return failed([failLine(`Unknown policy action '${action}'. Use: policy install | uninstall | status`)]);
+  }
 }
 
 // ── init ───────────────────────────────────────────────────────────────────
@@ -672,6 +716,7 @@ function liveProbes(paths: RouterPaths): DoctorProbes {
     isProcessAlive: (pid) => isProcessAlive(pid),
     isAutostartRegistered: () => isAutostartRegistered(paths),
     isStatuslineConfigured: () => isStatuslineConfigured(paths),
+    policyPluginInstalled: () => policyPluginStatus().installed,
   };
 }
 
@@ -714,6 +759,7 @@ ${term.bold('Usage')}
   ${a('claude-router logs')} [-f] [-n N]      Show (or follow) the daemon log
   ${a('claude-router init')} [--force] [options]  Scaffold ~/.claude-router/config.json from the given options
   ${a('claude-router doctor')}                Diagnose common setup problems
+  ${a('claude-router policy')} install|status  Orchestration plugin: role agents + session policy for Claude Code
 
 ${term.bold('Options')} ${d('(install / start / restart / status / doctor)')}
 ${helpOptionLines().join('\n')}
@@ -723,6 +769,7 @@ ${term.bold('Install-only options')}
   --no-autostart           Skip login autostart registration
   --no-env                 Skip setting ANTHROPIC_BASE_URL
   --no-statusline          Skip the Claude Code statusline
+  --no-policy              Skip the Claude Code orchestration plugin
 
 ${term.bold('Config file')} ${d('(~/.claude-router/config.json — flags always win)')}
   Any option above, plus per-tier model overrides ("tiers"), pricing ("pricing"),
@@ -787,6 +834,7 @@ export async function main(
       case 'uninstall': return await cmdUninstall(rest, paths);
       case 'init': return cmdInit(rest, paths);
       case 'doctor': return await cmdDoctor(rest, paths);
+      case 'policy': return cmdPolicy(rest);
       default: {
         const suggestion = suggestCommand(subcommand, COMMANDS);
         return failed([

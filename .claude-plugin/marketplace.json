@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-router",
+  "description": "Orchestration mode for Claude Code: the main session plans on the top tier, role agents carry the volume on cheaper tiers, and the claude-router proxy enforces and measures the tiering.",
+  "owner": { "name": "Serhii Leniv" },
+  "plugins": [
+    {
+      "name": "claude-router",
+      "source": "./plugin",
+      "description": "Role agents (recon, builder, batch, gate, audit) plus a session policy; pairs with the claude-router proxy, which pins each role's tier and keeps the ledger."
+    }
+  ]
+}

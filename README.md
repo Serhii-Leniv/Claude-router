@@ -145,6 +145,45 @@ The pin also requires the request to **carry tools**, which every real coordinat
 
 ---
 
+## Orchestration mode (Claude Code)
+
+The proxy already sees every request Claude Code makes, so it can do more than pick a model per turn: it can run the whole session as a coordinator on the top tier with role agents carrying the volume on cheaper tiers — and enforce that, and measure it.
+
+```bash
+claude-router install --force-route --session-model opus --restore-delegation
+# then restart Claude Code
+```
+
+`install` also adds the **orchestration plugin** (skip with `--no-policy`, or manage it alone with `claude-router policy install|status|uninstall`). The plugin ships five role agents and a short session policy:
+
+| Agent | Hand it | Tier |
+|---|---|---|
+| `claude-router:recon` | read-only lookup: where is X, what calls Y | haiku |
+| `claude-router:builder` | one scoped change that needs judgement | sonnet |
+| `claude-router:batch` | the same edit across many files, fully specified | sonnet |
+| `claude-router:gate` | fresh-context readiness check before risky work (READY / REVISE) | opus |
+| `claude-router:audit` | fresh-context attempt to refute finished risky work (CONFIRMED / REFUTED / INCONCLUSIVE) | opus |
+
+What the proxy adds that a prompt-only policy cannot:
+
+- **Enforcement.** Each agent definition opens with a marker (`<!-- claude-router:role=recon -->`); the proxy reads it from the subagent's system prompt and pins the tier, whatever model the client asked for and whatever `CLAUDE_CODE_SUBAGENT_MODEL` says. `--session-model opus` pins the coordinator; `--restore-delegation` removes the injected lines that stop Claude Code from spawning agents at all.
+- **A ledger.** Every subagent row in `history.jsonl` carries `role`, and `x-router-role` names the deciding role on the response. `claude-router stats` and the dashboard show what reconnaissance, implementation and review actually cost.
+- **Every OS.** The hooks are Node scripts, not shell.
+
+Configure in `~/.claude-router/config.json`:
+
+```jsonc
+{
+  "sessionModel": "opus",
+  "restoreDelegation": true,
+  "roleRouting": "on",                          // "off" = classify subagents like any request (A/B baseline)
+  "roles": { "builder": "opus" },               // move a role to another tier
+  "agents": { "some-plugin:reviewer": "opus" }  // pin third-party agents by Claude Code agent type
+}
+```
+
+Without a marker, a read-only agent Claude Code already runs on haiku (the built-in Explore) is confirmed at haiku instead of being floored to sonnet; the proxy never demotes an agent from tool shape alone. On SessionStart the plugin prints one line saying whether the proxy is actually enforcing (`claude-router: enforcing — session pinned to opus, subagent roles routed by the proxy`) or, if it is down, that the tiers are advisory. For development: `claude --plugin-dir ./plugin`.
+
 ## Configuration
 
 Set defaults once in `~/.claude-router/config.json` instead of passing flags. **CLI flags always override the file.** Scaffold it with `claude-router init --force-route --port 4000`.
