@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import Anthropic from '@anthropic-ai/sdk';
-import { handleMessages, handlePassthrough, routeHistory, type HandlerConfig } from './handler.js';
+import { handleMessages, handlePassthrough, routeHistory, routeCounters, type HandlerConfig } from './handler.js';
 import { renderDashboard } from './dashboard.js';
 import { readLifetimeStats } from './history.js';
 import { buildHealth, formatStatusLine } from './health.js';
@@ -18,11 +18,11 @@ export function createProxyApp(
   // operator's cloud credentials with no authentication. Browsers blocking
   // cross-origin reads IS the security boundary; do not add cors() back.
 
-  app.get('/health', (c) => c.json(buildHealth(config, routeHistory)));
+  app.get('/health', (c) => c.json(buildHealth(config, routeHistory, routeCounters.recorded)));
 
   // Preformatted statusline text for the shell statusline command — plain text,
   // so the installed `curl` one-liner needs no JSON parsing (no jq/python).
-  app.get('/statusline', (c) => c.text(formatStatusLine(buildHealth(config, routeHistory))));
+  app.get('/statusline', (c) => c.text(formatStatusLine(buildHealth(config, routeHistory, routeCounters.recorded))));
 
   app.get('/api/last-route', (c) => {
     const last = routeHistory[routeHistory.length - 1] ?? null;

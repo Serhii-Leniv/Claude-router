@@ -25,6 +25,10 @@ export interface HealthInfo {
 export function buildHealth(
   config: { classifier: string; provider: string; forceRoute: boolean },
   history: RouteEvent[],
+  // The lifetime count for this process. `history` is a bounded window, so its
+  // length stops being a count after MAX_HISTORY events; callers pass the
+  // monotonic counter and the window only supplies the last route.
+  requestsServed: number = history.length,
 ): HealthInfo {
   const last = history[history.length - 1] ?? null;
   return {
@@ -33,7 +37,7 @@ export function buildHealth(
     classifier: config.classifier,
     provider: config.provider,
     forceRoute: config.forceRoute,
-    requests: history.length,
+    requests: requestsServed,
     lastTier: last ? String(last.tier) : null,
     lastModel: last?.model ?? null,
   };

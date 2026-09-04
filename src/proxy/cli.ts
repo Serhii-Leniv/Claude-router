@@ -33,8 +33,7 @@ import {
   serveArgsFrom,
   suggestCommand,
   type RouterPaths,
-  type ServeOptions,
-} from './cli-config.js';
+  type ServeOptions, helpOptionLines } from './cli-config.js';
 import {
   checkHealth,
   isProcessAlive,
@@ -703,14 +702,8 @@ ${term.bold('Usage')}
   ${a('claude-router doctor')}                Diagnose common setup problems
 
 ${term.bold('Options')} ${d('(install / start / restart / status / doctor)')}
-  --port, -p <number>      Port (default: 4000)
-  --host <address>         Bind address (default: 127.0.0.1 — local only; 0.0.0.0 exposes to the network)
-  --force-route            Route even explicit model requests — required for Claude Code
-  --verbose, -v            Log each routing decision
-  --classifier <mode>      heuristic | ai | hybrid (default: hybrid)
-  --provider <mode>        anthropic | bedrock | vertex (default: anthropic)
-  --region <string>        AWS/GCP region
-  --version, -V            Print version
+${helpOptionLines().join('\n')}
+  --version, -V              Print version
 
 ${term.bold('Install-only options')}
   --no-autostart           Skip login autostart registration
@@ -719,7 +712,8 @@ ${term.bold('Install-only options')}
 
 ${term.bold('Config file')} ${d('(~/.claude-router/config.json — flags always win)')}
   Any option above, plus per-tier model overrides ("tiers"), pricing ("pricing"),
-  and classifier tuning ("routing"). Scaffold with: ${a('claude-router init')}
+  and classifier tuning ("routing": allowFable, allowHaikuInAgentic, aiTimeoutMs,
+  classifyCacheSize). Scaffold with: ${a('claude-router init')}
 
 ${term.bold('Quick start')}
   ${a('claude-router install --force-route')}

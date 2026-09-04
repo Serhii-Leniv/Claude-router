@@ -34,6 +34,10 @@ describe('main — dispatch', () => {
       const result = await main(argv, tempHome());
       assert.equal(result.exitCode, 0);
       assert.match(text(result), /claude-router install/);
+      // The Options block is rendered from the OPTIONS table; these two were
+      // live flags that help never mentioned.
+      assert.match(text(result), /--session-model <tier>/);
+      assert.match(text(result), /--upstream <url>/);
     }
   });
 

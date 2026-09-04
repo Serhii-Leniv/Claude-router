@@ -11,6 +11,8 @@ import {
   routerPaths,
   serveArgsFrom,
   suggestCommand,
+  OPTIONS,
+  helpOptionLines,
 } from '../proxy/cli-config.js';
 
 describe('parseServeArgs', () => {
@@ -192,5 +194,27 @@ describe('routerPaths', () => {
     assert.ok(p.daemonStateFile.endsWith('daemon.json'));
     assert.ok(p.logFile.endsWith('proxy.log'));
     assert.ok(p.plistFile.includes('LaunchAgents'));
+  });
+});
+
+describe('helpOptionLines', () => {
+  it('mentions every serve flag, so a new option cannot ship undocumented', () => {
+    // `--session-model` and `--upstream` were live flags with no line in
+    // `claude-router help`: the help text was a second hand-written copy of
+    // the table and nothing tied them together.
+    const text = helpOptionLines().join('\n');
+    for (const spec of OPTIONS) {
+      assert.ok(text.includes(spec.flags[0]!), `${spec.flags[0]} is in help`);
+    }
+    assert.match(text, /--session-model <tier>/);
+    assert.match(text, /--upstream <url>/);
+    assert.match(text, /--restore-delegation/);
+  });
+
+  it('shows enum values and non-empty defaults, and hides empty ones', () => {
+    const text = helpOptionLines().join('\n');
+    assert.match(text, /heuristic \| ai \| hybrid; default: hybrid/);
+    assert.match(text, /haiku \| sonnet \| opus \| fable\)/, 'an empty default is not printed as "default: "');
+    assert.doesNotMatch(text, /default: false/);
   });
 });

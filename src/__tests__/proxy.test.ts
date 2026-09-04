@@ -2,7 +2,7 @@ import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { createProxyApp } from '../proxy/server.js';
-import { routeHistory, boundHistory, MAX_HISTORY, getAnthropicClient, clearClientCache } from '../proxy/handler.js';
+import { routeHistory, boundHistory, MAX_HISTORY, getAnthropicClient, clearClientCache, routeCounters } from '../proxy/handler.js';
 import { renderDashboard } from '../proxy/dashboard.js';
 import type { RouteEvent } from '../proxy/route-event.js';
 
@@ -129,7 +129,12 @@ describe('createProxyApp', () => {
     // Seeds the history rather than asserting a loose pattern: the original
     // version needed a non-null lastTier and got one only because an earlier
     // describe had already routed something into the module-global array.
+    // `#N` is the per-process count of recorded events, not the window length —
+    // seeding the array directly bypasses the recorder, so the counter is set
+    // to match what the array would have recorded.
     routeHistory.length = 0;
+    const savedCount = routeCounters.recorded;
+    routeCounters.recorded = 0;
     try {
       const res = await app.request('/statusline');
       assert.equal(res.status, 200);
@@ -137,8 +142,10 @@ describe('createProxyApp', () => {
       assert.equal(await res.text(), '[auto:ready #0]', 'reads "ready" before any traffic');
 
       routeHistory.push(statuslineEvent('sonnet'));
+      routeCounters.recorded = 1;
       assert.equal(await (await app.request('/statusline')).text(), '[auto:sonnet #1]');
     } finally {
+      routeCounters.recorded = savedCount;
       routeHistory.length = 0;
     }
   });

@@ -234,6 +234,23 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
     assert.equal(body.service, 'claude-router-proxy');
   });
 
+  it('/health counts every routed request, not the bounded window', async () => {
+    const { base } = await setup();
+    const before = ((await (await fetch(`${base}/health`)).json()) as { requests: number }).requests;
+
+    const res = await post(base, {
+      model: 'claude-opus-4-8',
+      max_tokens: 10,
+      messages: [{ role: 'user', content: 'translate hello to French' }],
+    });
+    assert.equal(res.status, 200);
+
+    const after = ((await (await fetch(`${base}/health`)).json()) as { requests: number }).requests;
+    assert.equal(after, before + 1, 'the counter is monotonic per recorded event');
+    const line = await (await fetch(`${base}/statusline`)).text();
+    assert.match(line, new RegExp(`#${after}\\]$`), 'the statusline shows the same count');
+  });
+
   it('routes a trivial prompt to haiku end-to-end', async () => {
     const { upstream, base } = await setup();
 

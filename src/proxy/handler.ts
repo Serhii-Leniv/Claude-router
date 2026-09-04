@@ -104,7 +104,15 @@ function noteDelegationStrip(removed: number, hasTools: boolean): void {
   console.warn(`${term.dim('[claude-router]')} ${describeStrip(removed)}`);
 }
 
+/**
+ * Requests recorded since the process started. `routeHistory` is bounded, so
+ * its length is not a count: `/health.requests` and the statusline's `#N` read
+ * from it and stalled at ~1000, then oscillated as batches were trimmed.
+ */
+export const routeCounters = { recorded: 0 };
+
 function recordEvent(event: RouteEvent, config?: HandlerConfig): void {
+  routeCounters.recorded++;
   routeHistory.push(event);
   boundHistory(routeHistory);
   if (config?.historyFile) appendEvent(config.historyFile, event);
