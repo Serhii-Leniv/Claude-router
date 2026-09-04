@@ -13,7 +13,8 @@ import {
 import { executeRoute, startRouteStream, type MessageStream } from '../route.js';
 import { term } from './term.js';
 import { appendEvent } from './history.js';
-import { buildRouteEvent, errorRouteEvent, type RouteEvent } from './route-event.js';
+import { buildRouteEvent, errorRouteEvent, type RouteContext, type RouteEvent } from './route-event.js';
+import { resolveRole } from '../roles.js';
 import { stripDelegationBlockers, describeStrip } from './delegation.js';
 import type { ClassifyInput, ClassifyResult, ModelPricing, RoutingTuning, Tier } from '../types.js';
 
@@ -44,6 +45,19 @@ export interface HandlerConfig {
    * so it needs `forceRoute` — passthrough forwards the client's exact bytes.
    */
   restoreDelegation?: boolean;
+  /**
+   * Route Claude Code subagents by role (default on): a `<!-- claude-router:role=… -->`
+   * marker on the agent definition's first line, an `agents` mapping by
+   * agent type, or — in the cheap direction only — the read-only tool shape.
+   * Off means subagents are classified like any other request; the inferred
+   * role is still recorded on the event so an A/B over the ledger is possible.
+   * See src/roles.ts. Only meaningful under forceRoute.
+   */
+  roleRouting?: boolean;
+  /** Per-role tier overrides (`{ builder: 'opus' }`). */
+  roles?: Partial<Record<string, Tier>>;
+  /** Third-party agents pinned by Claude Code `agent_type` (`{ 'plugin:reviewer': 'opus' }`). */
+  agents?: Record<string, Tier>;
   /** Pricing table for savings math (default: current-generation DEFAULT_PRICING) */
   pricing?: Record<string, ModelPricing>;
   /** Classifier thresholds/band/timeout/cache tuning */
@@ -224,6 +238,7 @@ function setRouterHeaders(
   classifyResult: ClassifyResult,
   retried: boolean = false,
   retryReason: string | null = null,
+  context?: RouteContext,
 ): void {
   headers.set('x-router-tier', tier);
   headers.set('x-router-model', model);
@@ -235,6 +250,8 @@ function setRouterHeaders(
   // The gate that decided — what makes a routing decision auditable from the
   // client side. It was computed on every request and reached nothing.
   if (classifyResult.reason) headers.set('x-router-reason', classifyResult.reason);
+  // Only when the role decided the tier — a header must not claim more than it did.
+  if (classifyResult.method === 'role' && context?.role) headers.set('x-router-role', context.role);
   if (retried) {
     headers.set('x-router-retried', 'true');
     headers.set('x-router-retry-reason', retryReason ?? '');
@@ -407,10 +424,32 @@ export async function handleMessages(
   // turn degrades to classification, which is the cheap path anyway.
   const isSubagent = c.req.header('x-claude-code-agent-id') != null;
   const pinTier = config.sessionModel;
-  const classifyResult: ClassifyResult =
-    pinTier && !isSubagent && hasTools && config.models[pinTier]
+  const classifyInput = buildClassifyInput(body);
+
+  // Role routing (subagents only — the marker is never consulted on a
+  // coordinator turn, so pasting it into CLAUDE.md changes nothing). A pinned
+  // role skips the classifier entirely, which also removes hybrid mode's Haiku
+  // confirmation call for every policy agent. The decision order and the
+  // reason it only ever confirms a cheap tier from shape are in src/roles.ts.
+  // A role whose tier has no `models[tier]` entry degrades to classification,
+  // same as a typo'd sessionModel.
+  const roleDecision = isSubagent && config.roleRouting !== false
+    ? resolveRole(
+        { system: classifyInput.system, tools: body.tools as unknown[] | undefined, requestedModel },
+        { roles: config.roles, agents: config.agents },
+      )
+    : null;
+  const rolePin = roleDecision?.pinned && roleDecision.tier && config.models[roleDecision.tier] ? roleDecision.tier : null;
+  const classifyResult: ClassifyResult = rolePin
+    ? { tier: rolePin, score: 0, method: 'role', ms: 0, confidence: 1, reason: roleDecision!.reason }
+    : pinTier && !isSubagent && hasTools && config.models[pinTier]
       ? { tier: pinTier, score: 0, method: 'pinned', ms: 0, confidence: 1, reason: 'session:coordinator-pinned' }
-      : await classify(client, buildClassifyInput(body), config);
+      : await classify(client, classifyInput, config);
+  // Facts about the request that belong on the ledger row whatever decided the tier.
+  const context: RouteContext = {
+    ...(isSubagent ? { subagent: true as const } : {}),
+    ...(roleDecision ? { role: roleDecision.role, roleSource: roleDecision.source } : {}),
+  };
 
   // The tier's model is resolved inside the routing kernel, which is also where
   // an unknown tier is caught — resolving it here too gave the non-streaming
@@ -430,10 +469,10 @@ export async function handleMessages(
   const baselineModel = resolveBaselineModel(requestedModel, config);
 
   if (isStreaming) {
-    return handleStreaming(c, client, apiParams, tier, classifyResult, config, baselineModel, anthropicBeta);
+    return handleStreaming(c, client, apiParams, tier, classifyResult, context, config, baselineModel, anthropicBeta);
   }
 
-  return handleNonStreaming(c, client, apiParams, tier, classifyResult, config, baselineModel, anthropicBeta);
+  return handleNonStreaming(c, client, apiParams, tier, classifyResult, context, config, baselineModel, anthropicBeta);
 }
 
 /** SDK request options that relay the client's anthropic-beta header, if any. */
@@ -447,6 +486,7 @@ async function handleNonStreaming(
   apiParams: Record<string, unknown>,
   tier: Tier,
   classifyResult: ClassifyResult,
+  context: RouteContext,
   config: HandlerConfig,
   baselineModel: string,
   anthropicBeta?: string,
@@ -472,12 +512,13 @@ async function handleNonStreaming(
       model: result.model,
       cost,
       classifyResult,
+      context,
       retried: result.retried,
       retryReason: result.retryReason,
     }), config);
 
     const headers = new Headers({ 'content-type': 'application/json' });
-    setRouterHeaders(headers, result.tier, result.model, cost.costCents, cost.savedCents, classifyResult, result.retried, result.retryReason);
+    setRouterHeaders(headers, result.tier, result.model, cost.costCents, cost.savedCents, classifyResult, result.retried, result.retryReason, context);
 
     return new Response(JSON.stringify(result.response), { status: 200, headers });
   } catch (err) {
@@ -517,6 +558,7 @@ async function handleStreaming(
   apiParams: Record<string, unknown>,
   tier: Tier,
   classifyResult: ClassifyResult,
+  context: RouteContext,
   config: HandlerConfig,
   baselineModel: string,
   anthropicBeta?: string,
@@ -553,6 +595,7 @@ async function handleStreaming(
     'x-router-confidence': classifyResult.confidence.toString(),
   });
   if (classifyResult.reason) headers.set('x-router-reason', classifyResult.reason);
+  if (classifyResult.method === 'role' && context.role) headers.set('x-router-role', context.role);
 
   const encoder = new TextEncoder();
 
@@ -572,7 +615,7 @@ async function handleStreaming(
           log(tier, model, classifyResult, cost.costCents, cost.savedCents, baselineModel, false, null, cost.priced);
         }
 
-        recordEvent(buildRouteEvent({ tier, model, cost, classifyResult }), config);
+        recordEvent(buildRouteEvent({ tier, model, cost, classifyResult, context }), config);
 
         controller.close();
       } catch (err) {
@@ -587,7 +630,7 @@ async function handleStreaming(
             `${term.dim('[claude-router]')} ${term.red('stream error')} → ${tier} (${model}): ${String(err)}`,
           );
         }
-        recordEvent(errorRouteEvent({ tier, model, classifyResult, error: err }), config);
+        recordEvent(errorRouteEvent({ tier, model, classifyResult, context, error: err }), config);
         controller.close();
       }
     },

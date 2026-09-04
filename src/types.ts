@@ -90,7 +90,7 @@ export interface RouteMeta {
    * this call's model (or the baseline) has no known price. Absent means priced.
    */
   priced?: boolean;
-  classifierMethod: 'heuristic' | 'ai' | 'pinned';
+  classifierMethod: 'heuristic' | 'ai' | 'pinned' | 'role';
   /** Routing overhead in milliseconds */
   classifierMs: number;
   /** Which gate, pin or AI verdict decided the tier (e.g. `agentic:mid-loop`) */
@@ -138,7 +138,7 @@ export interface ClassifyResult {
    * (see HandlerConfig.sessionModel); it rides this field so the existing
    * headers/log/history path records "why this tier" uniformly.
    */
-  method: 'heuristic' | 'ai' | 'pinned';
+  method: 'heuristic' | 'ai' | 'pinned' | 'role';
   ms: number;
   confidence: number;
   /** True when the result was served from the classification cache */

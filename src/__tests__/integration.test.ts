@@ -24,7 +24,8 @@ import type { AddressInfo } from 'node:net';
 import { serve } from '@hono/node-server';
 import Anthropic from '@anthropic-ai/sdk';
 import { createProxyApp } from '../proxy/server.js';
-import type { HandlerConfig } from '../proxy/handler.js';
+import { routeHistory, type HandlerConfig } from '../proxy/handler.js';
+import { roleMarker } from '../roles.js';
 import { readLifetimeStats, resetHistoryCache } from '../proxy/history.js';
 import { DEFAULT_MODELS } from '../models.js';
 
@@ -637,5 +638,130 @@ describe('proxy end-to-end (real sockets, fake upstream)', () => {
         `${model}: priced against sonnet, not the unusable model`,
       );
     }
+  });
+});
+
+// ── Role routing (subagents) ─────────────────────────────────────────────────
+//
+// Shaped like a Claude Code subagent request on the wire: the agent-id header,
+// a session-id header, and a `system` array whose first block is Claude Code's
+// attribution and whose second block is the agent definition body (with the
+// environment details appended). Only the header presence, the first line of a
+// system block, and the tool names are structural signals; nothing else is read.
+
+const ATTRIBUTION_BLOCK = { type: 'text', text: 'x-anthropic-billing-header: claude-code; subagent' };
+const READ_ONLY_TOOLS = ['Read', 'Glob', 'Grep'].map((name) => ({ name, description: name, input_schema: { type: 'object', properties: {} } }));
+const WRITE_TOOLS = ['Read', 'Edit', 'Write', 'Bash'].map((name) => ({ name, description: name, input_schema: { type: 'object', properties: {} } }));
+
+function subagentRequest(
+  base: string,
+  opts: { body?: string; tools: unknown[]; model: string; prompt?: string; stream?: boolean; subagent?: boolean },
+): Promise<Response> {
+  const headers: Record<string, string> = { 'content-type': 'application/json', 'x-claude-code-session-id': 'sess_1' };
+  if (opts.subagent !== false) headers['x-claude-code-agent-id'] = 'agent_1';
+  return fetch(`${base}/v1/messages`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: opts.model,
+      max_tokens: 64,
+      stream: opts.stream === true,
+      system: [ATTRIBUTION_BLOCK, { type: 'text', text: `${opts.body ?? 'You are a helper.'}\n\nWorking directory: /tmp/repo` }],
+      tools: opts.tools,
+      messages: [{ role: 'user', content: opts.prompt ?? 'find where the config loader is defined' }],
+    }),
+  });
+}
+
+describe('role routing (subagents)', () => {
+  it('a recon-marked agent is pinned to haiku whatever model the client asked for', async () => {
+    const { upstream, base } = await setup({ config: { sessionModel: 'opus' } });
+    const res = await subagentRequest(base, { body: `${roleMarker('recon')}\nFind things, report facts.`, tools: READ_ONLY_TOOLS, model: 'claude-opus-4-8' });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'haiku');
+    assert.equal(res.headers.get('x-router-classifier'), 'role');
+    assert.equal(res.headers.get('x-router-reason'), 'role:recon');
+    assert.equal(res.headers.get('x-router-role'), 'recon');
+    assert.equal(upstream.calls.length, 1, 'no classifier call, one upstream call');
+    assert.equal(upstream.calls[0]!.model, DEFAULT_MODELS.haiku);
+    const last = routeHistory[routeHistory.length - 1]!;
+    assert.equal(last.role, 'recon');
+    assert.equal(last.roleSource, 'marker');
+    assert.equal(last.subagent, true);
+  });
+
+  it('an audit-marked agent stays on opus even though its tools are read-only', async () => {
+    const { base } = await setup();
+    const res = await subagentRequest(base, { body: `${roleMarker('audit')}\nFalsify the claim.`, tools: READ_ONLY_TOOLS, model: 'claude-opus-4-8' });
+    assert.equal(res.headers.get('x-router-tier'), 'opus');
+    assert.equal(res.headers.get('x-router-reason'), 'role:audit');
+  });
+
+  it('an unmarked read-only agent already on haiku is confirmed at haiku (no agentic floor)', async () => {
+    const { base } = await setup();
+    const res = await subagentRequest(base, { tools: READ_ONLY_TOOLS, model: 'claude-haiku-4-5' });
+    assert.equal(res.headers.get('x-router-tier'), 'haiku');
+    assert.equal(res.headers.get('x-router-classifier'), 'role');
+    assert.equal(res.headers.get('x-router-reason'), 'subagent:readonly-tools');
+  });
+
+  it('an unmarked read-only agent on opus is NOT demoted — the classifier decides', async () => {
+    const { base } = await setup();
+    const res = await subagentRequest(base, { tools: READ_ONLY_TOOLS, model: 'claude-opus-4-8' });
+    assert.notEqual(res.headers.get('x-router-classifier'), 'role');
+    assert.equal(res.headers.get('x-router-role'), null, 'no header when the role did not decide');
+    const last = routeHistory[routeHistory.length - 1]!;
+    assert.equal(last.role, 'recon', 'the inferred role is still recorded on the ledger row');
+    assert.equal(last.roleSource, 'shape');
+  });
+
+  it('a writer-shaped agent is labelled builder but classified — depth still promotes', async () => {
+    const { base } = await setup();
+    const res = await subagentRequest(base, {
+      tools: WRITE_TOOLS, model: 'claude-sonnet-5',
+      prompt: 'architect a payment system and prove correctness under partition',
+    });
+    assert.equal(res.headers.get('x-router-classifier'), 'heuristic');
+    assert.equal(res.headers.get('x-router-tier'), 'opus');
+    assert.equal(routeHistory[routeHistory.length - 1]!.role, 'builder');
+  });
+
+  it('roles config overrides a marked role\'s tier', async () => {
+    const { base } = await setup({ config: { roles: { builder: 'opus' } } });
+    const res = await subagentRequest(base, { body: `${roleMarker('builder')}\nImplement the ticket.`, tools: WRITE_TOOLS, model: 'claude-sonnet-5' });
+    assert.equal(res.headers.get('x-router-tier'), 'opus');
+    assert.equal(res.headers.get('x-router-reason'), 'role:builder');
+  });
+
+  it('roleRouting: false classifies a marked agent like any request but still records the role', async () => {
+    const { base } = await setup({ config: { roleRouting: false } });
+    const res = await subagentRequest(base, { body: `${roleMarker('recon')}\nFind things.`, tools: READ_ONLY_TOOLS, model: 'claude-opus-4-8' });
+    assert.equal(res.headers.get('x-router-classifier'), 'heuristic');
+    assert.equal(res.headers.get('x-router-role'), null);
+    assert.equal(routeHistory[routeHistory.length - 1]!.role, undefined, 'off means off: no role resolution at all');
+  });
+
+  it('the streaming path pins by role too and carries x-router-role', async () => {
+    const { upstream, base } = await setup();
+    const res = await subagentRequest(base, { body: `${roleMarker('recon')}\nFind things.`, tools: READ_ONLY_TOOLS, model: 'claude-opus-4-8', stream: true });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('x-router-tier'), 'haiku');
+    assert.equal(res.headers.get('x-router-role'), 'recon');
+    const sse = await readSse(res);
+    assert.match(sse, /message_stop/);
+    assert.equal(upstream.calls[upstream.calls.length - 1]!.model, DEFAULT_MODELS.haiku);
+    assert.equal(routeHistory[routeHistory.length - 1]!.roleSource, 'marker');
+  });
+
+  it('a coordinator turn is never role-routed — a marker pasted into CLAUDE.md changes nothing', async () => {
+    const { base } = await setup({ config: { sessionModel: 'opus' } });
+    const res = await subagentRequest(base, {
+      subagent: false,
+      body: `${roleMarker('recon')}\nFind things.`,
+      tools: CODER_TOOLS, model: 'claude-opus-4-8',
+    });
+    assert.equal(res.headers.get('x-router-tier'), 'opus');
+    assert.equal(res.headers.get('x-router-classifier'), 'pinned', 'the session pin, not the marker, decided');
+    assert.equal(res.headers.get('x-router-role'), null);
   });
 });

@@ -66,12 +66,12 @@ describe('parseServeArgs', () => {
       '--provider', 'bedrock', '--region', 'eu-west-1', '--force-route',
     ]);
     assert.deepEqual(
-      { ...opts, tiers: undefined, pricing: undefined, routing: undefined },
+      { ...opts, tiers: undefined, pricing: undefined, routing: undefined, roles: undefined, agents: undefined },
       {
         port: 4100, host: '127.0.0.1', verbose: true, classifier: 'heuristic', provider: 'bedrock',
         region: 'eu-west-1', forceRoute: true, upstream: 'https://api.anthropic.com', sessionModel: '',
-        restoreDelegation: false,
-        tiers: undefined, pricing: undefined, routing: undefined,
+        restoreDelegation: false, roleRouting: 'on',
+        tiers: undefined, pricing: undefined, routing: undefined, roles: undefined, agents: undefined,
       },
     );
   });
@@ -216,5 +216,28 @@ describe('helpOptionLines', () => {
     assert.match(text, /heuristic \| ai \| hybrid; default: hybrid/);
     assert.match(text, /haiku \| sonnet \| opus \| fable\)/, 'an empty default is not printed as "default: "');
     assert.doesNotMatch(text, /default: false/);
+  });
+});
+
+describe('role routing options', () => {
+  it('parses --role-routing, defaults to on, and rejects other values', () => {
+    assert.equal(parseServeArgs([]).roleRouting, 'on');
+    assert.equal(parseServeArgs(['--role-routing', 'off']).roleRouting, 'off');
+    assert.equal(parseServeArgs([], { roleRouting: 'off' }).roleRouting, 'off', 'file config supplies it');
+    assert.equal(parseServeArgs(['--role-routing', 'on'], { roleRouting: 'off' }).roleRouting, 'on', 'flag wins');
+    assert.throws(() => parseServeArgs(['--role-routing', 'maybe']), CliUsageError);
+  });
+
+  it('round-trips --role-routing through spawn args, omitting the default', () => {
+    assert.ok(!serveArgsFrom(parseServeArgs([])).includes('--role-routing'));
+    const args = serveArgsFrom(parseServeArgs(['--role-routing', 'off']));
+    assert.deepEqual(args.slice(args.indexOf('--role-routing'), args.indexOf('--role-routing') + 2), ['--role-routing', 'off']);
+  });
+
+  it('passes roles and agents through from the file untouched', () => {
+    const opts = parseServeArgs([], { roles: { builder: 'opus' }, agents: { 'my-plugin:reviewer': 'opus' } });
+    assert.deepEqual(opts.roles, { builder: 'opus' });
+    assert.deepEqual(opts.agents, { 'my-plugin:reviewer': 'opus' });
+    assert.equal(parseServeArgs([]).roles, undefined);
   });
 });

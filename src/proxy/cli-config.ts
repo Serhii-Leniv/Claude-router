@@ -1,4 +1,5 @@
 import { warnDeadRoutingKeys } from '../routing.js';
+import { invalidRoleMappings } from '../roles.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -66,6 +67,16 @@ export interface FileConfig {
    * proxy edits a prompt. Only takes effect under forceRoute.
    */
   restoreDelegation?: boolean;
+  /**
+   * Route Claude Code subagents by role (default `'on'`): marker, `agents`
+   * mapping, or read-only tool shape in the cheap direction. `'off'` classifies
+   * subagents like any other request (the inferred role is still recorded).
+   */
+  roleRouting?: 'on' | 'off';
+  /** Per-role tier overrides, e.g. `{ "builder": "opus" }`. Roles: recon, builder, batch, gate, audit. */
+  roles?: Partial<Record<string, Tier>>;
+  /** Pin third-party agents by Claude Code agent type, e.g. `{ "my-plugin:reviewer": "opus" }`. */
+  agents?: Record<string, Tier>;
   /** Override the model ID used for each tier. */
   tiers?: Partial<Record<Tier, string>>;
   /** Override pricing ($/1M tokens) for savings math, keyed by model ID. */
@@ -104,6 +115,10 @@ export interface ServeOptions {
   sessionModel: string;
   /** Strip the client's injected anti-delegation lines (routed path only). */
   restoreDelegation: boolean;
+  /** 'on' | 'off' — see FileConfig.roleRouting. */
+  roleRouting: string;
+  roles?: Partial<Record<string, Tier>>;
+  agents?: Record<string, Tier>;
   tiers?: Partial<Record<Tier, string>>;
   pricing?: Record<string, ModelPricing>;
   routing?: RoutingTuning;
@@ -113,6 +128,7 @@ export interface ServeOptions {
 export class CliUsageError extends Error {}
 
 const DEFAULT_HOST = '127.0.0.1';
+const TIER_NAMES = 'haiku | sonnet | opus | fable';
 
 type OptionKind =
   | { type: 'number'; min: number; max: number }
@@ -128,7 +144,7 @@ type OptionKind =
  */
 interface OptionSpec {
   /** Corresponding key on ServeOptions / FileConfig. */
-  key: 'port' | 'host' | 'verbose' | 'classifier' | 'provider' | 'region' | 'forceRoute' | 'upstream' | 'sessionModel' | 'restoreDelegation';
+  key: 'port' | 'host' | 'verbose' | 'classifier' | 'provider' | 'region' | 'forceRoute' | 'upstream' | 'sessionModel' | 'restoreDelegation' | 'roleRouting';
   flags: string[];
   kind: OptionKind;
   default: string | number | boolean;
@@ -166,6 +182,10 @@ export const OPTIONS: readonly OptionSpec[] = [
   // Off by default: the one place the proxy edits a prompt. See src/proxy/delegation.ts.
   { key: 'restoreDelegation', flags: ['--restore-delegation'], kind: { type: 'boolean' }, default: false, configAlways: true,
     help: 'Strip the injected "do not spawn agents" lines so a pinned session can still delegate' },
+  // An enum rather than a boolean: the table's booleans can only be switched on,
+  // and "off" is the interesting value here (the A/B baseline for the ledger).
+  { key: 'roleRouting', flags: ['--role-routing'], kind: { type: 'enum', values: ['on', 'off'] }, default: 'on',
+    arg: 'on|off', help: 'Route Claude Code subagents by role — marker, agents mapping, or read-only tool shape (needs --force-route)' },
 ];
 
 /**
@@ -231,12 +251,21 @@ export function parseServeArgs(args: string[], file: FileConfig = {}): ServeOpti
   // The config file is where these keys actually live for most users, so this
   // is the call site that matters. Warn after parsing, before the proxy starts.
   warnDeadRoutingKeys(file.routing as Record<string, unknown> | undefined);
+  // A mapping to a non-tier is skipped at routing time (never `model: undefined`);
+  // say so once here rather than letting a typo silently route by shape instead.
+  for (const [name, mapping] of [['roles', file.roles], ['agents', file.agents]] as const) {
+    for (const bad of invalidRoleMappings(mapping as Record<string, unknown> | undefined)) {
+      console.warn(`[claude-router] config ${name}.${bad} is not a tier (${TIER_NAMES}) and will be ignored.`);
+    }
+  }
 
   return {
-    ...(values as unknown as Omit<ServeOptions, 'tiers' | 'pricing' | 'routing'>),
+    ...(values as unknown as Omit<ServeOptions, 'tiers' | 'pricing' | 'routing' | 'roles' | 'agents'>),
     tiers: file.tiers,
     pricing: file.pricing,
     routing: file.routing,
+    roles: file.roles,
+    agents: file.agents,
   };
 }
 

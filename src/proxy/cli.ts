@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import { createProxyApp } from './server.js';
 import { createProviderClient, DEFAULT_UPSTREAM, type Provider } from './handler.js';
 import { DEFAULT_MODELS, BEDROCK_MODELS, VERTEX_MODELS, DISPLAY_TIERS } from '../models.js';
+import { DEFAULT_ROLE_TIERS, ROLES } from '../roles.js';
 import type { Tier } from '../types.js';
 import { term } from './term.js';
 import { formatSavedCents } from './format.js';
@@ -179,6 +180,15 @@ export function startBanner(
       : term.yellow('(needs --force-route to take effect)');
     rows.push(['Delegation', `${term.green('restored')} ${note}`]);
   }
+  // Subagent role routing: show the effective role→tier map (overrides included)
+  // or that it is off. Like the session pin, it does nothing without --force-route.
+  if (options.roleRouting === 'off') {
+    rows.push(['Roles', term.dim('off (subagents classified like any request)')]);
+  } else {
+    const map = ROLES.map((r) => `${r}→${term.tier(options.roles?.[r] ?? DEFAULT_ROLE_TIERS[r])}`).join(term.dim(' · '));
+    const note = options.forceRoute ? '' : ` ${term.yellow('(needs --force-route to take effect)')}`;
+    rows.push(['Roles', `${map}${note}`]);
+  }
   // A redirected upstream means requests are NOT going to Anthropic. That is the
   // point when testing, and a silent disaster otherwise — so it is always on the
   // banner, never merely absent when default.
@@ -226,6 +236,9 @@ async function cmdStart(args: string[], paths: RouterPaths): Promise<CommandResu
     forceRoute: options.forceRoute,
     sessionModel: options.sessionModel ? (options.sessionModel as Tier) : undefined,
     restoreDelegation: options.restoreDelegation,
+    roleRouting: options.roleRouting !== 'off',
+    roles: options.roles,
+    agents: options.agents,
     pricing: options.pricing,
     routing: options.routing,
     historyFile: paths.historyFile,

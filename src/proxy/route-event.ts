@@ -1,5 +1,6 @@
 import { costFields, type RouteCost } from '../models.js';
 import type { ClassifyResult, Tier } from '../types.js';
+import type { RoleSource } from '../roles.js';
 
 /**
  * The proxy's route outcome record — one line of `history.jsonl`, one row of the
@@ -33,6 +34,15 @@ export interface RouteEvent {
    * `x-router-reason` header carries. Absent on lines written before 0.4.0.
    */
   reason?: string;
+  /** Present on requests Claude Code sent from a subagent (`x-claude-code-agent-id`). */
+  subagent?: true;
+  /**
+   * The subagent's role — pinned by a marker/agent mapping, or inferred from
+   * its tool shape as a label only. `roleSource` says which. Gives the ledger a
+   * per-role axis: what did reconnaissance cost, what did review cost.
+   */
+  role?: string;
+  roleSource?: RoleSource;
   retried: boolean;
   retryReason: string | null;
   inputTokens: number;
@@ -53,18 +63,26 @@ export interface RouteEvent {
   error?: string;
 }
 
+/** Request facts that are not a classification but belong on the record. Keys are set only when true/known. */
+export interface RouteContext {
+  subagent?: true;
+  role?: string;
+  roleSource?: RoleSource;
+}
+
 export interface RouteEventInput {
   tier: Tier;
   model: string;
   cost: RouteCost;
   classifyResult: ClassifyResult;
+  context?: RouteContext;
   retried?: boolean;
   retryReason?: string | null;
 }
 
 /** Record of one completed routed call. */
 export function buildRouteEvent(input: RouteEventInput): RouteEvent {
-  const { tier, model, cost, classifyResult, retried = false, retryReason = null } = input;
+  const { tier, model, cost, classifyResult, context, retried = false, retryReason = null } = input;
   return {
     timestamp: new Date().toISOString(),
     tier,
@@ -73,6 +91,7 @@ export function buildRouteEvent(input: RouteEventInput): RouteEvent {
     classifier: classifyResult.method,
     classifierMs: classifyResult.ms,
     ...(classifyResult.reason ? { reason: classifyResult.reason } : {}),
+    ...(context ?? {}),
     retried,
     retryReason,
     ...costFields(cost),
@@ -89,9 +108,10 @@ export function errorRouteEvent(input: {
   tier: Tier;
   model: string;
   classifyResult: ClassifyResult;
+  context?: RouteContext;
   error: unknown;
 }): RouteEvent {
-  const { tier, model, classifyResult, error } = input;
+  const { tier, model, classifyResult, context, error } = input;
   return {
     timestamp: new Date().toISOString(),
     tier,
@@ -102,6 +122,7 @@ export function errorRouteEvent(input: {
     classifier: classifyResult.method,
     classifierMs: classifyResult.ms,
     ...(classifyResult.reason ? { reason: classifyResult.reason } : {}),
+    ...(context ?? {}),
     retried: false,
     retryReason: null,
     inputTokens: 0,
