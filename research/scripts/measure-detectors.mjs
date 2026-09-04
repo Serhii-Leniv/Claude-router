@@ -12,7 +12,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // not a reimplementation. Run `npm run build` first.
 const DIST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../dist');
 const { shouldRetry } = await import(pathToFileURL(`${DIST}/retry.js`).href);
-const { heuristicScoreDetailed, scoreToTier } = await import(pathToFileURL(`${DIST}/classifier.js`).href);
+// Tier selection lives in routing.js. The 0-100 scorer this script used to call
+// (`heuristicScoreDetailed` + `scoreToTier`) was deleted with the additive
+// keyword classifier, and the unguarded call left this script throwing
+// `heuristicScoreDetailed is not a function` on any populated corpus.
+const { routeByEvidence } = await import(pathToFileURL(`${DIST}/routing.js`).href);
 
 // Defaults to every local Claude Code transcript; pass a narrower path to scope it.
 const ROOT = process.argv[2] ?? path.join(os.homedir(), '.claude', 'projects');
@@ -36,8 +40,8 @@ const stats = {
   truncationFires: 0,
   modelUsed: {},
   userTurns: 0,
-  tierPicked: { haiku: 0, sonnet: 0, opus: 0 },
-  scoreHist: {},
+  tierPicked: { haiku: 0, sonnet: 0, opus: 0, fable: 0 },
+  gateHist: {},
 };
 const lexicalSamples = [];
 const structuralSamples = [];
@@ -89,11 +93,9 @@ for (const f of files) {
       const t = textOf(m.content);
       if (!t.trim()) continue;
       stats.userTurns++;
-      const det = heuristicScoreDetailed({ messages: [{ role: 'user', content: m.content }], system: undefined, tools: undefined });
-      const tier = scoreToTier(det.score);
-      stats.tierPicked[tier]++;
-      const bucket = Math.min(100, Math.floor(det.score / 10) * 10);
-      stats.scoreHist[bucket] = (stats.scoreHist[bucket] || 0) + 1;
+      const decision = routeByEvidence({ messages: [{ role: 'user', content: m.content }], system: undefined, tools: undefined });
+      stats.tierPicked[decision.tier]++;
+      stats.gateHist[decision.reason] = (stats.gateHist[decision.reason] || 0) + 1;
     }
   }
 }

@@ -580,8 +580,10 @@ async function cmdDoctor(args: string[]): Promise<void> {
     if (!ok && !warnOnly) failures++;
   };
 
+  // Floor must track package.json `engines.node` — a green doctor on a Node the
+  // package refuses to install on is worse than no check.
   const [major] = process.versions.node.split('.').map(Number);
-  check(major! >= 18, `Node ${process.versions.node} (need ≥ 18)`);
+  check(major! >= 20, `Node ${process.versions.node} (need ≥ 20)`);
 
   const { loaded, error } = loadFileConfig(paths.configFile);
   if (error) check(false, `Config file invalid: ${error}`, `Fix or regenerate: claude-router init --force`);

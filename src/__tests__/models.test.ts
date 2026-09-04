@@ -30,21 +30,37 @@ describe('computeCostCents', () => {
   });
 
   it('bills cache reads at 10% of the input rate', () => {
-    // sonnet input $3/M → 1M cache-read tokens = $0.30 = 30 cents
+    // sonnet input $2/M → 1M cache-read tokens = $0.20 = 20 cents
     const base = computeCostCents('claude-sonnet-5', 0, 0, DEFAULT_PRICING);
     const withReads = computeCostCents('claude-sonnet-5', 0, 0, DEFAULT_PRICING, {
       readTokens: 1_000_000,
     });
     assert.equal(base, 0);
-    assert.equal(Math.round(withReads * 100) / 100, 30);
+    assert.equal(Math.round(withReads * 100) / 100, 20);
+  });
+
+  it('bills Fable 5.1 cache reads at its own 2.5%, not the standard 10%', () => {
+    // The 10% multiplier is a default, not a universal. Fable 5.1 / Mythos 5.1
+    // read at $0.25/MTok against a $10/MTok input rate — on a cache-heavy client
+    // the read line is most of the input bill, so the standard rate overstates a
+    // fable route ~4x on that component.
+    for (const id of ['claude-fable-5-1', 'claude-mythos-5-1']) {
+      const cost = computeCostCents(id, 0, 0, DEFAULT_PRICING, { readTokens: 1_000_000 });
+      assert.equal(Math.round(cost * 100) / 100, 25, id);
+    }
+    // Fable 5 keeps the standard rate: $10/M × 10% = $1.00 = 100 cents.
+    const fable5 = computeCostCents('claude-fable-5', 0, 0, DEFAULT_PRICING, {
+      readTokens: 1_000_000,
+    });
+    assert.equal(Math.round(fable5 * 100) / 100, 100);
   });
 
   it('bills cache writes at 125% of the input rate', () => {
-    // sonnet input $3/M → 1M cache-creation tokens = $3.75 = 375 cents
+    // sonnet input $2/M → 1M cache-creation tokens = $2.50 = 250 cents
     const cost = computeCostCents('claude-sonnet-5', 0, 0, DEFAULT_PRICING, {
       creationTokens: 1_000_000,
     });
-    assert.equal(Math.round(cost * 100) / 100, 375);
+    assert.equal(Math.round(cost * 100) / 100, 250);
   });
 
   it('combines regular, cache-read, and cache-write tokens', () => {
@@ -111,8 +127,33 @@ describe('current-generation pricing (guards against drift)', () => {
     assert.deepEqual(FAMILY_PRICING.opus, { input: 5.0, output: 25.0 });
   });
 
-  it('Sonnet is $3/$15 per 1M', () => {
-    assert.deepEqual(FAMILY_PRICING.sonnet, { input: 3.0, output: 15.0 });
+  it('Sonnet 5 is $2/$10 per 1M — the standard rate, not an intro discount', () => {
+    // Sonnet 5's $2/$10 launched as introductory pricing through 2026-08-31, and
+    // this table used to hold the announced $3/$15 successor so savings figures
+    // would not jump when it expired. It never expired — the increase was
+    // cancelled and $2/$10 became standard. The sonnet tier is the savings
+    // baseline, so pricing a rate that was never charged overstated every
+    // reported win. Pin today's rate; do not pre-empt a scheduled change.
+    assert.deepEqual(FAMILY_PRICING.sonnet, { input: 2.0, output: 10.0 });
+    assert.deepEqual(priceForModel('claude-sonnet-5', DEFAULT_PRICING), {
+      input: 2.0,
+      output: 10.0,
+    });
+  });
+
+  it('legacy Sonnet (4, 4.5, 4.6) keeps $3/$15 after the family rate dropped', () => {
+    // These were free-riding on the family fallback while it said $3/$15. Sonnet
+    // 5's price cut made the whole prior generation divergent in one move —
+    // same shape as legacy Opus, one generation down.
+    for (const id of [
+      'claude-sonnet-4-6',
+      'claude-sonnet-4-5',
+      'claude-sonnet-4-5-20250929',
+      'claude-sonnet-4-0',
+      'claude-sonnet-4-20250514',
+    ]) {
+      assert.deepEqual(priceForModel(id, DEFAULT_PRICING), { input: 3.0, output: 15.0 }, id);
+    }
   });
 
   it('Haiku is $1/$5 per 1M, not the old $0.80/$4', () => {
@@ -160,6 +201,23 @@ describe('current-generation pricing (guards against drift)', () => {
     assert.equal(familyForModel('claude-mythos-5'), undefined);
     for (const id of ['claude-fable-5', 'claude-mythos-5']) {
       assert.deepEqual(priceForModel(id, DEFAULT_PRICING), { input: 10.0, output: 50.0 }, id);
+    }
+  });
+
+  it('the fable tier is Fable 5.1, and Mythos 5.1 is priced rather than unknown', () => {
+    // Fable 5.1 (2026-09-01) supersedes Fable 5. The `fable` substring means 5.1
+    // family-resolved at the right base price the day it shipped — the fallback
+    // doing its job — but its cache-read rate still needed an exact entry.
+    assert.equal(DEFAULT_MODELS.fable, 'claude-fable-5-1');
+    assert.equal(familyForModel('claude-fable-5-1'), 'fable');
+    // Mythos 5.1 matches no family, exactly like Mythos 5: without its own row it
+    // prices at zero, which is the failure mode that shipped Fable 5 free.
+    assert.equal(familyForModel('claude-mythos-5-1'), undefined);
+    for (const id of ['claude-fable-5-1', 'claude-mythos-5-1']) {
+      const price = priceForModel(id, DEFAULT_PRICING);
+      assert.equal(price?.input, 10.0, id);
+      assert.equal(price?.output, 50.0, id);
+      assert.equal(price?.cacheRead, 0.025, id);
     }
   });
 });
