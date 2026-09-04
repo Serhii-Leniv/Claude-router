@@ -21,7 +21,9 @@ function readJson(p: string): Record<string, unknown> {
 
 /** Minimal frontmatter parser for the agent definitions: `key: value` lines between `---` fences. */
 function parseAgent(file: string): { front: Record<string, string>; body: string } {
-  const text = fs.readFileSync(file, 'utf8');
+  // A Windows checkout with autocrlf hands us CRLF; the plugin is LF on disk
+  // everywhere else (.gitattributes), and the parser must not care either way.
+  const text = fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
   const m = text.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
   assert.ok(m, `${file} has frontmatter`);
   const front: Record<string, string> = {};
@@ -129,7 +131,7 @@ describe('plugin bundle — agents and policy', () => {
   it('the policy stays small — it loads into every session', () => {
     const bytes = fs.statSync(path.join(PLUGIN, 'policy', 'policy.md')).size;
     assert.ok(bytes <= 3000, `policy.md is ${bytes} bytes; cap is 3000`);
-    const text = fs.readFileSync(path.join(PLUGIN, 'policy', 'policy.md'), 'utf8');
+    const text = fs.readFileSync(path.join(PLUGIN, 'policy', 'policy.md'), 'utf8').replace(/\r\n/g, '\n');
     for (const role of ROLES) assert.ok(text.includes(`claude-router:${role}`), `policy names ${role}`);
     assert.match(text, /never pass `model`/);
   });

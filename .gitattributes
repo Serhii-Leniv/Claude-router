@@ -1,0 +1,4 @@
+# The plugin is read by Claude Code and parsed by the proxy's marker rule; keep
+# it byte-identical on every OS so a CRLF checkout cannot change what ships.
+plugin/** text eol=lf
+.claude-plugin/** text eol=lf
