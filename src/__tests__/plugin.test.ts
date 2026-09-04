@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import os from 'node:os';
+import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { serve } from '@hono/node-server';
 import { createProxyApp } from '../proxy/server.js';
@@ -164,6 +166,41 @@ describe('plugin bundle — hooks', () => {
     after(() => proxy.close());
     const { stdout } = await runHook('sessionstart.js', { CLAUDE_ROUTER_PORT: String(proxy.port) });
     assert.match(stdout, /up but not routing \(start it with --force-route\)/);
+  });
+
+  it('sessionstart starts the proxy itself when nothing answers, then reports enforcing', async () => {
+    // A stub `claude-router` binary: `start -d` brings up a /health server on
+    // CLAUDE_ROUTER_PORT that looks like a force-routing proxy, detaches, and
+    // lives long enough for the hook to see it.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-stub-'));
+    const stub = path.join(dir, 'stub.js');
+    fs.writeFileSync(stub, `
+      const http = require('node:http');
+      if (process.argv[2] !== 'start' || process.argv[3] !== '-d') process.exit(2);
+      const srv = http.createServer((req, res) => {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ status: 'ok', service: 'claude-router-proxy', forceRoute: true, sessionModel: 'opus', roleRouting: true, version: 'stub' }));
+      });
+      srv.listen(Number(process.env.CLAUDE_ROUTER_PORT), '127.0.0.1');
+      setTimeout(() => process.exit(0), 4000);
+    `);
+    // A launcher script so CLAUDE_ROUTER_BIN is a single executable path on every OS.
+    const launcher = path.join(dir, process.platform === 'win32' ? 'claude-router.cmd' : 'claude-router');
+    fs.writeFileSync(launcher, process.platform === 'win32'
+      ? `@echo off\r\n"${process.execPath}" "${stub}" %*\r\n`
+      : `#!/bin/sh\nexec "${process.execPath}" "${stub}" "$@"\n`, { mode: 0o755 });
+    const port = await new Promise<number>((resolve) => {
+      const s = net.createServer();
+      s.listen(0, '127.0.0.1', () => { const p = (s.address() as AddressInfo).port; s.close(() => resolve(p)); });
+    });
+    const { stdout, status } = await runHook('sessionstart.js', { CLAUDE_ROUTER_PORT: String(port), CLAUDE_ROUTER_BIN: launcher });
+    assert.equal(status, 0);
+    assert.match(stdout, /claude-router: enforcing — session pinned to opus.*started just now/);
+  });
+
+  it('sessionstart honours CLAUDE_ROUTER_NO_AUTOSTART', async () => {
+    const { stdout } = await runHook('sessionstart.js', { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1', CLAUDE_ROUTER_NO_AUTOSTART: '1', CLAUDE_ROUTER_BIN: '/nonexistent/claude-router' });
+    assert.match(stdout, /proxy not reachable/);
   });
 
   it('subagent-start registers the agent type with the proxy', async () => {

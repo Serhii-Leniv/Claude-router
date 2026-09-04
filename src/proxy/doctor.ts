@@ -40,6 +40,8 @@ export interface DoctorProbes {
   loadConfig(): { loaded: boolean; error?: string };
   checkHealth(port: number): Promise<HealthInfo | null>;
   isEnvVarSet(port: number): boolean;
+  /** Claude Code's own settings.json env points at the proxy (the install default). */
+  isClaudeCodeEnvSet(port: number): boolean;
   apiKeySet(): boolean;
   daemonState(): DaemonState | null;
   isProcessAlive(pid: number): boolean;
@@ -110,17 +112,20 @@ export async function runDiagnostics(
     hint: 'Start it: claude-router start -d',
   });
 
+  // Either route counts: Claude Code's settings.json env (what `install` writes)
+  // or the shell variable (api-only installs and SDK apps).
+  const claudeEnvOk = probes.isClaudeCodeEnvSet(options.port);
   const envOk = probes.isEnvVarSet(options.port);
   diagnostics.push({
-    ok: envOk,
-    label: envOk
-      ? 'ANTHROPIC_BASE_URL points at the proxy'
-      : `ANTHROPIC_BASE_URL is not set to http://localhost:${options.port}`,
-    hint:
-      probes.platform === 'windows'
-        ? `Set it: setx ANTHROPIC_BASE_URL http://localhost:${options.port} (then open a new terminal)`
-        : `Add to your shell rc: export ANTHROPIC_BASE_URL=http://localhost:${options.port}`,
+    ok: claudeEnvOk || envOk,
+    label: claudeEnvOk
+      ? 'Claude Code routes through the proxy (settings.json env)'
+      : envOk
+        ? 'ANTHROPIC_BASE_URL points at the proxy'
+        : `Nothing points at the proxy (no settings.json env, ANTHROPIC_BASE_URL is not http://localhost:${options.port})`,
+    hint: 'Run: claude-router install',
   });
+
 
   // The key is only required for the anthropic provider, so the verdict has two
   // ways to pass — and the label has to say which one applied, or a green tick

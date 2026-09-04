@@ -1,3 +1,7 @@
+import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
+import type { RouterPaths } from '../proxy/cli-config.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -8,6 +12,9 @@ import {
   buildSystemdUnit,
   isOurStatusline,
   removeRcBlock,
+  setClaudeCodeEnv,
+  unsetClaudeCodeEnv,
+  isClaudeCodeEnvSet
 } from '../proxy/platform.js';
 
 describe('buildPlist', () => {
@@ -113,5 +120,52 @@ describe('statusline', () => {
       `node -e "fetch('http://127.0.0.1:4000/health',{signal:AbortSignal.timeout(300)}).then(r=>r.json()).then(d=>console.log('[auto:'+(d.lastTier??'ready')+' #'+d.requests+']')).catch(()=>console.log('[auto:off]'))"`;
     assert.ok(isOurStatusline(legacyNode));
     assert.ok(!isOurStatusline('my-custom-statusline --fancy'));
+  });
+});
+
+describe('Claude Code settings env', () => {
+  function tmpPaths() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cr-settings-'));
+    return { paths: { claudeSettingsFile: path.join(dir, 'settings.json') } as RouterPaths, dir };
+  }
+
+  it('writes env.ANTHROPIC_BASE_URL and leaves everything else in settings.json alone', () => {
+    const { paths } = tmpPaths();
+    fs.writeFileSync(paths.claudeSettingsFile, JSON.stringify({ model: 'opus', env: { FOO: 'bar' }, statusLine: { type: 'command', command: 'x' } }));
+    const r = setClaudeCodeEnv(4000, paths);
+    assert.equal(r.ok, true);
+    const s = JSON.parse(fs.readFileSync(paths.claudeSettingsFile, 'utf8')) as { model: string; env: Record<string, string>; statusLine: unknown };
+    assert.equal(s.env['ANTHROPIC_BASE_URL'], 'http://127.0.0.1:4000');
+    assert.equal(s.env['FOO'], 'bar');
+    assert.equal(s.model, 'opus');
+    assert.ok(s.statusLine);
+    assert.equal(isClaudeCodeEnvSet(4000, paths), true);
+    assert.equal(isClaudeCodeEnvSet(4100, paths), false);
+  });
+
+  it('creates settings.json when absent', () => {
+    const { paths } = tmpPaths();
+    assert.equal(setClaudeCodeEnv(4100, paths).ok, true);
+    assert.equal(isClaudeCodeEnvSet(4100, paths), true);
+  });
+
+  it('never overwrites a base URL that points somewhere else', () => {
+    const { paths } = tmpPaths();
+    fs.writeFileSync(paths.claudeSettingsFile, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://gateway.example' } }));
+    const r = setClaudeCodeEnv(4000, paths);
+    assert.equal(r.skipped, true);
+    assert.equal(isClaudeCodeEnvSet(4000, paths), false);
+    assert.equal(unsetClaudeCodeEnv(paths).skipped, true, 'and does not remove it either');
+  });
+
+  it('unset removes only our entry, dropping an emptied env block', () => {
+    const { paths } = tmpPaths();
+    setClaudeCodeEnv(4000, paths);
+    assert.equal(unsetClaudeCodeEnv(paths).ok, true);
+    const s = JSON.parse(fs.readFileSync(paths.claudeSettingsFile, 'utf8')) as Record<string, unknown>;
+    assert.ok(!('env' in s));
+    fs.writeFileSync(paths.claudeSettingsFile, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://localhost:4000', KEEP: '1' } }));
+    unsetClaudeCodeEnv(paths);
+    assert.deepEqual(JSON.parse(fs.readFileSync(paths.claudeSettingsFile, 'utf8')), { env: { KEEP: '1' } });
   });
 });

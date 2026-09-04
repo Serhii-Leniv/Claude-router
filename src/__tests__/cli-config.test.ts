@@ -13,6 +13,7 @@ import {
   suggestCommand,
   OPTIONS,
   helpOptionLines,
+  withInstallProfile,
 } from '../proxy/cli-config.js';
 
 describe('parseServeArgs', () => {
@@ -239,5 +240,28 @@ describe('role routing options', () => {
     assert.deepEqual(opts.roles, { builder: 'opus' });
     assert.deepEqual(opts.agents, { 'my-plugin:reviewer': 'opus' });
     assert.equal(parseServeArgs([]).roles, undefined);
+  });
+});
+
+describe('withInstallProfile', () => {
+  it('fills force-route, opus pin and delegation restore under the file config', () => {
+    const merged = withInstallProfile({}, false);
+    assert.deepEqual(merged, { forceRoute: true, sessionModel: 'opus', restoreDelegation: true });
+    const opts = parseServeArgs([], merged);
+    assert.equal(opts.forceRoute, true);
+    assert.equal(opts.sessionModel, 'opus');
+    assert.equal(opts.restoreDelegation, true);
+  });
+
+  it('the user\'s config and flags win over the profile', () => {
+    const merged = withInstallProfile({ sessionModel: 'sonnet', port: 4100 }, false);
+    assert.equal(merged.sessionModel, 'sonnet');
+    assert.equal(merged.port, 4100);
+    assert.equal(parseServeArgs(['--session-model', 'haiku'], merged).sessionModel, 'haiku');
+  });
+
+  it('api-only leaves the file config untouched', () => {
+    assert.deepEqual(withInstallProfile({ port: 4100 }, true), { port: 4100 });
+    assert.equal(parseServeArgs([], withInstallProfile({}, true)).forceRoute, false);
   });
 });

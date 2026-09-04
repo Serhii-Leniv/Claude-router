@@ -352,3 +352,23 @@ export function suggestCommand(input: string, commands: string[]): string | null
   }
   return best;
 }
+
+/**
+ * What `claude-router install` sets up unless told `--api-only`: the Claude
+ * Code profile. Claude Code pins a model on every request, so a proxy that is
+ * not force-routing does nothing for it; the coordinator is pinned to opus and
+ * delegation restored so the orchestration plugin has something to orchestrate.
+ * The profile sits **under** the config file (a user's explicit choice wins)
+ * and under the flags, and `install` persists the result to config.json so a
+ * later `claude-router start -d` — the plugin's self-start included — carries
+ * the same behaviour.
+ */
+export const CLAUDE_CODE_PROFILE: FileConfig = {
+  forceRoute: true,
+  sessionModel: 'opus',
+  restoreDelegation: true,
+};
+
+export function withInstallProfile(file: FileConfig, apiOnly: boolean): FileConfig {
+  return apiOnly ? file : { ...CLAUDE_CODE_PROFILE, ...file };
+}

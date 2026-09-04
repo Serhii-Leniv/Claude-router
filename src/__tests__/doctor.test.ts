@@ -27,6 +27,7 @@ function probes(overrides: Partial<DoctorProbes> = {}): DoctorProbes {
     loadConfig: () => ({ loaded: true }),
     checkHealth: async () => HEALTHY,
     isEnvVarSet: () => true,
+    isClaudeCodeEnvSet: () => true,
     apiKeySet: () => true,
     daemonState: () => null,
     isProcessAlive: () => true,
@@ -50,6 +51,19 @@ describe('runDiagnostics', () => {
     const diagnostics = await runDiagnostics(OPTIONS, probes());
     assert.equal(failureCount(diagnostics), 0);
     assert.ok(diagnostics.every((d) => d.ok));
+  });
+
+  it('accepts Claude Code\'s settings.json env as the route to the proxy', async () => {
+    // `install` no longer touches the shell; it writes settings.json env. Doctor
+    // must not fail a machine set up the default way.
+    const diagnostics = await runDiagnostics(OPTIONS, probes({ isEnvVarSet: () => false, isClaudeCodeEnvSet: () => true }));
+    const env = find(diagnostics, /routes through the proxy|ANTHROPIC_BASE_URL|points at the proxy/);
+    assert.equal(env.ok, true);
+    assert.match(env.label, /settings\.json env/);
+    assert.equal(failureCount(diagnostics), 0);
+    const neither = await runDiagnostics(OPTIONS, probes({ isEnvVarSet: () => false, isClaudeCodeEnvSet: () => false }));
+    assert.equal(failureCount(neither), 1);
+    assert.match(find(neither, /Nothing points at the proxy/).hint ?? '', /claude-router install/);
   });
 
   it('warns, without failing, when the pricing table is older than the stale window', async () => {
@@ -79,6 +93,7 @@ describe('runDiagnostics', () => {
       probes({
         checkHealth: async () => null,
         isEnvVarSet: () => false,
+        isClaudeCodeEnvSet: () => false,
         isAutostartRegistered: () => false,
         isStatuslineConfigured: () => false,
       }),
@@ -103,15 +118,13 @@ describe('runDiagnostics', () => {
     assert.match(d.hint!, /claude-router init --force/);
   });
 
-  it('gives a Windows-specific hint for the env var', async () => {
-    const linux = await runDiagnostics(OPTIONS, probes({ isEnvVarSet: () => false }));
-    assert.match(find(linux, /ANTHROPIC_BASE_URL is not set/).hint!, /export ANTHROPIC_BASE_URL/);
-
-    const windows = await runDiagnostics(
-      OPTIONS,
-      probes({ isEnvVarSet: () => false, platform: 'windows' }),
-    );
-    assert.match(find(windows, /ANTHROPIC_BASE_URL is not set/).hint!, /^Set it: setx/);
+  it('points at `claude-router install` when nothing routes to the proxy, on every platform', async () => {
+    // The install writes Claude Code's settings.json env everywhere, so the
+    // remedy is the same command on Linux and Windows — no per-OS shell advice.
+    for (const platform of ['linux', 'windows']) {
+      const diagnostics = await runDiagnostics(OPTIONS, probes({ isEnvVarSet: () => false, isClaudeCodeEnvSet: () => false, platform }));
+      assert.match(find(diagnostics, /Nothing points at the proxy/).hint!, /claude-router install/);
+    }
   });
 
   describe('ANTHROPIC_API_KEY', () => {

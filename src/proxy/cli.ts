@@ -35,7 +35,7 @@ import {
   serveArgsFrom,
   suggestCommand,
   type RouterPaths,
-  type ServeOptions, helpOptionLines } from './cli-config.js';
+  type ServeOptions, helpOptionLines, withInstallProfile, type FileConfig } from './cli-config.js';
 import {
   checkHealth,
   isProcessAlive,
@@ -61,6 +61,9 @@ import {
   uninstallAutostart,
   unsetEnvVar,
   type StepResult,
+  setClaudeCodeEnv,
+  unsetClaudeCodeEnv,
+  isClaudeCodeEnvSet
 } from './platform.js';
 
 const COMMANDS = [
@@ -77,12 +80,13 @@ const COMMANDS = [
 function resolveOptions(
   args: string[],
   paths: RouterPaths,
+  profile: (file: FileConfig) => FileConfig = (file) => file,
 ): { options: ServeOptions; warnings: OutputLine[] } {
   const { config, error } = loadFileConfig(paths.configFile);
   const warnings = error
     ? [warnLine(`Ignoring invalid config at ${paths.configFile}: ${error}`)]
     : [];
-  return { options: parseServeArgs(args, config), warnings };
+  return { options: parseServeArgs(args, profile(config ?? {})), warnings };
 }
 
 /** Split command-specific boolean flags out of an arg list before serve parsing. */
@@ -558,15 +562,33 @@ export function readLogTail(
 // ── install / uninstall ────────────────────────────────────────────────────
 
 async function cmdInstall(args: string[], paths: RouterPaths): Promise<CommandResult> {
-  const { rest, found } = extractFlags(args, ['--no-autostart', '--no-env', '--no-statusline', '--no-policy']);
-  const { options, warnings } = resolveOptions(rest, paths);
+  const { rest, found } = extractFlags(args, ['--no-autostart', '--no-env', '--no-statusline', '--no-policy', '--api-only', '--shell-env']);
+  const apiOnly = found.has('--api-only');
+  const { options, warnings } = resolveOptions(rest, paths, (file) => withInstallProfile(file, apiOnly));
   const serveArgs = serveArgsFrom(options);
 
   const lines: OutputLine[] = [
     ...warnings,
-    out(`\nInstalling claude-router ${term.dim(`(${platformName()})`)}\n`),
+    out(`\nInstalling claude-router ${term.dim(`(${platformName()}${apiOnly ? ', api-only' : ', Claude Code profile'})`)}\n`),
   ];
   let failures = 0;
+
+  // 0. Persist the effective options so every later start — `restart`, the
+  //    autostart supervisor, the plugin's self-start — runs the same way.
+  //    Existing keys the user wrote stay; the profile only fills what is unset.
+  {
+    const { config: existing } = loadFileConfig(paths.configFile);
+    const merged = { ...configFromOptions(options), ...(existing ?? {}) };
+    if (!apiOnly) Object.assign(merged, { forceRoute: options.forceRoute, sessionModel: options.sessionModel || undefined, restoreDelegation: options.restoreDelegation });
+    try {
+      fs.mkdirSync(paths.configDir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(paths.configFile, JSON.stringify(merged, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+      lines.push(stepLine({ ok: true, detail: `Config written (${paths.configFile}): force-route ${options.forceRoute ? 'on' : 'off'}${options.sessionModel ? `, session pinned to ${options.sessionModel}` : ''}${options.restoreDelegation ? ', delegation restored' : ''}` }));
+    } catch (err) {
+      lines.push(stepLine({ ok: false, detail: `Could not write ${paths.configFile}: ${String(err)}` }));
+      failures++;
+    }
+  }
 
   // 1. Autostart on login. On macOS/Linux the supervisor (launchd RunAtLoad /
   //    systemd --now) ALSO starts the proxy immediately, so this must run before
@@ -612,11 +634,20 @@ async function cmdInstall(args: string[], paths: RouterPaths): Promise<CommandRe
     if (!start.ok) failures++;
   }
 
-  // 3. Environment variable
+  // 3. Point Claude Code at the proxy. Its settings.json `env` block needs no
+  //    shell edit and no new terminal; the shell variable is for other apps and
+  //    is written only on request (or in api-only mode, where it is the point).
   if (!found.has('--no-env')) {
-    const result = setEnvVar(options.port, paths);
-    lines.push(stepLine(result));
-    if (!result.ok && !result.skipped) failures++;
+    if (!apiOnly) {
+      const result = setClaudeCodeEnv(options.port, paths);
+      lines.push(stepLine(result));
+      if (!result.ok && !result.skipped) failures++;
+    }
+    if (apiOnly || found.has('--shell-env')) {
+      const result = setEnvVar(options.port, paths);
+      lines.push(stepLine(result));
+      if (!result.ok && !result.skipped) failures++;
+    }
   }
 
   // 4. Claude Code statusline
@@ -643,15 +674,14 @@ async function cmdInstall(args: string[], paths: RouterPaths): Promise<CommandRe
     return failed(lines);
   }
 
-  const envNote = platformName() === 'windows'
+  const shellNote = platformName() === 'windows'
     ? 'Open a new terminal (setx applies to new sessions only)'
     : 'Restart your terminal (or: source your shell rc file)';
   lines.push(out(`
 ${term.ok()} Done. Requests to ${term.accent(`http://localhost:${options.port}`)} are auto-routed.
-
-  ${term.dim('→')} ${envNote}
-  ${term.dim('→')} Use ${term.accent('claude')} normally — calls route through the proxy${pluginInstalled ? `
-  ${term.dim('→')} Restart Claude Code to load the orchestration plugin (role agents + policy)` : ''}
+${apiOnly || found.has('--shell-env') ? `
+  ${term.dim('→')} ${shellNote}` : ''}${apiOnly ? '' : `
+  ${term.dim('→')} Restart Claude Code — it now routes through the proxy${pluginInstalled ? ' and loads the orchestration plugin' : ''}`}
   ${term.dim('→')} Check anytime: ${term.accent('claude-router status')} · ${term.accent('claude-router doctor')}
 `));
   return ok(lines);
@@ -665,6 +695,7 @@ async function cmdUninstall(_args: string[], paths: RouterPaths): Promise<Comman
   const stop = await stopDaemon(paths);
   lines.push(stepLine({ ok: stop.ok, detail: stop.detail, skipped: !stop.ok }));
   lines.push(stepLine(uninstallAutostart(paths)));
+  lines.push(stepLine(unsetClaudeCodeEnv(paths)));
   lines.push(stepLine(unsetEnvVar(paths)));
   lines.push(stepLine(removeStatusline(paths)));
   lines.push(stepLine(uninstallPolicyPlugin()));
@@ -732,6 +763,7 @@ function liveProbes(paths: RouterPaths): DoctorProbes {
     loadConfig: () => loadFileConfig(paths.configFile),
     checkHealth: (port) => checkHealth(port),
     isEnvVarSet: (port) => isEnvVarSet(port),
+    isClaudeCodeEnvSet: (port) => isClaudeCodeEnvSet(port, paths),
     apiKeySet: () => Boolean(process.env['ANTHROPIC_API_KEY']),
     daemonState: () => readDaemonState(paths),
     isProcessAlive: (pid) => isProcessAlive(pid),
@@ -769,7 +801,7 @@ function helpResult(): CommandResult {
 ${term.bold('claude-router')} ${d('v' + getVersion())} — auto-route Claude API calls by prompt complexity
 
 ${term.bold('Usage')}
-  ${a('claude-router install')} [options]     One-time setup: daemon + autostart + env + statusline
+  ${a('claude-router install')} [options]     One-time setup for Claude Code: proxy + autostart + plugin (no flags needed)
   ${a('claude-router uninstall')}             Remove everything install added
   ${a('claude-router start')} [options]       Run the proxy in the foreground
   ${a('claude-router start -d')}              Run it in the background (daemon)
@@ -791,6 +823,8 @@ ${term.bold('Install-only options')}
   --no-env                 Skip setting ANTHROPIC_BASE_URL
   --no-statusline          Skip the Claude Code statusline
   --no-policy              Skip the Claude Code orchestration plugin
+  --shell-env              Also export ANTHROPIC_BASE_URL in your shell (for SDK apps)
+  --api-only               Plain proxy for API clients: shell env only, no Claude Code profile or plugin
 
 ${term.bold('Config file')} ${d('(~/.claude-router/config.json — flags always win)')}
   Any option above, plus per-tier model overrides ("tiers"), pricing ("pricing"),

@@ -53,29 +53,30 @@
 
 ### Claude Code (recommended)
 
-Two commands on **Windows, macOS, or Linux**:
+Two commands on **Windows, macOS, or Linux**, no flags, no environment variables:
 
 ```bash
 npm install -g @sheruq/claude-router
-claude-router install --force-route
-# open a new terminal, then use `claude` normally — every call is auto-routed
+claude-router install
+# restart Claude Code — that's it
 ```
 
 > Install **globally** (not via `npx`) when using `install`: login autostart points at the installed CLI, and the `claude-router` command must stay on your PATH for `status` / `stop` / `doctor`.
 
-`install` starts the proxy in the background (verifying it's healthy before reporting success), registers it to start on login, sets `ANTHROPIC_BASE_URL`, and adds a Claude Code statusline — per OS:
+`install` does the whole setup and verifies each step before reporting it:
 
-| OS | Autostart | Env var |
-|----|-----------|---------|
-| **Windows** | HKCU Run key | `setx` (applies to new terminals) |
-| **macOS** | LaunchAgent | block in `~/.zshrc` |
-| **Linux** | systemd user unit (graceful fallback) | block in `~/.bashrc` / `~/.zshrc` |
+- starts the proxy in the background and registers it to start on login (Windows Run key, macOS LaunchAgent, Linux systemd user unit);
+- points Claude Code at the proxy through its own `~/.claude/settings.json` `env` block — no shell rc edit, no `setx`, no new terminal;
+- applies the Claude Code profile and saves it to `~/.claude-router/config.json`: routing forced on (Claude Code pins a model on every request, so nothing routes otherwise), the main session pinned to Opus, delegation restored, subagents routed by role;
+- installs the [orchestration plugin](#orchestration-mode-claude-code) (role agents + session policy) and a statusline.
+
+From then on the plugin's session-start hook keeps it honest: if the proxy isn't running it starts it, and every session opens with one line saying `claude-router: enforcing — …` or why not.
 
 Manage it anytime:
 
 ```bash
 claude-router status    # health, routing stats, install state
-claude-router stats     # lifetime savings + per-day breakdown
+claude-router stats     # lifetime savings, dispatch rate, cost by role
 claude-router logs -f   # follow the daemon log
 claude-router doctor    # diagnose setup problems
 claude-router stop      # stop the background proxy
@@ -84,7 +85,7 @@ claude-router uninstall # remove everything install added
 
 Watch routing live in the logs, or open the dashboard at `http://localhost:4000/dashboard`.
 
-> **Why `--force-route`?** Claude Code always pins a model, so the proxy must override it to route by complexity. The router reconciles model-specific parameters with the tier it picks (see [How it works](#how-it-works)), so force-routing never 400s on Claude Code's adaptive-thinking / effort settings. Drop the flag if you want explicit model requests to pass through untouched.
+> **Only want a plain proxy for SDK apps?** `claude-router install --api-only` skips the Claude Code profile and plugin and exports `ANTHROPIC_BASE_URL` in your shell instead (add `--shell-env` to a normal install to get both). Explicit model requests then pass through untouched unless you start with `--force-route`.
 
 ### Any app, without installing
 

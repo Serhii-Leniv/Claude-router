@@ -7,6 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/); versioning follo
 
 ## [0.4.0] — 2026-09-04
 
+### Changed
+- **`claude-router install` needs no flags for Claude Code.** It now applies the Claude Code profile by default — force-route, session pinned to opus, delegation restored, orchestration plugin — writes the result to `config.json` so every later start behaves the same, and points Claude Code at the proxy through its own `settings.json` `env` block instead of your shell (no rc edit, no `setx`, no new terminal; just restart Claude Code). `--api-only` keeps the old plain-proxy behaviour for SDK apps; `--shell-env` additionally exports the variable in your shell. `doctor` accepts either route.
+- **The plugin starts the proxy if it is not running.** On session start, if nothing answers on the proxy port, the hook launches `claude-router start -d` (which reads the config `install` wrote) and waits up to three seconds before reporting; after a reboot without autostart the session still ends up enforced. `CLAUDE_ROUTER_NO_AUTOSTART=1` disables it.
+
 ### Added
 - **Claude Fable 5.1 and Mythos 5.1** (released 2026-09-01). The `fable` tier now resolves to `claude-fable-5-1`, which supersedes Fable 5 (still priced, now a legacy model). The `fable` substring meant 5.1 family-resolved at the right $10/$50 base the day it shipped — the fallback doing its job — but two things still needed rows: `claude-mythos-5-1` matches no family and would have priced at *zero*, and both 5.1 models bill **cache reads at 2.5% of input**, not the standard 10%.
 - **Per-model cache-read rates** (`ModelPricing.cacheRead`, resolved via `cacheReadRate()`). `CACHE_READ_RATE` (10%) is now the default rather than a universal. On a cache-heavy client like Claude Code the cache-read line is most of the input bill, so applying 10% to Fable 5.1 overstated that component roughly 4x. The field is optional, so every existing pricing entry and every user `pricing` override keeps the standard rate — absent means standard, never free.

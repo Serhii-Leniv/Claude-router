@@ -540,6 +540,77 @@ export function removeStatusline(paths: RouterPaths = routerPaths()): StepResult
   }
 }
 
+/**
+ * Point Claude Code at the proxy through its own settings.json `env` block
+ * rather than the shell. Claude Code applies that block to its process at
+ * startup, so this takes effect on the next launch with no shell rc edit, no
+ * `setx`, no new terminal — and it is the same file the statusline lives in.
+ * Other apps (SDK scripts) still need the shell variable; `--shell-env` does
+ * that on request.
+ */
+export function proxyBaseUrl(port: number): string {
+  return `http://127.0.0.1:${port}`;
+}
+
+function isOurBaseUrl(value: unknown): boolean {
+  return typeof value === 'string' && /^http:\/\/(127\.0\.0\.1|localhost):\d+\/?$/.test(value);
+}
+
+export function setClaudeCodeEnv(port: number, paths: RouterPaths = routerPaths()): StepResult {
+  let settings: Record<string, unknown> = {};
+  if (fs.existsSync(paths.claudeSettingsFile)) {
+    try {
+      settings = JSON.parse(fs.readFileSync(paths.claudeSettingsFile, 'utf8'));
+    } catch (err) {
+      return { ok: false, detail: `~/.claude/settings.json is not valid JSON (${String(err)}) — skipping env` };
+    }
+  }
+  const env = (typeof settings['env'] === 'object' && settings['env'] !== null ? settings['env'] : {}) as Record<string, unknown>;
+  const current = env['ANTHROPIC_BASE_URL'];
+  if (current !== undefined && !isOurBaseUrl(current)) {
+    return { ok: false, skipped: true, detail: `settings.json already sets ANTHROPIC_BASE_URL to ${String(current)} — not overwriting` };
+  }
+  try {
+    settings['env'] = { ...env, ANTHROPIC_BASE_URL: proxyBaseUrl(port) };
+    fs.mkdirSync(path.dirname(paths.claudeSettingsFile), { recursive: true });
+    fs.writeFileSync(paths.claudeSettingsFile, JSON.stringify(settings, null, 2), 'utf8');
+    return { ok: true, detail: `Claude Code routes through the proxy (env.ANTHROPIC_BASE_URL in ~/.claude/settings.json)` };
+  } catch (err) {
+    return { ok: false, detail: `Could not write ~/.claude/settings.json: ${String(err)}` };
+  }
+}
+
+export function unsetClaudeCodeEnv(paths: RouterPaths = routerPaths()): StepResult {
+  if (!fs.existsSync(paths.claudeSettingsFile)) {
+    return { ok: true, skipped: true, detail: 'No ~/.claude/settings.json — nothing to remove' };
+  }
+  try {
+    const settings = JSON.parse(fs.readFileSync(paths.claudeSettingsFile, 'utf8')) as Record<string, unknown>;
+    const env = settings['env'] as Record<string, unknown> | undefined;
+    if (!env || !isOurBaseUrl(env['ANTHROPIC_BASE_URL'])) {
+      return { ok: true, skipped: true, detail: 'settings.json env does not point at the proxy — left as is' };
+    }
+    const { ANTHROPIC_BASE_URL: _drop, ...rest } = env;
+    if (Object.keys(rest).length === 0) delete settings['env'];
+    else settings['env'] = rest;
+    fs.writeFileSync(paths.claudeSettingsFile, JSON.stringify(settings, null, 2), 'utf8');
+    return { ok: true, detail: 'Removed env.ANTHROPIC_BASE_URL from ~/.claude/settings.json' };
+  } catch (err) {
+    return { ok: false, detail: `Could not update ~/.claude/settings.json: ${String(err)}` };
+  }
+}
+
+export function isClaudeCodeEnvSet(port: number, paths: RouterPaths = routerPaths()): boolean {
+  if (!fs.existsSync(paths.claudeSettingsFile)) return false;
+  try {
+    const settings = JSON.parse(fs.readFileSync(paths.claudeSettingsFile, 'utf8')) as Record<string, unknown>;
+    const value = (settings['env'] as Record<string, unknown> | undefined)?.['ANTHROPIC_BASE_URL'];
+    return value === proxyBaseUrl(port) || value === `http://localhost:${port}`;
+  } catch {
+    return false;
+  }
+}
+
 export function isStatuslineConfigured(paths: RouterPaths = routerPaths()): boolean {
   if (!fs.existsSync(paths.claudeSettingsFile)) return false;
   try {
