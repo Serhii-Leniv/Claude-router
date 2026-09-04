@@ -72,6 +72,38 @@ describe('executeRoute', () => {
     assert.equal(createFn.mock.calls.length, 2);
   });
 
+  it('the rate-limit walk-up stops at the escalation ceiling, never fable', async () => {
+    // Fable is 2x opus. The loop used to run to the end of TIER_ORDER, so a
+    // library caller on the default `fallback: true` was walked from a
+    // rate-limited opus onto fable without asking.
+    const createFn = mock.fn(async (_params: { model: string }) => { throw rateLimitError(); });
+
+    await assert.rejects(
+      executeRoute(clientWith(createFn), PARAMS, 'haiku', DEFAULT_MODELS, { fallbackOnRateLimit: true }),
+      Anthropic.RateLimitError,
+    );
+    assert.equal(createFn.mock.calls.length, 3, 'haiku → sonnet → opus, then give up');
+    const sent = createFn.mock.calls.map((c) => (c.arguments[0] as { model: string }).model);
+    assert.deepEqual(sent, [DEFAULT_MODELS.haiku, DEFAULT_MODELS.sonnet, DEFAULT_MODELS.opus]);
+    assert.ok(!sent.includes(DEFAULT_MODELS.fable));
+  });
+
+  it('a rate-limited opus start throws after one call instead of walking to fable', async () => {
+    const createFn = mock.fn(async () => { throw rateLimitError(); });
+    await assert.rejects(
+      executeRoute(clientWith(createFn), PARAMS, 'opus', DEFAULT_MODELS, { fallbackOnRateLimit: true }),
+      Anthropic.RateLimitError,
+    );
+    assert.equal(createFn.mock.calls.length, 1);
+  });
+
+  it('an explicit fable start still runs exactly once', async () => {
+    const createFn = mock.fn(async (params: { model: string }) => fakeMessage({ model: params.model }));
+    const result = await executeRoute(clientWith(createFn), PARAMS, 'fable', DEFAULT_MODELS, { fallbackOnRateLimit: true });
+    assert.equal(result.tier, 'fable');
+    assert.equal(createFn.mock.calls.length, 1);
+  });
+
   it('escalates once on truncation', async () => {
     const createFn = mock.fn(async (params: { model: string }) => {
       if (createFn.mock.calls.length === 0) {

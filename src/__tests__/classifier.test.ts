@@ -308,11 +308,12 @@ describe('classify — unified entry with cache', () => {
   });
 });
 
-describe('classifier — custom thresholds honored in AI paths (G2/G3)', () => {
-  it('AI verdict respects a custom haikuMax (G2)', async () => {
-    // AI "1" → synthetic score 15. With haikuMax=10, 15 is above the haiku
-    // cutoff, so the tier must be sonnet — the old hardcoded level→tier map
-    // ignored the threshold and always returned haiku.
+describe('classifier — the deprecated thresholds are really ignored in AI mode', () => {
+  it('AI verdict "1" is haiku whatever haikuMax says', async () => {
+    // Until 0.4.0 the AI verdict was mapped through the score thresholds, so a
+    // config that set haikuMax: 10 quietly turned every "1" into sonnet while
+    // the startup warning claimed the key did nothing. The verdict now maps to
+    // a tier directly and carries a reason.
     const result = await classify(
       mockClient('1'),
       makeInput('test'),
@@ -321,12 +322,11 @@ describe('classifier — custom thresholds honored in AI paths (G2/G3)', () => {
       { haikuMax: 10 },
     );
     assert.equal(result.method, 'ai');
-    assert.equal(result.tier, 'sonnet');
+    assert.equal(result.tier, 'haiku');
+    assert.equal(result.reason, 'ai:level-1');
   });
 
-  it('AI verdict respects a custom opusMin (G2)', async () => {
-    // AI "3" → synthetic score 85. With opusMin=90, 85 is below the opus
-    // cutoff → sonnet.
+  it('AI verdict "3" is opus whatever opusMin says', async () => {
     const result = await classify(
       mockClient('3'),
       makeInput('test'),
@@ -334,10 +334,18 @@ describe('classifier — custom thresholds honored in AI paths (G2/G3)', () => {
       'claude-haiku-4-5-20251001',
       { opusMin: 90 },
     );
-    assert.equal(result.tier, 'sonnet');
+    assert.equal(result.tier, 'opus');
+    assert.equal(result.reason, 'ai:level-3');
   });
 
-  it('default thresholds keep the original level→tier mapping', async () => {
+  it('an unparseable verdict lands on sonnet with a labelled reason', async () => {
+    const result = await classify(mockClient('maybe'), makeInput('t'), 'ai', 'h');
+    assert.equal(result.tier, 'sonnet');
+    assert.equal(result.confidence, 0.6);
+    assert.equal(result.reason, 'ai:unparsed');
+  });
+
+  it('the level→tier mapping is fixed: 1→haiku, 2→sonnet, 3→opus', async () => {
     assert.equal((await classify(mockClient('1'), makeInput('t'), 'ai', 'h')).tier, 'haiku');
     assert.equal((await classify(mockClient('2'), makeInput('t'), 'ai', 'h')).tier, 'sonnet');
     assert.equal((await classify(mockClient('3'), makeInput('t'), 'ai', 'h')).tier, 'opus');
@@ -362,6 +370,24 @@ describe('classifier — custom thresholds honored in AI paths (G2/G3)', () => {
     const trivial = await classify(client, makeInput('translate hello to French'), 'ai', 'claude-haiku-4-5-20251001');
     assert.equal(trivial.method, 'heuristic');
     assert.equal(trivial.tier, 'haiku', 'a mechanical transform still demotes');
+  });
+});
+
+describe('classifier — allowFable is a typed option, not a config-file accident', () => {
+  const superHard = 'architect a replacement and rewrite the entire pipeline from scratch';
+
+  it('heuristic mode reaches fable only when allowFable is set', async () => {
+    const off = await classify(null as unknown as Anthropic, makeInput(superHard), 'heuristic', 'h');
+    assert.equal(off.tier, 'opus');
+    const on = await classify(null as unknown as Anthropic, makeInput(superHard), 'heuristic', 'h', { allowFable: true });
+    assert.equal(on.tier, 'fable');
+  });
+
+  it('an AI outage falls back with allowFable intact', async () => {
+    const client = { messages: { create: mock.fn(async () => { throw new Error('down'); }) } } as unknown as Anthropic;
+    const r = await classify(client, makeInput(superHard), 'ai', 'h', { allowFable: true });
+    assert.equal(r.method, 'heuristic');
+    assert.equal(r.tier, 'fable');
   });
 });
 

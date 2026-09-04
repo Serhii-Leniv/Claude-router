@@ -170,6 +170,27 @@ describe('ClaudeRouter.send', () => {
     assert.equal((mockCreate.mock.calls[1]!.arguments[0] as { model: string }).model, DEFAULT_MODELS.sonnet);
   });
 
+  it('fallback never walks a rate-limited opus route onto fable', async () => {
+    const { router } = createMockRouter();
+    const mockCreate = mock.fn(async (_params: { model: string }) => {
+      const err = new Error('rate limited');
+      Object.setPrototypeOf(err, Anthropic.RateLimitError.prototype);
+      throw err;
+    });
+    (router as unknown as { _client: { messages: { create: typeof mockCreate } } })._client.messages.create = mockCreate;
+
+    await assert.rejects(
+      router.send({
+        // An explicit depth request classifies to opus.
+        messages: [{ role: 'user', content: 'architect a payment system and prove correctness under partition' }],
+        max_tokens: 100,
+      }),
+      Anthropic.RateLimitError,
+    );
+    const sent = mockCreate.mock.calls.map((c) => (c.arguments[0] as { model: string }).model);
+    assert.deepEqual(sent, [DEFAULT_MODELS.opus], 'one call at the ceiling, nothing above it');
+  });
+
   it('propagates RateLimitError when fallback is disabled', async () => {
     const router = new ClaudeRouter({
       apiKey: 'sk-test',

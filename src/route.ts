@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { TIER_ORDER } from './models.js';
+import { ESCALATION_CEILING, TIER_ORDER } from './models.js';
 import { shouldRetry, nextTier } from './retry.js';
 import { normalizeParamsForTier } from './params.js';
 import type { Tier } from './types.js';
@@ -98,9 +98,15 @@ export async function executeRoute(
   const startIndex = TIER_ORDER.indexOf(startTier);
   // An unknown tier would start the loop at -1 and send `model: undefined`.
   if (startIndex < 0) throw unknownTierError(startTier);
+  // The rate-limit walk-up stops where escalation stops. Fable is 2x opus and
+  // nothing measured says a 429 on opus is a reason to pay it — the loop used
+  // to run to the end of TIER_ORDER, so the library default (`fallback: true`)
+  // silently walked opus traffic onto fable. A start tier above the ceiling
+  // (an explicit fable pin) still runs exactly once.
+  const ceiling = Math.max(startIndex, TIER_ORDER.indexOf(ESCALATION_CEILING));
   let lastError: unknown;
 
-  for (let i = startIndex; i < TIER_ORDER.length; i++) {
+  for (let i = startIndex; i <= ceiling; i++) {
     const tier = TIER_ORDER[i]!;
     const model = models[tier];
     const fallbackUsed = i !== startIndex;
@@ -151,7 +157,7 @@ export async function executeRoute(
       if (
         opts.fallbackOnRateLimit &&
         err instanceof Anthropic.RateLimitError &&
-        i < TIER_ORDER.length - 1
+        i < ceiling
       ) {
         continue;
       }
